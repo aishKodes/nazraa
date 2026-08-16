@@ -19,10 +19,13 @@ export async function signIn(formData: FormData) {
   if (!parsed.success) redirect("/login?error=Enter+your+role+code+and+password.");
 
   let account = await accountByRoleCode(parsed.data.roleCode);
-  const initialCode = process.env.INITIAL_MASTER_CODE?.trim().toUpperCase();
+  const initialCode = process.env.INITIAL_MASTER_CODE?.trim().toUpperCase() || "MST-NAZRAA";
   const initialPassword = process.env.INITIAL_MASTER_PASSWORD;
-  const initialName = process.env.INITIAL_MASTER_NAME?.trim();
-  if (!account && initialCode && initialPassword && initialPassword.length >= 12 && initialName && parsed.data.roleCode.toUpperCase() === initialCode && parsed.data.password === initialPassword) {
+  const initialName = process.env.INITIAL_MASTER_NAME?.trim() || "Nazraa Master";
+  if (!account && parsed.data.roleCode.toUpperCase() === initialCode && !initialPassword) {
+    redirect("/login?error=First-time+login+is+not+configured.+Add+INITIAL_MASTER_PASSWORD+in+Vercel+and+redeploy.");
+  }
+  if (!account && initialPassword && parsed.data.roleCode.toUpperCase() === initialCode && parsed.data.password === initialPassword) {
     await createInitialMaster({ roleCode: initialCode, fullName: initialName, password: initialPassword });
     account = await accountByRoleCode(initialCode);
   }

@@ -15,8 +15,8 @@ DB_USER=the full Hostinger database username
 DB_PASSWORD=the database password
 DB_SSL=false
 SESSION_SECRET=a random value at least 32 characters long
-INITIAL_MASTER_NAME=your name
-INITIAL_MASTER_CODE=MST-NAZRAA
+INITIAL_MASTER_NAME=your name (optional)
+INITIAL_MASTER_CODE=MST-NAZRAA (optional; this is the default)
 INITIAL_MASTER_PASSWORD=a long unique first password
 ```
 
