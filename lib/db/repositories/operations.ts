@@ -21,7 +21,7 @@ async function audit(
   );
 }
 
-export async function transferCoins(input: { scope: Scope; recipientId: string; amount: number; reason: string }) {
+export async function transferCoins(input: { scope: Scope; recipientId: string; amount: number; reason: string; idempotencyKey: string }) {
   if (!Number.isSafeInteger(input.amount) || input.amount <= 0) throw new Error("Enter a whole coin amount greater than zero.");
   if (input.reason.trim().length < 5) throw new Error("A clear transfer reason is required.");
 
@@ -64,9 +64,9 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
     const debitLedgerId = randomUUID();
     const creditLedgerId = randomUUID();
     await connection.execute(
-      `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, actor_account_id, metadata)
-       VALUES (?, ?, 'COIN', 'ADMIN_TRANSFER_DEBIT', 'PLATFORM_ACCOUNT', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?, ?)`,
-      [debitLedgerId, `${transferCode}-D`, input.scope.account.id, recipient.id, input.amount, input.reason.trim(), input.scope.account.id, JSON.stringify({ transferCode, balanceBefore: senderBefore, balanceAfter: senderAfter })],
+      `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, actor_account_id, metadata)
+       VALUES (?, ?, ?, 'COIN', 'ADMIN_TRANSFER_DEBIT', 'PLATFORM_ACCOUNT', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?, ?)`,
+      [debitLedgerId, `${transferCode}-D`, input.idempotencyKey, input.scope.account.id, recipient.id, input.amount, input.reason.trim(), input.scope.account.id, JSON.stringify({ transferCode, balanceBefore: senderBefore, balanceAfter: senderAfter })],
     );
     await connection.execute(
       `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, actor_account_id, metadata)
@@ -84,6 +84,45 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
       previous: { senderBalance: senderBefore, recipientBalance: recipientBefore }, next: { senderBalance: senderAfter, recipientBalance: recipientAfter, transferCode }, reason: input.reason.trim(),
     });
     return { transferCode, recipientName: recipient.full_name, senderBefore, senderAfter, recipientBefore, recipientAfter };
+  });
+}
+
+export async function adjustPlatformCoinInventory(input: { scope: Scope; accountId: string; direction: "ADD" | "REMOVE"; amount: number; reason: string; idempotencyKey: string }) {
+  if (input.scope.account.role !== "MASTER") throw new Error("Only the Master can allocate platform coin inventory.");
+  if (!Number.isSafeInteger(input.amount) || input.amount <= 0) throw new Error("Enter a whole coin amount greater than zero.");
+  if (input.reason.trim().length < 5) throw new Error("A clear allocation reason is required.");
+  return withTransaction(async (connection) => {
+    const [accounts] = await connection.query<(RowDataPacket & { id: string; role: string; full_name: string })[]>(
+      "SELECT id, role, full_name FROM platform_accounts WHERE id = ? AND role IN ('MASTER','ADMIN','COIN_SELLER') AND status = 'ACTIVE' LIMIT 1 FOR UPDATE",
+      [input.accountId],
+    );
+    const account = accounts[0];
+    if (!account) throw new Error("Choose an active Master, Admin, or Coin Seller account.");
+    await connection.execute(
+      "INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'PLATFORM_ACCOUNT', ?, 'COIN', 0)",
+      [randomUUID(), account.id],
+    );
+    const [wallets] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'PLATFORM_ACCOUNT' AND owner_id = ? AND asset_type = 'COIN' FOR UPDATE",
+      [account.id],
+    );
+    const wallet = wallets[0];
+    if (!wallet) throw new Error("The account wallet could not be loaded.");
+    const before = Number(wallet.available_balance);
+    const after = input.direction === "ADD" ? before + input.amount : before - input.amount;
+    if (after < 0) throw new Error("The account does not have enough inventory to remove that amount.");
+    await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [after, wallet.id]);
+    const transactionCode = code("INV");
+    await connection.execute(
+      `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, actor_account_id, metadata)
+       VALUES (?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?)`,
+      [randomUUID(), transactionCode, input.idempotencyKey, input.direction === "ADD" ? "MASTER_INVENTORY_ALLOCATION" : "MASTER_INVENTORY_REMOVAL", input.direction === "ADD" ? "PLATFORM_CONTROL" : "PLATFORM_ACCOUNT", input.direction === "ADD" ? null : account.id, input.direction === "ADD" ? "PLATFORM_ACCOUNT" : "PLATFORM_CONTROL", input.direction === "ADD" ? account.id : null, input.amount, input.reason.trim(), input.scope.account.id, JSON.stringify({ balanceBefore: before, balanceAfter: after, targetRole: account.role })],
+    );
+    await audit(connection, {
+      actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "coin.inventory_adjust", module: "wallet", targetType: "platform_account", targetId: account.id,
+      previous: { coinInventory: before }, next: { coinInventory: after, direction: input.direction, transactionCode }, reason: input.reason.trim(),
+    });
+    return { transactionCode, accountName: account.full_name, before, after };
   });
 }
 
@@ -184,4 +223,27 @@ export async function listRiskFlags(scope: Scope) {
      WHERE ${filter.clause} ORDER BY FIELD(r.severity, 'HIGH', 'MEDIUM', 'LOW'), r.created_at DESC LIMIT 100`, filter.values,
   );
   return rows.map((row) => ({ id: row.id, severity: row.severity, status: row.status, ruleKey: row.rule_key, summary: row.summary, createdAt: row.created_at, name: row.full_name, externalUserId: row.external_user_id }));
+}
+
+export async function updateRiskFlag(input: { scope: Scope; flagId: string; status: "REVIEWING" | "RESOLVED"; reason: string }) {
+  const filter = scopeWhere(input.scope, "u.agency_account_id");
+  await withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(
+      `SELECT r.id, r.status FROM risk_flags r LEFT JOIN application_users u ON u.id = r.application_user_id WHERE r.id = ? AND ${filter.clause} FOR UPDATE`, [input.flagId, ...filter.values],
+    );
+    if (!rows[0]) throw new Error("Risk flag was not found in your scope.");
+    await connection.execute("UPDATE risk_flags SET status = ?, resolved_by = IF(? = 'RESOLVED', ?, resolved_by), resolved_at = IF(? = 'RESOLVED', CURRENT_TIMESTAMP(3), resolved_at) WHERE id = ?", [input.status, input.status, input.scope.account.id, input.status, input.flagId]);
+    await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "risk.status_change", module: "risk", targetType: "risk_flag", targetId: input.flagId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
+  });
+}
+
+export async function updateRoomStatus(input: { scope: Scope; roomId: string; status: "ACTIVE" | "LOCKED" | "ENDED"; reason: string }) {
+  const filter = scopeWhere(input.scope, "agency_account_id");
+  await withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(`SELECT id, status FROM live_rooms WHERE id = ? AND ${filter.clause} FOR UPDATE`, [input.roomId, ...filter.values]);
+    if (!rows[0] || !["ACTIVE", "LOCKED"].includes(rows[0].status)) throw new Error("Only an active or locked room in your scope can be changed.");
+    if (rows[0].status === input.status || (rows[0].status === "LOCKED" && input.status === "LOCKED")) throw new Error("Choose a valid new room status.");
+    await connection.execute("UPDATE live_rooms SET status = ?, ended_at = IF(? = 'ENDED', CURRENT_TIMESTAMP(3), ended_at) WHERE id = ?", [input.status, input.status, input.roomId]);
+    await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "room.status_change", module: "rooms", targetType: "live_room", targetId: input.roomId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
+  });
 }

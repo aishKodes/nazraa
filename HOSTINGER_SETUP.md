@@ -3,7 +3,7 @@
 You do **not** upload any application files to `public_html`. Vercel hosts the control panel; Hostinger provides MySQL only.
 
 1. In Hostinger hPanel, open **Websites → Dashboard → Databases → Management**. Create one database and its user. Save the full generated database name, username, and password.
-2. Next to that database, choose **Enter phpMyAdmin → Import**. Upload `hostinger-setup.sql` from this repository and click **Import/Go**. Do not edit the SQL file.
+2. Next to that database, choose **Enter phpMyAdmin → Import**. For a new database import `hostinger-setup.sql`, then import `hostinger-update.sql`. If you already imported the original setup earlier, import only `hostinger-update.sql` now. Do not edit either SQL file.
 3. In hPanel, open **Remote MySQL**, select this database, enable **Any Host**, and create the remote connection. Copy the hostname shown there. This is needed because Vercel does not use one predictable outbound IP on the standard setup. Use a long unique database password.
 4. In Vercel, import this GitHub repository. Keep the detected Next.js settings and add the environment variables shown below for **Production, Preview, and Development**.
 
@@ -15,6 +15,8 @@ DB_USER=the full Hostinger database username
 DB_PASSWORD=the database password
 DB_SSL=false
 SESSION_SECRET=a random value at least 32 characters long
+DOCUMENT_ENCRYPTION_KEY=another random value at least 32 characters long
+MOBILE_API_KEY=another long random value for the future mobile backend connection
 INITIAL_MASTER_NAME=your name (optional)
 INITIAL_MASTER_CODE=MST-NAZRAA (optional; this is the default)
 INITIAL_MASTER_PASSWORD=a long unique first password

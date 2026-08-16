@@ -1,12 +1,17 @@
 import { LockKeyhole, ShieldCheck } from "lucide-react";
-import { Card, SectionHeading } from "@/components/ui";
+import { submitEconomySettings, submitMobileAppSettings } from "@/app/admin-actions";
+import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
+import { getSystemSettings } from "@/lib/db/repositories/catalog";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage() {
-  await requirePermission("settings.manage");
-  return <><SectionHeading title="Platform settings" description="Sensitive settings remain server-owned. Secrets and money rules never reach browser bundles." />
-    <div className="report-grid"><Card><ShieldCheck className="report-icon" size={24} /><h2>Country documents</h2><p>India, Bangladesh, and Nepal document definitions are seeded in the database. Full government IDs and private files are intentionally not displayed here.</p></Card><Card><LockKeyhole className="report-icon" size={24} /><h2>Security baseline</h2><p>Session cookies are HTTP-only. Database configuration is read exclusively on the server. Bootstrap creates the first Master with a hashed password.</p></Card></div>
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
+  await requirePermission("settings.manage"); const { error, success } = await searchParams; const settings = await getSystemSettings();
+  const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
+  const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
+  return <><SectionHeading title="Platform settings" description="Global commercial rules stay server-owned and every change is audited." />{success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
+    <div className="report-grid"><Card><ShieldCheck className="report-icon" size={24} /><h2>Diamond conversion</h2><p>Configure the current conversion rule. Historic transactions keep their original snapshot.</p><form action={submitEconomySettings} className="stack-form full-width"><label>Conversion rate<input name="rate" type="number" min="0.0001" step="0.0001" defaultValue={economy?.rate ?? 1} required /></label><label>Minimum diamonds<input name="minimum" type="number" min="1" defaultValue={economy?.minimum ?? 1000} required /></label><label>Currency<input name="currency" minLength={3} maxLength={3} defaultValue={economy?.currency ?? "INR"} required /></label><button className="primary-button" type="submit">Save rule</button></form></Card><Card><LockKeyhole className="report-icon" size={24} /><h2>Security baseline</h2><p>Role sessions are HTTP-only. Identity files use AES-GCM encryption and private permission-checked downloads. Database secrets never enter browser bundles.</p><span className="scope-lock">Server controlled</span></Card></div>
+    <Card className="settings-card"><div className="card-title"><div><h2>Mobile app configuration</h2><p>Version, maintenance, update, support, and withdrawal links returned by the public config endpoint.</p></div></div><form action={submitMobileAppSettings} className="form-grid"><label>Minimum version<input name="minimumVersion" required defaultValue={mobile?.minimumVersion ?? "1.0.0"} /></label><label>Latest version<input name="latestVersion" required defaultValue={mobile?.latestVersion ?? "1.0.0"} /></label><label>Maintenance<select name="maintenance" defaultValue={mobile?.maintenance ? "true" : "false"}><option value="false">Off</option><option value="true">On</option></select></label><label className="span-two">Maintenance message<input name="maintenanceMessage" maxLength={500} defaultValue={mobile?.maintenanceMessage ?? ""} /></label><label>Update URL<input name="updateUrl" type="url" defaultValue={mobile?.updateUrl ?? ""} /></label><label>Support URL<input name="supportUrl" type="url" defaultValue={mobile?.supportUrl ?? ""} /></label><label>Withdrawal URL<input name="withdrawalUrl" type="url" defaultValue={mobile?.withdrawalUrl ?? ""} /></label><label>Confirm<button className="primary-button" type="submit">Save app config</button></label></form></Card>
   </>;
 }

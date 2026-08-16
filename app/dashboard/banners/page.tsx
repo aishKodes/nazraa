@@ -1,0 +1,17 @@
+import { Images, Plus } from "lucide-react";
+import { submitBannerStatus, submitCreateBanner } from "@/app/admin-actions";
+import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
+import { can } from "@/lib/auth/permissions";
+import { requirePermission } from "@/lib/auth/guard";
+import { listBanners } from "@/lib/db/repositories/catalog";
+import { formatDate } from "@/lib/utils/format";
+
+export const dynamic = "force-dynamic";
+
+export default async function BannersPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
+  const scope = await requirePermission("banners.read"); const { error, success } = await searchParams; const banners = await listBanners(); const manage = can(scope.account.role, "banners.manage");
+  return <><SectionHeading title="Banners" description="Create and schedule app placements with explicit actions and safe HTTPS images." action={manage ? <a className="primary-button" href="#new-banner"><Plus size={16} />New banner</a> : undefined} />{success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
+    {manage ? <Card className="create-panel"><details id="new-banner"><summary><span><Images size={18} /><b>Create scheduled banner</b></span><small>Only active banners inside their schedule reach the app.</small></summary><form action={submitCreateBanner} className="admin-form"><div className="form-grid"><label>Placement<select name="placement" required defaultValue="HOME"><option>HOME</option><option>ROOM</option><option>WALLET</option><option>PROFILE</option></select></label><label>Title<input name="title" required /></label><label>Subtitle<input name="subtitle" /></label><label>HTTPS image URL<input name="imageUrl" type="url" required /></label><label>Action type<select name="actionType" defaultValue="NONE"><option>NONE</option><option>IN_APP_ROUTE</option><option>EXTERNAL_URL</option><option>ROOM</option></select></label><label>Action target<input name="actionTarget" /></label><label>Starts<input name="startsAt" type="datetime-local" /></label><label>Ends<input name="endsAt" type="datetime-local" /></label><label>Priority<input name="priority" type="number" min="0" max="999" defaultValue="0" required /></label></div><div className="form-submit"><span /><button className="primary-button" type="submit">Create banner</button></div></form></details></Card> : null}
+    <Card>{banners.length ? <div className="table-scroll"><table><thead><tr><th>Banner</th><th>Placement</th><th>Action</th><th>Schedule</th><th>Priority</th><th>Status</th>{manage ? <th>Action</th> : null}</tr></thead><tbody>{banners.map((banner) => <tr key={banner.id}><td><b>{banner.title}</b><small className="block">{banner.subtitle ?? banner.imageUrl}</small></td><td>{banner.placement}</td><td>{banner.actionType}</td><td>{formatDate(banner.startsAt)} → {formatDate(banner.endsAt)}</td><td>{banner.priority}</td><td><StatusBadge value={banner.active ? "ACTIVE" : "DISABLED"} /></td>{manage ? <td><form action={submitBannerStatus}><input type="hidden" name="id" value={banner.id} /><input type="hidden" name="active" value={String(!banner.active)} /><button className="table-link button-link" type="submit">{banner.active ? "Disable" : "Enable"}</button></form></td> : null}</tr>)}</tbody></table></div> : <EmptyState title="No banners configured" detail="Create the first scheduled banner for the mobile app." />}</Card>
+  </>;
+}

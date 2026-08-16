@@ -6,16 +6,21 @@ A focused, server-backed operations panel for Nazraa Live. It is intentionally o
 
 - Role-code login with an HTTP-only signed session cookie
 - RBAC plus hierarchy scope (Master → Super Admin → Admin → Agency)
-- Global/scoped dashboards, user search, hosts, agencies, and hierarchy
-- Atomic admin coin transfers with wallet locks, paired ledger entries, transfer record, and audit event
+- Mobile-friendly navigation plus real global user search
+- Master-created panel accounts, subordinate account management, password reset, and encrypted ID document review
+- Host application intake, encrypted document upload/download, approval/rejection, and agency assignment
+- Global/scoped dashboards, users, hosts, agencies, and hierarchy
+- Idempotent atomic coin transfers with wallet locks, paired ledger entries, transfer record, and audit event
 - Withdrawal review state transitions with status history
-- Live room view and a server-computed two-hour moderation restriction
+- Live/party room lock/end controls and a server-computed two-hour moderation restriction
 - Transaction explorer and hierarchy-scoped, formula-safe CSV export
-- Audit log, risk queue, private-server MySQL access, and first-Master bootstrap
+- Gift catalogue, banner scheduling, notification publishing, support queue, risk review, and diamond conversion settings
+- Versioned mobile integration endpoints for user sync, host applications, support, and public configuration
+- Audit log, private-server MySQL access, and first-Master bootstrap
 
 ## Configure
 
-For the simplest Hostinger + Vercel setup, follow [HOSTINGER_SETUP.md](HOSTINGER_SETUP.md) and import `hostinger-setup.sql` in phpMyAdmin. No application files belong in Hostinger `public_html`.
+For the simplest Hostinger + Vercel setup, follow [HOSTINGER_SETUP.md](HOSTINGER_SETUP.md). Existing installations import `hostinger-update.sql` once; new installations import `hostinger-setup.sql` followed by `hostinger-update.sql`. No application files belong in Hostinger `public_html`.
 
 For local development, copy `.env.example` to `.env`, run `npm run migrate`, then create a Master with `MASTER_PASSWORD='a-long-unique-password' npm run bootstrap:master`.
 
@@ -29,6 +34,6 @@ npm run lint
 npm run build
 ```
 
-## Deliberate first-version boundaries
+## Mobile integration boundary
 
-The core operations workflows are implemented. Gift catalogues, banners, seller settlement, notifications, and a mobile support-ticket ingestion endpoint are intentionally not represented as fake editable dashboards yet; they need their corresponding trusted mobile/backend event sources before they can be safely enabled.
+The website and mobile-facing endpoints are ready. The Flutter app is intentionally not changed in this repository; connect its trusted backend using [docs/mobile_api_contract.md](docs/mobile_api_contract.md). Never embed `MOBILE_API_KEY` in a distributable mobile binary.

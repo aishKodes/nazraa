@@ -2,6 +2,9 @@ import type { Role } from "@/types/platform";
 
 export type Permission =
   | "dashboard.read"
+  | "accounts.read"
+  | "accounts.create"
+  | "accounts.manage"
   | "users.read"
   | "hosts.read"
   | "hosts.review"
@@ -9,28 +12,42 @@ export type Permission =
   | "agencies.create"
   | "hierarchy.read"
   | "wallet.read"
+  | "coins.allocate"
   | "coins.transfer"
   | "withdrawals.read"
   | "withdrawals.review"
   | "transactions.read"
   | "rooms.read"
   | "rooms.restrict"
+  | "rooms.manage"
+  | "documents.read"
+  | "documents.upload"
+  | "documents.manage"
+  | "gifts.read"
+  | "gifts.manage"
+  | "banners.read"
+  | "banners.manage"
+  | "notifications.read"
+  | "notifications.manage"
+  | "support.read"
+  | "support.manage"
   | "reports.export"
   | "audit.read"
   | "risk.read"
+  | "risk.manage"
   | "settings.manage";
 
 const grants: Record<Role, Permission[]> = {
   MASTER: [
-    "dashboard.read", "users.read", "hosts.read", "hosts.review", "agencies.read", "agencies.create",
-    "hierarchy.read", "wallet.read", "coins.transfer", "withdrawals.read", "withdrawals.review",
-    "transactions.read", "rooms.read", "rooms.restrict", "reports.export", "audit.read", "risk.read", "settings.manage",
+    "dashboard.read", "accounts.read", "accounts.create", "accounts.manage", "users.read", "hosts.read", "hosts.review", "agencies.read", "agencies.create",
+    "hierarchy.read", "wallet.read", "coins.allocate", "coins.transfer", "withdrawals.read", "withdrawals.review",
+    "transactions.read", "rooms.read", "rooms.restrict", "rooms.manage", "documents.read", "documents.upload", "documents.manage", "gifts.read", "gifts.manage", "banners.read", "banners.manage", "notifications.read", "notifications.manage", "support.read", "support.manage", "reports.export", "audit.read", "risk.read", "risk.manage", "settings.manage",
   ],
-  SUPER_ADMIN: ["dashboard.read", "users.read", "hosts.read", "hosts.review", "agencies.read", "hierarchy.read", "wallet.read", "withdrawals.read", "transactions.read", "rooms.read", "reports.export", "audit.read"],
-  ADMIN: ["dashboard.read", "users.read", "hosts.read", "agencies.read", "agencies.create", "hierarchy.read", "wallet.read", "coins.transfer", "withdrawals.read", "transactions.read", "rooms.read", "reports.export"],
-  AGENCY: ["dashboard.read", "users.read", "hosts.read", "agencies.read", "hierarchy.read", "withdrawals.read", "reports.export"],
-  COIN_SELLER: ["dashboard.read", "wallet.read", "transactions.read", "withdrawals.read"],
-  MONITORING_CS: ["dashboard.read", "users.read", "hosts.read", "rooms.read", "rooms.restrict", "risk.read"],
+  SUPER_ADMIN: ["dashboard.read", "accounts.read", "accounts.create", "accounts.manage", "users.read", "hosts.read", "hosts.review", "agencies.read", "hierarchy.read", "wallet.read", "withdrawals.read", "transactions.read", "rooms.read", "documents.read", "documents.manage", "gifts.read", "banners.read", "notifications.read", "support.read", "support.manage", "reports.export", "audit.read"],
+  ADMIN: ["dashboard.read", "accounts.read", "accounts.create", "accounts.manage", "users.read", "hosts.read", "hosts.review", "agencies.read", "agencies.create", "hierarchy.read", "wallet.read", "coins.transfer", "withdrawals.read", "transactions.read", "rooms.read", "documents.read", "documents.upload", "documents.manage", "gifts.read", "banners.read", "notifications.read", "support.read", "support.manage", "reports.export"],
+  AGENCY: ["dashboard.read", "accounts.read", "users.read", "hosts.read", "agencies.read", "hierarchy.read", "withdrawals.read", "gifts.read", "banners.read", "notifications.read", "support.read", "reports.export"],
+  COIN_SELLER: ["dashboard.read", "accounts.read", "wallet.read", "transactions.read", "withdrawals.read", "notifications.read", "support.read"],
+  MONITORING_CS: ["dashboard.read", "accounts.read", "users.read", "hosts.read", "rooms.read", "rooms.restrict", "rooms.manage", "documents.read", "gifts.read", "banners.read", "notifications.read", "support.read", "support.manage", "risk.read", "risk.manage"],
 };
 
 export function can(role: Role, permission: Permission) {

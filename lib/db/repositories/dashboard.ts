@@ -53,10 +53,13 @@ export async function getRecentLedger(scope: Scope, limit = 12): Promise<LedgerE
   const filter = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "l.actor_account_id");
   const [rows] = await db().query<LedgerRow[]>(
     `SELECT l.id, l.transaction_code, l.asset_type, l.transaction_type, l.amount, l.status, l.created_at,
-            src.full_name source_name, dest.full_name destination_name
+            COALESCE(src_account.full_name, src_user.full_name) source_name,
+            COALESCE(dest_account.full_name, dest_user.full_name) destination_name
      FROM ledger_transactions l
-     LEFT JOIN platform_accounts src ON src.id = l.source_id
-     LEFT JOIN application_users dest ON dest.id = l.destination_id
+     LEFT JOIN platform_accounts src_account ON l.source_type = 'PLATFORM_ACCOUNT' AND src_account.id = l.source_id
+     LEFT JOIN application_users src_user ON l.source_type = 'APPLICATION_USER' AND src_user.id = l.source_id
+     LEFT JOIN platform_accounts dest_account ON l.destination_type = 'PLATFORM_ACCOUNT' AND dest_account.id = l.destination_id
+     LEFT JOIN application_users dest_user ON l.destination_type = 'APPLICATION_USER' AND dest_user.id = l.destination_id
      WHERE ${filter.clause} ORDER BY l.created_at DESC LIMIT ?`,
     [...filter.values, limit],
   );

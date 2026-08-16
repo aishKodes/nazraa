@@ -9,7 +9,7 @@ import { can } from "@/lib/auth/permissions";
 import { clearSession, createSession } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/auth/guard";
 import { accountByRoleCode, createInitialMaster } from "@/lib/db/repositories/accounts";
-import { createTemporaryLiveRestriction, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
+import { adjustPlatformCoinInventory, createTemporaryLiveRestriction, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
 import { db } from "@/lib/db/pool";
 
 const loginInput = z.object({ roleCode: z.string().trim().min(3).max(32), password: z.string().min(1).max(200) });
@@ -51,18 +51,38 @@ export async function signOut() {
 export async function submitCoinTransfer(formData: FormData) {
   const scope = await requirePermission("coins.transfer");
   const recipientId = z.string().uuid().safeParse(formData.get("recipientId"));
+  const idempotencyKey = z.string().uuid().safeParse(formData.get("idempotencyKey"));
   const amount = z.coerce.number().int().positive().safeParse(formData.get("amount"));
   const reason = z.string().trim().min(5).max(500).safeParse(formData.get("reason"));
-  if (!recipientId.success || !amount.success || !reason.success) redirect("/dashboard/wallet?error=Check+the+recipient%2C+amount%2C+and+reason.");
+  if (!recipientId.success || !idempotencyKey.success || !amount.success || !reason.success) redirect("/dashboard/wallet?error=Check+the+recipient%2C+amount%2C+and+reason.");
   let result: Awaited<ReturnType<typeof transferCoins>>;
-  try { result = await transferCoins({ scope, recipientId: recipientId.data, amount: amount.data, reason: reason.data }); } catch (error) {
-    const message = error instanceof Error ? error.message : "Transfer could not be completed.";
+  try { result = await transferCoins({ scope, recipientId: recipientId.data, amount: amount.data, reason: reason.data, idempotencyKey: idempotencyKey.data }); } catch (error) {
+    const duplicate = typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY";
+    const message = duplicate ? "This transfer was already submitted. No second transfer was made." : error instanceof Error ? error.message : "Transfer could not be completed.";
     redirect(`/dashboard/wallet?error=${encodeURIComponent(message)}`);
   }
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/wallet");
   revalidatePath("/dashboard/transactions");
   redirect(`/dashboard/wallet?success=${encodeURIComponent(`${result.transferCode}: ${amount.data.toLocaleString()} coins sent to ${result.recipientName}`)}`);
+}
+
+export async function submitCoinInventoryAdjustment(formData: FormData) {
+  const scope = await requirePermission("coins.allocate");
+  const parsed = z.object({
+    accountId: z.string().uuid(), direction: z.enum(["ADD", "REMOVE"]), amount: z.coerce.number().int().positive(),
+    reason: z.string().trim().min(5).max(500), idempotencyKey: z.string().uuid(),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect("/dashboard/wallet?error=Choose+an+account%2C+amount%2C+direction%2C+and+reason.");
+  let result: Awaited<ReturnType<typeof adjustPlatformCoinInventory>>;
+  try {
+    result = await adjustPlatformCoinInventory({ scope, ...parsed.data });
+  } catch (error) {
+    const duplicate = typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY";
+    redirect(`/dashboard/wallet?error=${encodeURIComponent(duplicate ? "This allocation was already submitted. No second change was made." : error instanceof Error ? error.message : "Inventory could not be updated.")}`);
+  }
+  revalidatePath("/dashboard"); revalidatePath("/dashboard/wallet"); revalidatePath("/dashboard/transactions");
+  redirect(`/dashboard/wallet?success=${encodeURIComponent(`${result.transactionCode}: inventory for ${result.accountName} is now ${result.after.toLocaleString()} coins`)}`);
 }
 
 export async function submitWithdrawalTransition(formData: FormData) {

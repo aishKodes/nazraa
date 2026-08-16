@@ -40,15 +40,16 @@ export async function listHosts(scope: Scope) {
   const filter = scopeWhere(scope, "h.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; full_name: string; external_user_id: string; status: string; verification_status: string;
-    agency_name: string | null; live_minutes_30d: number; sessions_30d: number; gifts_value_30d: number;
+    agency_name: string | null; live_minutes_30d: number; sessions_30d: number; gifts_value_30d: number; document_count: number;
   })[]>(
     `SELECT h.id, u.full_name, u.external_user_id, h.status, h.verification_status, a.full_name agency_name,
-            h.live_minutes_30d, h.sessions_30d, h.gifts_value_30d
+            h.live_minutes_30d, h.sessions_30d, h.gifts_value_30d, COUNT(d.id) document_count
      FROM host_profiles h INNER JOIN application_users u ON u.id = h.application_user_id
      LEFT JOIN platform_accounts a ON a.id = h.agency_account_id
-     WHERE ${filter.clause} ORDER BY h.updated_at DESC LIMIT 100`, filter.values,
+     LEFT JOIN private_documents d ON d.owner_type = 'HOST_APPLICATION' AND d.owner_id = h.id
+     WHERE ${filter.clause} GROUP BY h.id ORDER BY h.updated_at DESC LIMIT 100`, filter.values,
   );
-  return rows.map((row) => ({ id: row.id, fullName: row.full_name, externalUserId: row.external_user_id, status: row.status, verificationStatus: row.verification_status, agencyName: row.agency_name, liveMinutes: Number(row.live_minutes_30d), sessions: Number(row.sessions_30d), gifts: Number(row.gifts_value_30d) }));
+  return rows.map((row) => ({ id: row.id, fullName: row.full_name, externalUserId: row.external_user_id, status: row.status, verificationStatus: row.verification_status, agencyName: row.agency_name, liveMinutes: Number(row.live_minutes_30d), sessions: Number(row.sessions_30d), gifts: Number(row.gifts_value_30d), documentCount: Number(row.document_count) }));
 }
 
 export async function listAgencies(scope: Scope) {
