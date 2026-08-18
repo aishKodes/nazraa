@@ -1,4 +1,5 @@
 import { LockKeyhole, ShieldCheck } from "lucide-react";
+import Image from "next/image";
 import { signIn } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +8,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const { error } = await searchParams;
   return <main className="login-page">
     <section className="login-card">
-      <div className="login-brand"><span className="brand-mark">N</span><span>Nazraa <em>Control</em></span></div>
+      <div className="login-brand"><Image className="brand-logo" src="/nazraa-logo.jpg" width={34} height={34} alt="" priority /><span>Nazraa <em>Control</em></span></div>
       <div className="login-intro"><span className="eyebrow"><ShieldCheck size={15} />Secure operations access</span><h1>Welcome back</h1><p>Enter the role code assigned to you. Your workspace opens with only the records and actions you are allowed to use.</p></div>
       {error ? <p className="login-error" role="alert">{error}</p> : null}
       <form action={signIn} className="login-form">

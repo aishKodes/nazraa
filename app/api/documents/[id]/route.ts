@@ -2,7 +2,7 @@ import type { RowDataPacket } from "mysql2";
 import { NextResponse } from "next/server";
 import { can } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
-import { scopeFor } from "@/lib/db/repositories/accounts";
+import { scopeFor, scopeWhere } from "@/lib/db/repositories/accounts";
 import { getHostDetail } from "@/lib/db/repositories/hosts";
 import { db } from "@/lib/db/pool";
 import { decryptPrivateDocument } from "@/lib/security/documents";
@@ -18,9 +18,18 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   );
   const document = rows[0];
   if (!document) return new NextResponse("Not found", { status: 404 });
-  const permitted = document.owner_type === "HOST_APPLICATION"
-    ? Boolean(await getHostDetail(scope, document.owner_id))
-    : scope.isGlobal || document.owner_id === account.id || scope.accountIds.includes(document.owner_id);
+  let permitted = false;
+  if (document.owner_type === "HOST_APPLICATION") permitted = Boolean(await getHostDetail(scope, document.owner_id));
+  else if (document.owner_type === "FACE_VERIFICATION" && can(account.role, "face_verification.read")) {
+    const filter = scopeWhere(scope, "user.agency_account_id");
+    const [requests] = await db().query<RowDataPacket[]>(
+      `SELECT request.id FROM face_verification_requests request
+       INNER JOIN application_users user ON user.id = request.application_user_id
+       WHERE request.id = ? AND ${filter.clause} LIMIT 1`,
+      [document.owner_id, ...filter.values],
+    );
+    permitted = Boolean(requests[0]);
+  } else permitted = scope.isGlobal || document.owner_id === account.id || scope.accountIds.includes(document.owner_id);
   if (!permitted) return new NextResponse("Forbidden", { status: 403 });
   const plain = decryptPrivateDocument({ encryptedData: document.encrypted_data, iv: document.encryption_iv, tag: document.encryption_tag });
   return new NextResponse(new Uint8Array(plain), { headers: { "Content-Type": document.mime_type, "Content-Disposition": `attachment; filename="${document.original_name.replaceAll('"', "")}"`, "Cache-Control": "private, no-store" } });

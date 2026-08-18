@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import type { Route } from "next";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { Activity, BadgeIndianRupee, Bell, Building2, CircleHelp, ClipboardList, Coins, FileBarChart, Gauge, Gift, Images, Landmark, LayoutDashboard, LogOut, Menu, Network, Radio, ReceiptText, Search, Settings, ShieldAlert, UserCog, Users, WalletCards, X } from "lucide-react";
+import { Activity, BadgeIndianRupee, Bell, Building2, CircleHelp, ClipboardList, Coins, FileBarChart, Gauge, Gift, Images, Landmark, LayoutDashboard, LogOut, Menu, Network, Radio, ReceiptText, ScanFace, Search, Settings, ShieldAlert, ShoppingBag, UserCog, Users, WalletCards, X } from "lucide-react";
 import { signOut } from "@/app/actions";
 import { can, type Permission } from "@/lib/auth/permissions";
 import { initials } from "@/lib/utils/format";
@@ -21,9 +22,11 @@ const navigation: NavItem[] = [
   { href: "/dashboard/agencies", label: "Agencies", icon: Building2, permission: "agencies.read" },
   { href: "/dashboard/hierarchy", label: "Hierarchy", icon: Network, permission: "hierarchy.read" },
   { href: "/dashboard/wallet", label: "Wallet & economy", icon: WalletCards, permission: "wallet.read" },
+  { href: "/dashboard/commerce", label: "Coin commerce", icon: ShoppingBag, permission: "coin_orders.read" },
   { href: "/dashboard/transactions", label: "Transactions", icon: ReceiptText, permission: "transactions.read" },
   { href: "/dashboard/withdrawals", label: "Withdrawals", icon: Landmark, permission: "withdrawals.read" },
   { href: "/dashboard/rooms", label: "Live rooms", icon: Radio, permission: "rooms.read" },
+  { href: "/dashboard/face-verification", label: "Face verification", icon: ScanFace, permission: "face_verification.read" },
   { href: "/dashboard/gifts", label: "Gifts", icon: Gift, permission: "gifts.read" },
   { href: "/dashboard/banners", label: "Banners", icon: Images, permission: "banners.read" },
   { href: "/dashboard/notifications", label: "Notifications", icon: Bell, permission: "notifications.read" },
@@ -56,7 +59,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
   return <div className="app-shell">
     <button className={`sidebar-scrim ${menuOpen ? "visible" : ""}`} type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />
     <aside className={`sidebar ${menuOpen ? "open" : ""}`} aria-label="Main menu">
-      <div className="sidebar-brand-row"><Link href="/dashboard" className="brand" aria-label="Nazraa Control home"><span className="brand-mark">N</span><span>Nazraa <em>Control</em></span></Link><button className="sidebar-close" type="button" onClick={() => setMenuOpen(false)} aria-label="Close navigation"><X size={20} /></button></div>
+      <div className="sidebar-brand-row"><Link href="/dashboard" className="brand" aria-label="Nazraa Control home"><Image className="brand-logo" src="/nazraa-logo.jpg" width={34} height={34} alt="" priority /><span>Nazraa <em>Control</em></span></Link><button className="sidebar-close" type="button" onClick={() => setMenuOpen(false)} aria-label="Close navigation"><X size={20} /></button></div>
       <nav aria-label="Primary navigation">
         <p className="nav-caption">Workspace</p>
         {visibleItems.map((item) => { const Icon = item.icon; const active = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href); return <Link href={item.href} key={item.href} className={`nav-link ${active ? "active" : ""}`} onClick={() => setMenuOpen(false)}><Icon size={18} /><span>{item.label}</span></Link>; })}

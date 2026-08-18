@@ -48,3 +48,14 @@ export function decryptPrivateDocument(input: { encryptedData: Buffer; iv: Buffe
   decipher.setAuthTag(input.tag);
   return Buffer.concat([decipher.update(input.encryptedData), decipher.final()]);
 }
+
+export function encryptPrivateText(value: string) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encryptedData = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  return { encryptedData, iv, tag: cipher.getAuthTag() };
+}
+
+export function decryptPrivateText(input: { encryptedData: Buffer; iv: Buffer; tag: Buffer }) {
+  return decryptPrivateDocument(input).toString("utf8");
+}

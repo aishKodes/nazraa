@@ -9,6 +9,7 @@ import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updat
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, setBannerActive, setGiftActive, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
+import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { roles } from "@/types/platform";
 
@@ -200,4 +201,65 @@ export async function submitDocumentReview(formData: FormData) {
   const path = parsed.data.ownerType === "ACCOUNT" ? `/dashboard/accounts/${parsed.data.ownerId}` : `/dashboard/hosts/${parsed.data.ownerId}`;
   try { await updateDocumentVerification({ scope, documentId: parsed.data.documentId, status: parsed.data.status, reason: parsed.data.reason }); } catch (error) { redirect(destination(path, "error", error instanceof Error ? error.message : "Document review failed.")); }
   revalidatePath(path); redirect(destination(path, "success", "Document verification updated."));
+}
+
+export async function submitCreateCoinPackage(formData: FormData) {
+  const scope = await requirePermission("coin_packages.manage");
+  const parsed = z.object({ name: z.string().trim().min(2).max(100), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Check the package name, coins, price, currency, and order."));
+  try { await createCoinPackage({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be created.")); }
+  revalidatePath("/dashboard/commerce"); redirect(destination("/dashboard/commerce", "success", "Coin package created."));
+}
+
+export async function submitCoinPackageStatus(formData: FormData) {
+  const scope = await requirePermission("coin_packages.manage");
+  const packageId = z.string().uuid().safeParse(formData.get("packageId"));
+  if (!packageId.success) redirect(destination("/dashboard/commerce", "error", "Package was not valid."));
+  try { await setCoinPackageActive({ scope, packageId: packageId.data, active: formData.get("active") === "true" }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be updated.")); }
+  revalidatePath("/dashboard/commerce"); redirect(destination("/dashboard/commerce", "success", "Coin package status updated."));
+}
+
+export async function submitSellerProfile(formData: FormData) {
+  const scope = await requirePermission("sellers.manage");
+  const parsed = z.object({ sellerId: z.string().uuid(), verification: z.enum(["UNVERIFIED", "PENDING", "VERIFIED", "REJECTED"]), whatsapp: z.string().trim().max(20).optional(), availability: z.enum(["AVAILABLE", "OFFLINE"]), region: z.string().trim().max(80).optional(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const packageIds = formData.getAll("packageIds").map(String);
+  if (!parsed.success || packageIds.some((id) => !z.string().uuid().safeParse(id).success)) redirect(destination("/dashboard/commerce", "error", "Check the seller contact, status, packages, and reason."));
+  try { await updateSellerProfile({ scope, ...parsed.data, whatsappPublic: formData.get("whatsappPublic") === "true", packageIds }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Seller could not be updated.")); }
+  revalidatePath("/dashboard/commerce"); redirect(destination("/dashboard/commerce", "success", "Approved seller configuration saved."));
+}
+
+export async function submitCoinOrderTransition(formData: FormData) {
+  const scope = await requirePermission("coin_orders.manage");
+  const parsed = z.object({ orderId: z.string().uuid(), nextStatus: z.enum(["PAYMENT_PENDING", "SELLER_REVIEWING", "COMPLETED", "REJECTED", "CANCELLED"]), note: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Choose a valid order status and add a clear review note."));
+  let publicId = "";
+  try { publicId = await transitionCoinOrder({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Order could not be updated.")); }
+  revalidatePath("/dashboard/commerce"); revalidatePath("/dashboard/wallet"); revalidatePath("/dashboard/transactions");
+  redirect(destination("/dashboard/commerce", "success", `Order ${publicId} updated. Any coin movement was committed atomically.`));
+}
+
+export async function submitFaceVerificationReview(formData: FormData) {
+  const scope = await requirePermission("face_verification.manage");
+  const parsed = z.object({ requestId: z.string().uuid(), decision: z.enum(["VERIFIED", "REJECTED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/face-verification", "error", "Choose a decision and provide a clear reason."));
+  try { await reviewFaceVerification({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/face-verification", "error", error instanceof Error ? error.message : "Face verification could not be reviewed.")); }
+  revalidatePath("/dashboard/face-verification"); revalidatePath("/dashboard/users");
+  redirect(destination("/dashboard/face-verification", "success", `Face verification ${parsed.data.decision.toLowerCase()}.`));
+}
+
+export async function submitCommerceSettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const optionalUrl = z.string().trim().url().optional().or(z.literal(""));
+  const parsed = z.object({ minimumWithdrawal: z.coerce.number().int().positive(), whatsappMessageTemplate: z.string().trim().min(20).max(1000), supportUrl: optionalUrl, withdrawalPortalUrl: optionalUrl }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the withdrawal minimum, WhatsApp template, and optional HTTPS URLs."));
+  await saveCommerceSettings({ scope, ...parsed.data }); revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Mobile commerce settings saved."));
+}
+
+export async function submitPayoutMethodReview(formData: FormData) {
+  const scope = await requirePermission("withdrawals.review");
+  const parsed = z.object({ methodId: z.string().uuid(), decision: z.enum(["VERIFIED", "REJECTED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/withdrawals", "error", "Choose a payout-method decision and provide a clear reason."));
+  try { await reviewPayoutMethod({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/withdrawals", "error", error instanceof Error ? error.message : "Payout method could not be reviewed.")); }
+  revalidatePath("/dashboard/withdrawals"); redirect(destination("/dashboard/withdrawals", "success", `Payout method ${parsed.data.decision.toLowerCase()}.`));
 }

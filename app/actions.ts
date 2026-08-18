@@ -90,8 +90,9 @@ export async function submitWithdrawalTransition(formData: FormData) {
   const withdrawalId = z.string().uuid().safeParse(formData.get("withdrawalId"));
   const nextStatus = z.enum(["UNDER_REVIEW", "APPROVED", "PROCESSING", "COMPLETED", "REJECTED", "CANCELLED"]).safeParse(formData.get("nextStatus"));
   const reason = z.string().trim().min(2).max(500).safeParse(formData.get("reason"));
-  if (!withdrawalId.success || !nextStatus.success || !reason.success) redirect("/dashboard/withdrawals?error=Add+a+valid+status+and+reason.");
-  try { await transitionWithdrawal({ scope, withdrawalId: withdrawalId.data, nextStatus: nextStatus.data, reason: reason.data }); } catch (error) {
+  const providerReference = z.string().trim().max(120).optional().safeParse(formData.get("providerReference")?.toString() || undefined);
+  if (!withdrawalId.success || !nextStatus.success || !reason.success || !providerReference.success) redirect("/dashboard/withdrawals?error=Add+a+valid+status+and+reason.");
+  try { await transitionWithdrawal({ scope, withdrawalId: withdrawalId.data, nextStatus: nextStatus.data, reason: reason.data, providerReference: providerReference.data }); } catch (error) {
     redirect(`/dashboard/withdrawals?error=${encodeURIComponent(error instanceof Error ? error.message : "Status update failed.")}`);
   }
   revalidatePath("/dashboard/withdrawals");

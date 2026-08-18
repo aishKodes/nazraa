@@ -79,6 +79,12 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [transferId, transferCode, input.scope.account.id, recipient.id, input.amount, senderBefore, senderAfter, recipientBefore, recipientAfter, debitLedgerId],
     );
+    await connection.execute(
+      `INSERT INTO mobile_notifications
+        (id, application_user_id, notification_type, title, message, action_target)
+       VALUES (?, ?, 'COIN_CREDIT', 'Coins credited', ?, 'wallet')`,
+      [randomUUID(), recipient.id, `${input.amount.toLocaleString("en-US")} coins were added to your Nazraa wallet. Reference ${transferCode}.`],
+    );
     await audit(connection, {
       actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "coin.transfer", module: "wallet", targetType: "application_user", targetId: recipient.id,
       previous: { senderBalance: senderBefore, recipientBalance: recipientBefore }, next: { senderBalance: senderAfter, recipientBalance: recipientAfter, transferCode }, reason: input.reason.trim(),
@@ -93,7 +99,7 @@ export async function adjustPlatformCoinInventory(input: { scope: Scope; account
   if (input.reason.trim().length < 5) throw new Error("A clear allocation reason is required.");
   return withTransaction(async (connection) => {
     const [accounts] = await connection.query<(RowDataPacket & { id: string; role: string; full_name: string })[]>(
-      "SELECT id, role, full_name FROM platform_accounts WHERE id = ? AND role IN ('MASTER','ADMIN','COIN_SELLER') AND status = 'ACTIVE' LIMIT 1 FOR UPDATE",
+      "SELECT id, role, full_name FROM platform_accounts WHERE id = ? AND role IN ('MASTER','ADMIN','AGENCY','COIN_SELLER') AND status = 'ACTIVE' LIMIT 1 FOR UPDATE",
       [input.accountId],
     );
     const account = accounts[0];
@@ -133,12 +139,13 @@ const withdrawalTransitions: Record<string, string[]> = {
   PROCESSING: ["COMPLETED", "CANCELLED"],
 };
 
-export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: string; nextStatus: string; reason: string }) {
+export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: string; nextStatus: string; reason: string; providerReference?: string }) {
   if (!input.reason.trim()) throw new Error("A review reason is required.");
+  if (input.nextStatus === "COMPLETED" && (input.providerReference?.trim().length ?? 0) < 3) throw new Error("A payout provider reference is required before completion.");
   return withTransaction(async (connection) => {
     const filter = scopeWhere(input.scope, "agency_account_id");
-    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number })[]>(
-      `SELECT id, status, amount FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; withdrawal_code: string })[]>(
+      `SELECT id, status, amount, application_user_id, withdrawal_code FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
     );
     const request = rows[0];
@@ -146,17 +153,37 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
     if (!withdrawalTransitions[request.status]?.includes(input.nextStatus)) {
       throw new Error(`Cannot move a ${request.status.toLowerCase()} withdrawal to ${input.nextStatus.toLowerCase()}.`);
     }
+    const terminal = ["COMPLETED", "REJECTED", "CANCELLED"].includes(input.nextStatus);
+    let walletBefore: { available: number; reserved: number } | undefined;
+    let walletAfter: { available: number; reserved: number } | undefined;
+    if (terminal) {
+      await connection.execute("INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND')", [randomUUID(), request.application_user_id]);
+      const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number; reserved_balance: number })[]>("SELECT id, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [request.application_user_id]);
+      const wallet = walletRows[0]; const amount = Number(request.amount);
+      if (!wallet || Number(wallet.reserved_balance) < amount) throw new Error("Reserved host earnings do not cover this withdrawal. Reconcile the wallet before changing to a final status.");
+      walletBefore = { available: Number(wallet.available_balance), reserved: Number(wallet.reserved_balance) };
+      const release = input.nextStatus !== "COMPLETED";
+      walletAfter = { available: walletBefore.available + (release ? amount : 0), reserved: walletBefore.reserved - amount };
+      await connection.execute("UPDATE wallet_balances SET available_balance = ?, reserved_balance = ? WHERE id = ?", [walletAfter.available, walletAfter.reserved, wallet.id]);
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, actor_account_id, metadata)
+         VALUES (?, ?, ?, 'DIAMOND', ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?)`,
+        [randomUUID(), code(input.nextStatus === "COMPLETED" ? "PAY" : "REL"), `withdrawal:${request.id}:${input.nextStatus}`, input.nextStatus === "COMPLETED" ? "WITHDRAWAL_PAID" : "WITHDRAWAL_RELEASED", input.nextStatus === "COMPLETED" ? "APPLICATION_USER" : "WITHDRAWAL_RESERVE", request.application_user_id, input.nextStatus === "COMPLETED" ? "PAYOUT_PROVIDER" : "APPLICATION_USER", input.nextStatus === "COMPLETED" ? null : request.application_user_id, amount, input.reason.trim(), input.scope.account.id, JSON.stringify({ withdrawalCode: request.withdrawal_code, balanceBefore: walletBefore, balanceAfter: walletAfter })],
+      );
+    }
     await connection.execute(
-      `UPDATE withdrawal_requests SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ? WHERE id = ?`,
-      [input.nextStatus, input.scope.account.id, input.reason.trim(), request.id],
+      `UPDATE withdrawal_requests SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ?, provider_reference = COALESCE(?, provider_reference) WHERE id = ?`,
+      [input.nextStatus, input.scope.account.id, input.reason.trim(), input.providerReference?.trim() || null, request.id],
     );
     await connection.execute(
       `INSERT INTO withdrawal_status_history (id, withdrawal_id, from_status, to_status, actor_account_id, reason) VALUES (?, ?, ?, ?, ?, ?)`,
       [randomUUID(), request.id, request.status, input.nextStatus, input.scope.account.id, input.reason.trim()],
     );
+    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'WITHDRAWAL', 'Withdrawal updated', ?, 'wallet/withdrawals')", [randomUUID(), request.application_user_id, `${request.withdrawal_code} is now ${input.nextStatus.toLowerCase().replaceAll("_", " ")}.`]);
     await audit(connection, {
       actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "withdrawal.transition", module: "withdrawals", targetType: "withdrawal", targetId: request.id,
-      previous: { status: request.status }, next: { status: input.nextStatus }, reason: input.reason.trim(),
+      previous: { status: request.status, wallet: walletBefore }, next: { status: input.nextStatus, wallet: walletAfter }, reason: input.reason.trim(),
     });
     return { previousStatus: request.status, nextStatus: input.nextStatus };
   });
