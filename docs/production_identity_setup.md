@@ -37,16 +37,22 @@ The endpoint must return:
 
 ## Android release key
 
-Place the upload/production keystore outside source control and create ignored `android/key.properties`:
+The permanent local upload identity is stored outside source control at:
 
-```properties
-storeFile=/absolute/secure/path/nazraa-upload.jks
-storePassword=...
-keyAlias=...
-keyPassword=...
+```text
+~/.nazraa/android-release/nazraa-release-upload.jks
 ```
 
-The equivalent CI variables are `NAZRAA_KEYSTORE_FILE`, `NAZRAA_KEYSTORE_PASSWORD`, `NAZRAA_KEY_ALIAS`, and `NAZRAA_KEY_PASSWORD`. Release tasks stop with an error if these values are absent; they never fall back to the debug certificate.
+Its password is stored in the macOS login Keychain under account
+`nazraa-release` and service `Nazraa Android Release Signing`. The ignored
+`android/key.properties` symlink contains only the keystore path, alias, and
+Keychain lookup labels. Gradle loads the password automatically without putting
+it in source, build logs, or command arguments.
+
+The equivalent CI variables remain `NAZRAA_KEYSTORE_FILE`,
+`NAZRAA_KEYSTORE_PASSWORD`, `NAZRAA_KEY_ALIAS`, and `NAZRAA_KEY_PASSWORD`.
+Release tasks stop with an error if neither the local Keychain identity nor
+these CI values are available; they never fall back to the debug certificate.
 
 Build only after Google, biometric, API, database, ZEGOCLOUD Token04, and signing settings are deployed:
 
