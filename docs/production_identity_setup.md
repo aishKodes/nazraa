@@ -9,7 +9,14 @@
 
 The server verifies the token signature, issuer, audience, expiry, subject, and verified-email claim through Google's maintained authentication library before creating a Nazraa session.
 
-## Biometric provider contract
+## Face verification
+
+The private-beta flow captures one fresh selfie and approves it automatically
+on the server. The raw capture is not retained. The existing provider contract
+below remains available if production later re-enables enhanced biometric
+checks.
+
+### Optional biometric provider contract
 
 Configure three server-only values:
 

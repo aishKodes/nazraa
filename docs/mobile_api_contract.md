@@ -48,7 +48,7 @@ All except `config` require the Bearer session.
 - `POST /room-admins` — `{ "roomCode": "public-room-code", "targetPublicId": "numeric", "makeAdmin": true }`; owner-only and capped at three active admins.
 - `POST /live-end` — `{ "roomCode": "public-room-code" }`; finalizes server-measured eligible time and its coin reward exactly once.
 - `POST /gifts` — `{ "giftId": "catalog-key", "recipient": "numeric-user-id", "quantity": 1 }`
-- `POST /face` — `{ "framesBase64": ["base64-jpeg", "..."], "consentVersion": "nazraa-biometric-1.0" }`; two to four fresh guided frames, no government ID or ordinary manual review.
+- `POST /face` — `{ "framesBase64": ["base64-jpeg"], "consentVersion": "nazraa-biometric-1.0" }`; one fresh verification selfie, no government ID or ordinary manual review. The current private-beta policy approves the capture automatically; raw frames are not retained.
 - `POST /zego-token` — `{ "roomId": "public-room-code", "publish": false }`; room-scoped Token04 signed only on the server.
 
 The server rechecks the centralized access policy and authoritative room role for every protected mutation. Unverified users can browse, join, use the wallet, follow, buy, claim rewards, and use agency features, but cannot own Party/video/chat rooms. Face Live additionally requires verified identity plus agency and Super Admin authorization. Buyer devices cannot complete an order, credit a wallet, approve a payout, change a role/level, or review verification.
