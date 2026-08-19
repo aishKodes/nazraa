@@ -8,14 +8,15 @@ A focused, server-backed operations panel for Nazraa Live. It is intentionally o
 - RBAC plus hierarchy scope (Master → Super Admin → Admin → Agency)
 - Mobile-friendly navigation plus real global user search
 - Master-created panel accounts, subordinate account management, password reset, and encrypted ID document review
-- Host application intake, encrypted document upload/download, approval/rejection, and agency assignment
+- Google-authenticated mobile onboarding with editable profiles and automatic host enablement
+- Automatic face liveness/duplicate verification with separate Agency and Super Admin Face Live authorization
 - Global/scoped dashboards, users, hosts, agencies, and hierarchy
 - Idempotent atomic coin transfers with wallet locks, paired ledger entries, transfer record, and audit event
 - Withdrawal review state transitions with status history
 - Live/party room lock/end controls and a server-computed two-hour moderation restriction
 - Transaction explorer and hierarchy-scoped, formula-safe CSV export
-- Gift catalogue, banner scheduling, notification publishing, support queue, risk review, and diamond conversion settings
-- Versioned mobile integration endpoints for user sync, host applications, support, and public configuration
+- Gift catalogue, banner scheduling, daily rewards, host reward rates, atomic diamond conversion, notification publishing, support, and risk controls
+- Versioned authenticated mobile endpoints with centralized access policy, authoritative room roles, real leaderboards, and public configuration
 - Audit log, private-server MySQL access, and first-Master bootstrap
 
 ## Configure
@@ -36,4 +37,4 @@ npm run build
 
 ## Mobile integration boundary
 
-The website and mobile-facing endpoints are ready. The Flutter app is intentionally not changed in this repository; connect its trusted backend using [docs/mobile_api_contract.md](docs/mobile_api_contract.md). Never embed `MOBILE_API_KEY` in a distributable mobile binary.
+The production Flutter client uses the authenticated contract in [docs/mobile_api_contract.md](docs/mobile_api_contract.md). Google and biometric setup requirements are in [docs/production_identity_setup.md](docs/production_identity_setup.md). Never embed `MOBILE_API_KEY`, a biometric provider secret, or `ZEGO_SERVER_SECRET` in a distributable mobile binary.

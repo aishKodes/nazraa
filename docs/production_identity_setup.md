@@ -1,0 +1,55 @@
+# Production identity and release setup
+
+## Google Sign-In
+
+1. In Google Cloud, configure the OAuth consent screen and create an Android OAuth client for package `com.nazraa.live` with the SHA-1 of the production signing certificate.
+2. Create a Web OAuth client. Pass that client ID to Flutter as `--dart-define=GOOGLE_WEB_CLIENT_ID=...`.
+3. Set the same client ID in the server-only `GOOGLE_OAUTH_CLIENT_IDS` environment variable. Multiple accepted audiences may be comma-separated.
+4. Deploy the control platform, build with the production keystore, and test a new account plus a returning account on a physical Android device.
+
+The server verifies the token signature, issuer, audience, expiry, subject, and verified-email claim through Google's maintained authentication library before creating a Nazraa session.
+
+## Biometric provider contract
+
+Configure three server-only values:
+
+- `FACE_BIOMETRIC_PROVIDER_URL`: an HTTPS endpoint.
+- `FACE_BIOMETRIC_PROVIDER_SECRET`: a bearer secret of at least 24 characters.
+- `FACE_BIOMETRIC_PROVIDER_NAME`: the label written to verification history.
+
+Nazraa sends a JSON `POST` containing `subjectId`, `consentVersion`, two to four base64 JPEG `frames`, and `checks` with `liveness`, `duplicateSearch`, and `singleFace` set to `true`.
+
+The endpoint must return:
+
+```json
+{
+  "livenessPassed": true,
+  "livenessScore": 0.99,
+  "duplicateSubjectId": null,
+  "matchScore": null,
+  "providerFaceId": "provider-reference",
+  "embeddingReference": "provider-encrypted-reference",
+  "retainReferenceImage": false
+}
+```
+
+`providerFaceId` and `embeddingReference` are required opaque references; Nazraa does not store the submitted frames. A failed liveness result becomes `RETRY`; a match to another subject becomes `DUPLICATE`; unconfigured, timed-out, non-HTTPS, or invalid provider responses fail closed. The provider must encrypt biometric templates, restrict operator access, enforce deletion/retention policy, and return a different subject only when its production duplicate-search threshold is met.
+
+## Android release key
+
+Place the upload/production keystore outside source control and create ignored `android/key.properties`:
+
+```properties
+storeFile=/absolute/secure/path/nazraa-upload.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+The equivalent CI variables are `NAZRAA_KEYSTORE_FILE`, `NAZRAA_KEYSTORE_PASSWORD`, `NAZRAA_KEY_ALIAS`, and `NAZRAA_KEY_PASSWORD`. Release tasks stop with an error if these values are absent; they never fall back to the debug certificate.
+
+Build only after Google, biometric, API, database, ZEGOCLOUD Token04, and signing settings are deployed:
+
+```sh
+./scripts/build_android.sh release --dart-define=GOOGLE_WEB_CLIENT_ID=YOUR_WEB_CLIENT_ID
+```

@@ -42,8 +42,8 @@ function orderScope(scope: Scope) {
 export async function listCoinCommerce(scope: Scope) {
   const filter = orderScope(scope);
   const [packageRows, sellerRows, supportRows, orderRows] = await Promise.all([
-    db().query<(RowDataPacket & { id: string; public_id: number; name: string; coin_amount: number; display_price: number | null; currency: string | null; active: number; sort_order: number })[]>(
-      "SELECT id, public_id, name, coin_amount, display_price, currency, active, sort_order FROM coin_packages ORDER BY active DESC, sort_order, coin_amount",
+    db().query<(RowDataPacket & { id: string; public_id: number; name: string; badge_label: string | null; coin_amount: number; display_price: number | null; currency: string | null; active: number; sort_order: number })[]>(
+      "SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, active, sort_order FROM coin_packages ORDER BY active DESC, sort_order, coin_amount",
     ),
     db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; role: string; country_code: string | null; verification_status: string | null; business_whatsapp_e164: string | null; whatsapp_public: number | null; availability_status: string | null; supported_region: string | null })[]>(
       `SELECT account.id, account.public_id, account.full_name, account.role, account.country_code,
@@ -77,20 +77,32 @@ export async function listCoinCommerce(scope: Scope) {
     packageSupport.set(row.seller_account_id, ids);
   }
   return {
-    packages: packageRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.name, coins: Number(row.coin_amount), price: row.display_price == null ? null : Number(row.display_price), currency: row.currency, active: Boolean(row.active), sortOrder: Number(row.sort_order) })),
+    packages: packageRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.name, badge: row.badge_label, coins: Number(row.coin_amount), price: row.display_price == null ? null : Number(row.display_price), currency: row.currency, active: Boolean(row.active), sortOrder: Number(row.sort_order) })),
     sellers: sellerRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.full_name, role: row.role, country: row.country_code, verification: row.verification_status ?? "UNVERIFIED", whatsapp: row.business_whatsapp_e164, whatsappPublic: Boolean(row.whatsapp_public), availability: row.availability_status ?? "OFFLINE", region: row.supported_region, packageIds: packageSupport.get(row.id) ?? [] })),
     orders: orderRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), userName: row.user_name, sellerName: row.seller_name, packageName: row.package_name, coins: Number(row.coin_amount), status: row.status, reviewNote: row.review_note, createdAt: row.created_at, updatedAt: row.updated_at })),
   };
 }
 
-export async function createCoinPackage(input: { scope: Scope; name: string; coins: number; price?: number; currency?: string; sortOrder: number }) {
+export async function createCoinPackage(input: { scope: Scope; name: string; badge?: string; coins: number; price?: number; currency?: string; sortOrder: number }) {
   const id = randomUUID();
   await withTransaction(async (connection) => {
     await connection.execute(
-      "INSERT INTO coin_packages (id, name, coin_amount, display_price, currency, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [id, input.name, input.coins, input.price ?? null, input.currency || null, input.sortOrder, input.scope.account.id],
+      "INSERT INTO coin_packages (id, name, badge_label, coin_amount, display_price, currency, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, input.name, input.badge || null, input.coins, input.price ?? null, input.currency || null, input.sortOrder, input.scope.account.id],
     );
     await audit(connection, { scope: input.scope, action: "coin_package.create", module: "commerce", targetType: "coin_package", targetId: id, reason: "Created sellable coin package", next: { name: input.name, coins: input.coins, price: input.price, currency: input.currency } });
+  });
+}
+
+export async function updateCoinPackage(input: { scope: Scope; packageId: string; name: string; badge?: string; coins: number; price?: number; currency: string; sortOrder: number; reason: string }) {
+  await withTransaction(async (connection) => {
+    const [rows] = await connection.query<RowDataPacket[]>("SELECT name, badge_label, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE id = ? FOR UPDATE", [input.packageId]);
+    if (!rows[0]) throw new Error("Coin package was not found.");
+    await connection.execute(
+      "UPDATE coin_packages SET name = ?, badge_label = ?, coin_amount = ?, display_price = ?, currency = ?, sort_order = ? WHERE id = ?",
+      [input.name, input.badge || null, input.coins, input.price ?? null, input.currency, input.sortOrder, input.packageId],
+    );
+    await audit(connection, { scope: input.scope, action: "coin_package.update", module: "commerce", targetType: "coin_package", targetId: input.packageId, reason: input.reason, previous: rows[0], next: { name: input.name, badge: input.badge, coins: input.coins, price: input.price, currency: input.currency, sortOrder: input.sortOrder } });
   });
 }
 
@@ -195,15 +207,17 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
 
 export async function listFaceVerificationRequests(scope: Scope) {
   const filter = scopeWhere(scope, "user.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; selfie_document_id: string; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; selfie_document_id: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; agency_face_live_authorized: number; super_admin_face_live_authorized: number; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
     `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name, user.country_code,
-            request.status, request.selfie_document_id, request.review_reason, request.created_at, request.reviewed_at
+            request.status, request.selfie_document_id, request.provider, request.liveness_score, request.match_score,
+            user.agency_face_live_authorized, user.super_admin_face_live_authorized,
+            request.review_reason, request.created_at, request.reviewed_at
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
-     WHERE ${filter.clause} ORDER BY FIELD(request.status, 'PENDING','REJECTED','VERIFIED'), request.created_at DESC LIMIT 150`,
+     WHERE ${filter.clause} ORDER BY FIELD(request.status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED'), request.created_at DESC LIMIT 150`,
     filter.values,
   );
-  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.status, documentId: row.selfie_document_id, reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
+  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.status, documentId: row.selfie_document_id, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
 }
 
 export async function listPayoutMethodReviews(scope: Scope) {

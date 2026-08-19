@@ -6,7 +6,9 @@ import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { permissionsForMobileRole } from "@/lib/auth/mobile-session";
-import { encryptPrivateText, preparePrivateDocument } from "@/lib/security/documents";
+import { encryptPrivateText } from "@/lib/security/documents";
+import { mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
+import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -59,6 +61,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     walletRows,
     transactionRows,
     roomRows,
+    roomMemberRows,
     peopleRows,
     giftRows,
     bannerRows,
@@ -76,12 +79,14 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     rankingRows,
     agencyRankingRows,
     settings,
+    completion,
   ] = await Promise.all([
     db().query<(RowDataPacket & {
       public_id: number; full_name: string; avatar_url: string | null; country_code: string | null;
+      date_of_birth: string | null; gender: string | null; bio: string; language_code: string; whatsapp_e164: string | null;
       level_number: number; vip_tier: number; consumption_points: number; anchor_income_points: number;
       face_verification_status: string; is_host: number;
-    })[]>("SELECT public_id, full_name, avatar_url, country_code, level_number, vip_tier, consumption_points, anchor_income_points, face_verification_status, is_host FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
+    })[]>("SELECT public_id, full_name, avatar_url, country_code, date_of_birth, gender, bio, language_code, whatsapp_e164, level_number, vip_tier, consumption_points, anchor_income_points, face_verification_status, is_host FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
     db().query<(RowDataPacket & { asset_type: string; available_balance: number; reserved_balance: number })[]>("SELECT asset_type, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ?", [identity.userId]),
     db().query<RowDataPacket[]>(
       `SELECT id, transaction_code, asset_type, transaction_type, source_id, destination_id, amount, reason, created_at
@@ -95,6 +100,13 @@ export async function mobileBootstrap(identity: MobileIdentity) {
        FROM live_rooms room INNER JOIN application_users user ON user.id = room.host_application_user_id
        LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
        WHERE room.status IN ('ACTIVE','LOCKED') ORDER BY room.started_at DESC LIMIT 100`,
+    ),
+    db().query<RowDataPacket[]>(
+      `SELECT room.room_code, member.room_role, user.public_id, user.full_name, user.avatar_url
+       FROM live_room_members member INNER JOIN live_rooms room ON room.id = member.room_id
+       INNER JOIN application_users user ON user.id = member.application_user_id
+       WHERE room.status IN ('ACTIVE','LOCKED') AND member.left_at IS NULL AND member.room_role IN ('OWNER','ADMIN')
+       ORDER BY room.room_code, member.room_role = 'OWNER' DESC, member.updated_at`,
     ),
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.country_code, user.level_number, user.vip_tier, user.is_host,
@@ -120,7 +132,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
       "SELECT id, notification_type, title, message, action_target, read_at, created_at FROM mobile_notifications WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 60",
       [identity.userId],
     ),
-    db().query<RowDataPacket[]>("SELECT id, public_id, name, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE active = TRUE ORDER BY sort_order, coin_amount"),
+    db().query<RowDataPacket[]>("SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE active = TRUE ORDER BY sort_order, coin_amount"),
     db().query<RowDataPacket[]>(
       `SELECT account.id, account.public_id, account.full_name, account.country_code, profile.business_whatsapp_e164,
               profile.availability_status, profile.supported_region, profile.verification_status,
@@ -184,6 +196,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
        ORDER BY score DESC, account.created_at ASC LIMIT 50`,
     ),
     settingsMap(),
+    mobileCompletionSnapshot(identity),
   ]);
 
   const profile = profileRows[0][0];
@@ -200,23 +213,35 @@ export async function mobileBootstrap(identity: MobileIdentity) {
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
 
+  const roomManagers = new Map<string, RowDataPacket[]>();
+  for (const member of roomMemberRows[0]) {
+    const roomCode = String(member.room_code);
+    roomManagers.set(roomCode, [...(roomManagers.get(roomCode) ?? []), member]);
+  }
   const rooms = roomRows[0].map((row, index) => ({
     id: String(row.room_code), title: String(row.room_code), category: row.room_type === "PARTY" ? "Party" : row.room_type === "FACE" ? "Face" : "Live",
     language: "Hindi", listeners: Number(row.audience_count), themeIndex: index % 6, privacy: row.status === "LOCKED" ? "locked" : "public",
     seatCount: row.room_type === "PARTY" ? 8 : 0, kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
     host: { id: String(row.host_public_id), name: String(row.host_name), level: Number(row.host_level), vip: Number(row.host_vip), role: "host" },
+    managers: (roomManagers.get(String(row.room_code)) ?? []).map((member) => ({ id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, roomRole: String(member.room_role).toLowerCase() })),
   }));
 
   const currentAgency = agencyRows[0][0];
   const currentHost = hostRows[0][0];
   const roleName = identity.role.toLowerCase();
   return {
+    ...completion,
     serverTime: new Date().toISOString(),
     environment: "production",
     profile: {
-      id: String(profile.public_id), name: profile.full_name, avatarUrl: profile.avatar_url,
-      country: profile.country_code ?? "", language: "", level: Number(profile.level_number),
+      id: String(profile.public_id), name: profile.full_name,
+      avatarUrl: completion.profileAvatarVersion
+        ? `https://nazraa.vercel.app/api/v1/mobile/avatar/${profile.public_id}?v=${completion.profileAvatarVersion}`
+        : profile.avatar_url,
+      country: profile.country_code ?? "", language: profile.language_code, bio: profile.bio,
+      gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
+      whatsappE164: profile.whatsapp_e164, level: Number(profile.level_number),
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
       permissions: permissionsForMobileRole(identity.role),
     },
@@ -234,7 +259,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: "🎁", cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({ id: String(row.id), message: String(row.message), title: row.title, kind: row.notification_type ? "system" : "event", actionTarget: row.action_target, priority: 100 - index, startAt: row.created_at, endAt: "2999-12-31T23:59:59.000Z", isActive: true })),
-    coinPackages: packageRows[0].map((row, index) => ({ id: String(row.public_id), coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: index === 1 })),
+    coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),
     coinSellers: sellerRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), whatsappE164: String(row.business_whatsapp_e164), supportUri: `https://wa.me/${String(row.business_whatsapp_e164).replace(/\D/g, "")}`, availability: row.availability_status === "AVAILABLE" ? "available" : "offline", fulfilledOrders: Number(row.fulfilled_orders), rating: 5, supportedRegion: row.supported_region ?? row.country_code ?? "", verified: row.verification_status === "VERIFIED" })),
     coinPurchaseRequests: orderRows[0].map((row) => ({ id: String(row.public_id), userId: identity.publicId, packageId: String(row.package_public_id), sellerId: String(row.seller_public_id), coins: Number(row.coin_amount), pricePaise: Math.round(Number(row.display_price ?? 0) * 100), status: String(row.status).toLowerCase(), createdAt: row.created_at })),
     payoutMethods: payoutRows[0].map((row) => ({ id: String(row.id), type: row.method_type === "UPI" ? "upi" : "bankTransfer", displayName: String(row.display_name), maskedDestination: String(row.masked_destination), verified: Boolean(row.verified) })),
@@ -347,12 +372,32 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
 
 export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string }) {
   const roomType = input.kind === "party" ? "PARTY" : input.kind === "face" ? "FACE" : "LIVE";
+  const policy = LiveAccessPolicyService.for(identity);
+  const access = roomType === "PARTY" ? policy.party : roomType === "FACE" ? policy.face : policy.video;
+  if (!access.allowed) throw new Error(access.reason);
   const roomId = randomUUID();
-  const [userRows] = await db().query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1", [identity.userId]);
-  await db().execute(
-    "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type) VALUES (?, ?, ?, ?, ?)",
-    [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType],
-  );
+  await withTransaction(async (connection) => {
+    const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    const [rewardRuleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM host_reward_rules
+       WHERE room_type = ? AND enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3)
+       ORDER BY effective_from DESC LIMIT 1`,
+      [roomType],
+    );
+    if (!rewardRuleRows[0]) throw new Error("The host reward rule is unavailable.");
+    await connection.execute(
+      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type) VALUES (?, ?, ?, ?, ?)",
+      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType],
+    );
+    await connection.execute(
+      "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?)",
+      [randomUUID(), roomId, identity.userId, roomType, rewardRuleRows[0].id],
+    );
+    await connection.execute(
+      "INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)",
+      [roomId, identity.userId],
+    );
+  });
   return { id: roomId, roomCode: input.roomCode, status: "ACTIVE" };
 }
 
@@ -385,30 +430,6 @@ export async function sendGift(identity: MobileIdentity, input: { giftId: string
     await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [total, recipient.id]);
     return { success: true, remainingCoins: Number(senderRows[0].available_balance) - total, message: `Sent to ${recipient.full_name}` };
   });
-}
-
-export async function submitFaceVerification(identity: MobileIdentity, selfieBase64: string) {
-  const bytes = Buffer.from(selfieBase64, "base64");
-  if (bytes.length < 1_000 || bytes.length > 2 * 1024 * 1024) throw new Error("The selfie must be a clear JPG under 2 MB.");
-  const requestId = randomUUID();
-  const document = await preparePrivateDocument(
-    new File([Uint8Array.from(bytes)], "face-selfie.jpg", { type: "image/jpeg" }),
-    randomUUID(),
-    "FACE_SELFIE",
-  );
-  if (!document) throw new Error("The selfie could not be prepared.");
-  await withTransaction(async (connection) => {
-    await connection.execute("UPDATE face_verification_requests SET status = 'REJECTED', review_reason = 'Superseded by a new submission' WHERE application_user_id = ? AND status = 'PENDING'", [identity.userId]);
-    await connection.execute(
-      `INSERT INTO private_documents (id, owner_type, owner_id, document_type, original_name, mime_type, byte_size, encrypted_data, encryption_iv, encryption_tag)
-       VALUES (?, 'FACE_VERIFICATION', ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [document.id, requestId, document.documentType, document.originalName, document.mimeType, document.byteSize, document.encryptedData, document.iv, document.tag],
-    );
-    await connection.execute("INSERT INTO face_verification_requests (id, application_user_id, selfie_document_id) VALUES (?, ?, ?)", [requestId, identity.userId, document.id]);
-    await connection.execute("UPDATE application_users SET face_verification_status = 'PENDING' WHERE id = ?", [identity.userId]);
-    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'FACE_VERIFICATION', 'Face verification submitted', 'Your fresh selfie is pending review.', 'face')", [randomUUID(), identity.userId]);
-  });
-  return { status: "pending" };
 }
 
 async function ensureWallet(connection: PoolConnection, ownerId: string, assetType: "COIN" | "DIAMOND") {

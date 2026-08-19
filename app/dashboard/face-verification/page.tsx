@@ -1,5 +1,5 @@
 import { ExternalLink, ScanFace } from "lucide-react";
-import { submitFaceVerificationReview } from "@/app/admin-actions";
+import { submitFaceLiveAuthorization, submitFaceVerificationReview } from "@/app/admin-actions";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
@@ -10,13 +10,41 @@ export const dynamic = "force-dynamic";
 
 export default async function FaceVerificationPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
   const scope = await requirePermission("face_verification.read");
-  const { error, success } = await searchParams;
-  const requests = await listFaceVerificationRequests(scope);
-  const manage = can(scope.account.role, "face_verification.manage");
+  const [{ error, success }, requests] = await Promise.all([searchParams, listFaceVerificationRequests(scope)]);
+  const manageLegacy = can(scope.account.role, "face_verification.manage");
+  const authorize = can(scope.account.role, "face_live.authorize");
+  const authorizationTypes = scope.account.role === "AGENCY"
+    ? ["AGENCY_FACE_LIVE"] as const
+    : scope.account.role === "SUPER_ADMIN"
+      ? ["SUPER_ADMIN_FACE_LIVE"] as const
+      : ["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"] as const;
+
   return <>
-    <SectionHeading title="Face verification" description="Review fresh encrypted selfies for Face Live access. Files remain private and every decision is audited." />
-    {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
-    <Card>{requests.length ? <div className="table-scroll"><table><thead><tr><th>Request</th><th>User</th><th>Country</th><th>Selfie</th><th>Submitted</th><th>Status</th>{manage ? <th>Decision</th> : null}</tr></thead><tbody>{requests.map((request) => <tr key={request.id}><td className="mono">{request.publicId}</td><td><b>{request.fullName}</b><small className="mono block">{request.userPublicId}</small></td><td>{request.country ?? "—"}</td><td><a className="table-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer">Secure view <ExternalLink size={13} /></a></td><td>{formatDate(request.createdAt)}</td><td><StatusBadge value={request.status} />{request.reviewReason ? <small className="block">{request.reviewReason}</small> : null}</td>{manage ? <td>{request.status === "PENDING" ? <form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue="" required><option value="" disabled>Decision…</option><option value="VERIFIED">Verify</option><option value="REJECTED">Reject</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Review reason" /><button className="table-button" type="submit">Save</button></form> : <span className="muted">Reviewed</span>}</td> : null}</tr>)}</tbody></table></div> : <EmptyState title="No face verification requests" detail="Fresh mobile selfie submissions will appear here for authorized reviewers." />}</Card>
-    <p className="footnote"><ScanFace size={14} />Approval changes Face Live eligibility; it never grants host, admin, seller, or wallet permissions.</p>
+    <SectionHeading title="Face verification & Face Live access" description="Liveness and duplicate-face decisions are automatic. Agency and Super Admin Face Live authorizations remain separate, explicit, and audited." />
+    {success ? <Notice type="success">{success}</Notice> : null}
+    {error ? <Notice type="error">{error}</Notice> : null}
+    <Card>{requests.length ? <div className="table-scroll"><table><thead><tr>
+      <th>Request</th><th>User</th><th>Automatic check</th><th>Evidence</th><th>Submitted</th><th>Status</th><th>Face Live authorization</th>{manageLegacy ? <th>Legacy exception</th> : null}
+    </tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
+      <td className="mono">{request.publicId}</td>
+      <td><b>{request.fullName}</b><small className="mono block">{request.userPublicId} · {request.country ?? "—"}</small></td>
+      <td>{request.provider ?? "Legacy"}<small className="block">Liveness {request.livenessScore == null ? "—" : request.livenessScore.toFixed(3)} · Match {request.matchScore == null ? "—" : request.matchScore.toFixed(3)}</small></td>
+      <td>{request.documentId ? <a className="table-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer">Restricted view <ExternalLink size={13} /></a> : <span className="muted">No raw frame retained</span>}</td>
+      <td>{formatDate(request.createdAt)}</td>
+      <td><StatusBadge value={request.status} />{request.reviewReason ? <small className="block">{request.reviewReason}</small> : null}</td>
+      <td>
+        <small className="block">Agency: {request.agencyAuthorized ? "APPROVED" : "LOCKED"}</small>
+        <small className="block">Super Admin: {request.superAdminAuthorized ? "APPROVED" : "LOCKED"}</small>
+        {authorize && request.status === "VERIFIED" ? <form action={submitFaceLiveAuthorization} className="inline-review">
+          <input type="hidden" name="userPublicId" value={request.userPublicId} />
+          <select name="authorizationType" required defaultValue=""><option value="" disabled>Authorization…</option>{authorizationTypes.map((type) => <option key={type}>{type}</option>)}</select>
+          <select name="approved" defaultValue="true"><option value="true">Approve</option><option value="false">Revoke</option></select>
+          <input name="reason" required minLength={5} maxLength={500} placeholder="Authorization reason" />
+          <button className="table-button" type="submit">Save</button>
+        </form> : null}
+      </td>
+      {manageLegacy ? <td>{request.status === "PENDING" ? <form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue="" required><option value="" disabled>Decision…</option><option value="VERIFIED">Verify</option><option value="REJECTED">Reject</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Recovery reason" /><button className="table-button" type="submit">Save</button></form> : <span className="muted">Automatic flow</span>}</td> : null}
+    </tr>)}</tbody></table></div> : <EmptyState title="No Face Verification activity" detail="Automatic mobile verification results will appear here without creating fake queue data." />}</Card>
+    <p className="footnote"><ScanFace size={14} />Government ID is not part of normal Face Verification. Face Live needs verified + approved Agency + Agency authorization + Super Admin authorization.</p>
   </>;
 }

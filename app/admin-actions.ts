@@ -9,7 +9,8 @@ import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updat
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, setBannerActive, setGiftActive, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
-import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
+import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
+import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { roles } from "@/types/platform";
 
@@ -205,10 +206,20 @@ export async function submitDocumentReview(formData: FormData) {
 
 export async function submitCreateCoinPackage(formData: FormData) {
   const scope = await requirePermission("coin_packages.manage");
-  const parsed = z.object({ name: z.string().trim().min(2).max(100), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Check the package name, coins, price, currency, and order."));
   try { await createCoinPackage({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be created.")); }
   revalidatePath("/dashboard/commerce"); redirect(destination("/dashboard/commerce", "success", "Coin package created."));
+}
+
+export async function submitCoinPackageUpdate(formData: FormData) {
+  const scope = await requirePermission("coin_packages.manage");
+  const parsed = z.object({ packageId: z.string().uuid(), name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()), sortOrder: z.coerce.number().int().min(0).max(999), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Check the package details and change reason."));
+  try { await updateCoinPackage({ scope, ...parsed.data }); }
+  catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be updated.")); }
+  revalidatePath("/dashboard/commerce");
+  redirect(destination("/dashboard/commerce", "success", "Coin package updated and audited."));
 }
 
 export async function submitCoinPackageStatus(formData: FormData) {
@@ -262,4 +273,48 @@ export async function submitPayoutMethodReview(formData: FormData) {
   if (!parsed.success) redirect(destination("/dashboard/withdrawals", "error", "Choose a payout-method decision and provide a clear reason."));
   try { await reviewPayoutMethod({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/withdrawals", "error", error instanceof Error ? error.message : "Payout method could not be reviewed.")); }
   revalidatePath("/dashboard/withdrawals"); redirect(destination("/dashboard/withdrawals", "success", `Payout method ${parsed.data.decision.toLowerCase()}.`));
+}
+
+export async function submitDailyRewardRules(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    day1: z.coerce.number().int().nonnegative(), day2: z.coerce.number().int().nonnegative(),
+    day3: z.coerce.number().int().nonnegative(), day4: z.coerce.number().int().nonnegative(),
+    day5: z.coerce.number().int().nonnegative(), day6: z.coerce.number().int().nonnegative(),
+    day7: z.coerce.number().int().nonnegative(), reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Configure seven non-negative reward amounts and a reason."));
+  const { reason, ...days } = parsed.data;
+  await saveDailyRewardRules({ scope, coins: Object.values(days), reason });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Daily Reward rules saved and audited."));
+}
+
+export async function submitDiamondConversionRule(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({ diamonds: z.coerce.number().int().positive(), coins: z.coerce.number().int().positive(), minimum: z.coerce.number().int().positive(), maximum: z.coerce.number().int().positive(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the diamond step, coin output, bounds, and reason."));
+  try { await saveDiamondConversionRule({ scope, ...parsed.data }); }
+  catch (error) { redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Diamond conversion rule could not be saved.")); }
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Diamond → Coin rule saved and audited."));
+}
+
+export async function submitHostRewardRules(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({ live: z.coerce.number().int().nonnegative(), face: z.coerce.number().int().nonnegative(), party: z.coerce.number().int().nonnegative(), minimumEligibleSeconds: z.coerce.number().int().min(1).max(3600), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the three hourly rates, eligibility seconds, and reason."));
+  await saveHostRewardRules({ scope, ...parsed.data });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Host reward rules saved and audited."));
+}
+
+export async function submitFaceLiveAuthorization(formData: FormData) {
+  const scope = await requirePermission("face_live.authorize");
+  const parsed = z.object({ userPublicId: z.string().regex(/^\d+$/), authorizationType: z.enum(["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"]), approved: z.enum(["true", "false"]).transform((value) => value === "true"), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/face-verification", "error", "Choose an authorization decision and provide a clear reason."));
+  try { await setFaceLiveAuthorization({ scope, ...parsed.data }); }
+  catch (error) { redirect(destination("/dashboard/face-verification", "error", error instanceof Error ? error.message : "Face Live authorization could not be saved.")); }
+  revalidatePath("/dashboard/face-verification");
+  redirect(destination("/dashboard/face-verification", "success", "Face Live authorization saved and audited."));
 }

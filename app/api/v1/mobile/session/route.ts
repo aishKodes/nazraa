@@ -1,19 +1,40 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createMobileSession, revokeMobileSession } from "@/lib/auth/mobile-session";
+import { createDevelopmentMobileSession, createGoogleMobileSession, revokeMobileSession } from "@/lib/auth/mobile-session";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const parsed = z.object({
-    fullName: z.string().trim().min(2).max(120),
-    countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
-    avatarUrl: z.string().url().optional(),
-    deviceLabel: z.string().trim().max(120).optional(),
-  }).safeParse(await request.json());
-  if (!parsed.success) return NextResponse.json({ message: "Check the profile details." }, { status: 400 });
   try {
-    return NextResponse.json(await createMobileSession(parsed.data), { status: 201, headers: { "Cache-Control": "no-store" } });
+    const body = await request.json();
+    const google = z.object({
+      idToken: z.string().min(100).max(10_000),
+      deviceLabel: z.string().trim().max(120).optional(),
+      profile: z.object({
+        fullName: z.string().trim().min(2).max(120),
+        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+        dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+          const date = new Date(`${value}T00:00:00.000Z`);
+          return !Number.isNaN(date.getTime()) && date < new Date();
+        }, "Choose a valid date of birth."),
+        gender: z.enum(["FEMALE", "MALE", "NON_BINARY", "PREFER_NOT_TO_SAY"]),
+        whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
+        languageCode: z.string().trim().min(2).max(16).optional(),
+        avatarUrl: z.string().url().optional(),
+      }).optional(),
+    }).safeParse(body);
+    if (google.success) {
+      const result = await createGoogleMobileSession(google.data);
+      return NextResponse.json(result, { status: result.requiresProfile ? 200 : 201, headers: { "Cache-Control": "no-store" } });
+    }
+    const development = z.object({
+      developmentProfile: z.literal(true),
+      fullName: z.string().trim().min(2).max(120),
+      countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+      deviceLabel: z.string().trim().max(120).optional(),
+    }).safeParse(body);
+    if (!development.success) return NextResponse.json({ message: "Google Sign-In is required." }, { status: 400 });
+    return NextResponse.json(await createDevelopmentMobileSession(development.data), { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ message: error instanceof Error ? error.message : "Session creation failed." }, { status: 500 });
   }
