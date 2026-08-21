@@ -157,13 +157,14 @@ export async function submitGiftStatus(formData: FormData) {
 
 export async function submitCreateBanner(formData: FormData) {
   const scope = await requirePermission("banners.manage");
-  const parsed = z.object({ placement: z.enum(["HOME", "ROOM", "WALLET", "PROFILE"]), title: z.string().trim().min(2).max(120), subtitle: z.string().trim().max(240).optional(), actionType: z.enum(["NONE", "LIVE", "PARTY", "PROFILE", "AGENCY", "WALLET", "DAILY_REWARD", "RANKING"]), actionTarget: z.string().trim().max(80).optional(), startsAt: z.string().optional(), endsAt: z.string().optional(), priority: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ placement: z.enum(["HOME", "ROOM", "WALLET", "PROFILE"]), actionType: z.enum(["NONE", "LIVE", "PARTY", "PROFILE", "AGENCY", "WALLET", "DAILY_REWARD", "RANKING"]), actionTarget: z.string().trim().max(80).optional(), startsAt: z.string().optional(), endsAt: z.string().optional(), priority: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
   const imageFile = formData.get("image");
-  if (!parsed.success || !(imageFile instanceof File) || !imageFile.size) redirect(destination("/dashboard/banners", "error", "Check the banner image, title, internal action, placement, and schedule."));
+  if (!parsed.success || !(imageFile instanceof File) || !imageFile.size) redirect(destination("/dashboard/banners", "error", "Check the banner image, internal action, placement, and schedule."));
   if (parsed.data.startsAt && parsed.data.endsAt && new Date(parsed.data.endsAt) <= new Date(parsed.data.startsAt)) redirect(destination("/dashboard/banners", "error", "Banner end time must be after its start time."));
   try {
     const image = await preparePublicImage(imageFile, 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 });
-    await createBanner({ scope, ...parsed.data, enabled: formData.get("enabled") === "true", image });
+    const internalTitle = imageFile.name.replace(/\.[^.]+$/, "").trim().slice(0, 120) || "Banner";
+    await createBanner({ scope, ...parsed.data, title: internalTitle, enabled: formData.get("enabled") === "true", image });
   } catch (error) { redirect(destination("/dashboard/banners", "error", error instanceof Error ? error.message : "Banner could not be created.")); }
   revalidatePath("/dashboard/banners"); redirect(destination("/dashboard/banners", "success", "Banner created."));
 }
