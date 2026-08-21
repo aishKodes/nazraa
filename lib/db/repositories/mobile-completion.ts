@@ -1,6 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "crypto";
+import bcrypt from "bcryptjs";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
@@ -168,16 +169,21 @@ export async function exchangeDiamonds(identity: MobileIdentity, diamonds: numbe
   });
 }
 
-export async function joinLiveRoom(identity: MobileIdentity, roomCode: string) {
+export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, password?: string) {
   const access = LiveAccessPolicyService.for(identity).join;
   if (!access.allowed) throw new Error(access.reason);
   return withTransaction(async (connection) => {
-    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: "LIVE" | "PARTY" | "FACE"; host_application_user_id: string })[]>(
-      "SELECT id, room_type, host_application_user_id FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: "LIVE" | "PARTY" | "FACE"; host_application_user_id: string; password_hash: string | null })[]>(
+      "SELECT id, room_type, host_application_user_id, password_hash FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
       [roomCode],
     );
     const room = rooms[0];
     if (!room) throw new Error("This room is no longer active.");
+    if (room.host_application_user_id !== identity.userId && room.password_hash) {
+      if (!password || !(await bcrypt.compare(password, room.password_hash))) {
+        throw new Error("The room password is incorrect.");
+      }
+    }
     const interactionAllowed = LiveAccessPolicyService.for(identity).chat.allowed;
     const requestedRole = room.host_application_user_id === identity.userId
       ? "OWNER"
@@ -297,6 +303,295 @@ export async function setRoomAdmin(identity: MobileIdentity, input: { roomCode: 
       [room.id],
     );
     return { admins: admins.map((row) => String(row.public_id)), limit: 3 };
+  });
+}
+
+export async function setRoomMemberMuted(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; muted: boolean }) {
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; target_id: string; target_role: string })[]>(
+      `SELECT room.id room_id, actor.room_role actor_role,
+              target.application_user_id target_id, target.room_role target_role
+       FROM live_rooms room
+       INNER JOIN live_room_members actor ON actor.room_id = room.id
+         AND actor.application_user_id = ? AND actor.left_at IS NULL
+       INNER JOIN live_room_members target ON target.room_id = room.id AND target.left_at IS NULL
+       INNER JOIN application_users target_user ON target_user.id = target.application_user_id
+       WHERE room.room_code = ? AND room.room_type = 'PARTY'
+         AND room.status IN ('ACTIVE','LOCKED') AND target_user.public_id = ?
+       LIMIT 1 FOR UPDATE`,
+      [identity.userId, input.roomCode, input.targetPublicId],
+    );
+    const member = rows[0];
+    if (!member || !["OWNER", "ADMIN"].includes(member.actor_role)) {
+      throw new Error("Only the Room Owner or a Room Admin can manage microphones.");
+    }
+    if (member.target_id === identity.userId || member.target_role === "OWNER") {
+      throw new Error("The Room Owner microphone is controlled on the owner device.");
+    }
+    if (member.actor_role === "ADMIN" && member.target_role === "ADMIN") {
+      throw new Error("Only the Room Owner can manage another Room Admin microphone.");
+    }
+    await connection.execute(
+      "UPDATE live_room_members SET muted = ? WHERE room_id = ? AND application_user_id = ?",
+      [input.muted, member.room_id, member.target_id],
+    );
+    await connection.execute(
+      `INSERT INTO audit_logs
+        (id, actor_role, action, module, target_type, target_id, new_data, reason)
+       VALUES (?, ?, ?, 'PARTY_ROOM', 'APPLICATION_USER', ?,
+         JSON_OBJECT('roomCode', ?, 'muted', ?), 'Authorized in-room microphone moderation.')`,
+      [randomUUID(), member.actor_role, input.muted ? "ROOM_MEMBER_MUTED" : "ROOM_MEMBER_UNMUTE_REQUESTED",
+        member.target_id, input.roomCode, input.muted],
+    );
+    return { muted: input.muted, targetPublicId: input.targetPublicId };
+  });
+}
+
+export async function sendRoomInteraction(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; interactionKey: string }) {
+  return withTransaction(async (connection) => {
+    const [settingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1",
+    );
+    const raw = settingRows[0]?.setting_value;
+    const settings = typeof raw === "string" ? JSON.parse(raw) as { interactions?: { key?: string; enabled?: boolean }[] } : raw as { interactions?: { key?: string; enabled?: boolean }[] } | undefined;
+    const allowed = new Set((settings?.interactions ?? []).filter((item) => item.enabled !== false).map((item) => item.key).filter(Boolean));
+    if (!allowed.has(input.interactionKey)) throw new Error("That room interaction is not available.");
+
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; target_id: string })[]>(
+      `SELECT room.id room_id, target.application_user_id target_id
+       FROM live_rooms room
+       INNER JOIN live_room_members sender ON sender.room_id = room.id
+         AND sender.application_user_id = ? AND sender.left_at IS NULL
+       INNER JOIN live_room_members target ON target.room_id = room.id AND target.left_at IS NULL
+       INNER JOIN application_users target_user ON target_user.id = target.application_user_id
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED')
+         AND target_user.public_id = ? LIMIT 1 FOR UPDATE`,
+      [identity.userId, input.roomCode, input.targetPublicId],
+    );
+    const member = rows[0];
+    if (!member) throw new Error("Both users must be active in the same room.");
+    if (member.target_id === identity.userId) throw new Error("Choose another room member.");
+    const id = randomUUID();
+    await connection.execute(
+      `INSERT INTO room_interaction_events
+        (id, room_id, sender_application_user_id, target_application_user_id, interaction_key)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, member.room_id, identity.userId, member.target_id, input.interactionKey],
+    );
+    return { id, interactionKey: input.interactionKey, targetPublicId: input.targetPublicId, createdAt: new Date().toISOString() };
+  });
+}
+
+export async function createPkSession(identity: MobileIdentity, input: { sourceRoomCode: string; targetRoomCode: string; mode: string; durationMinutes: number }) {
+  return withTransaction(async (connection) => {
+    const [settingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1",
+    );
+    const raw = settingRows[0]?.setting_value;
+    const settings = typeof raw === "string" ? JSON.parse(raw) as { pkModes?: string[]; pkDurations?: number[] } : raw as { pkModes?: string[]; pkDurations?: number[] } | undefined;
+    if (!(settings?.pkModes ?? []).includes(input.mode) || !(settings?.pkDurations ?? []).map(Number).includes(input.durationMinutes)) {
+      throw new Error("That PK rule is not currently available.");
+    }
+    const [rooms] = await connection.query<(RowDataPacket & { source_id: string; source_host_id: string; source_type: string; source_pk_enabled: number; target_id: string; target_type: string; target_pk_enabled: number })[]>(
+      `SELECT source.id source_id, source.host_application_user_id source_host_id, source.room_type source_type,
+              source.pk_requests_enabled source_pk_enabled,
+              target.id target_id, target.room_type target_type, target.pk_requests_enabled target_pk_enabled
+       FROM live_rooms source INNER JOIN live_rooms target ON target.room_code = ?
+       WHERE source.room_code = ? AND source.status IN ('ACTIVE','LOCKED')
+         AND target.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [input.targetRoomCode, input.sourceRoomCode],
+    );
+    const roomsPair = rooms[0];
+    if (!roomsPair || roomsPair.source_host_id !== identity.userId) throw new Error("Only the active source room host can request PK.");
+    if (!roomsPair.source_pk_enabled || !roomsPair.target_pk_enabled) throw new Error("PK requests are disabled in one of these rooms.");
+    if (roomsPair.source_id === roomsPair.target_id) throw new Error("Choose another Live room.");
+    if (!["LIVE", "FACE"].includes(roomsPair.source_type) || !["LIVE", "FACE"].includes(roomsPair.target_type)) {
+      throw new Error("PK is available only between Video Live or Face Live rooms.");
+    }
+    const id = randomUUID();
+    await connection.execute(
+      `INSERT INTO live_pk_sessions
+        (id, source_room_id, target_room_id, requested_by_application_user_id, mode, duration_minutes)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, roomsPair.source_id, roomsPair.target_id, identity.userId, input.mode, input.durationMinutes],
+    );
+    return { id, status: "requested", mode: input.mode, durationMinutes: input.durationMinutes };
+  });
+}
+
+export async function closePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {
+  const [result] = await db().execute(
+    `UPDATE live_pk_sessions session
+     INNER JOIN live_rooms room ON room.id = session.source_room_id
+     SET session.status = ?, session.ended_at = CURRENT_TIMESTAMP(3)
+     WHERE session.id = ? AND room.host_application_user_id = ?
+       AND session.status IN ('REQUESTED','ACTIVE')`,
+    [input.completed ? "COMPLETED" : "CANCELLED", input.sessionId, identity.userId],
+  );
+  if ((result as { affectedRows?: number }).affectedRows !== 1) throw new Error("The PK session could not be closed.");
+  return { id: input.sessionId, status: input.completed ? "completed" : "cancelled" };
+}
+
+export async function recordFacePresenceAutoStop(
+  identity: MobileIdentity,
+  input: { roomCode: string; consecutiveFailures: number },
+) {
+  return withTransaction(async (connection) => {
+    const [rooms] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM live_rooms
+       WHERE room_code = ? AND host_application_user_id = ? AND room_type IN ('LIVE','FACE')
+         AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [input.roomCode, identity.userId],
+    );
+    const room = rooms[0];
+    if (!room) throw new Error("Only the active Face Live host can report a presence stop.");
+
+    const [settingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1",
+    );
+    const raw = settingRows[0]?.setting_value;
+    const settings = typeof raw === "string"
+      ? JSON.parse(raw) as { presenceSuspensionLimit?: number }
+      : raw as { presenceSuspensionLimit?: number } | undefined;
+    const suspensionLimit = Math.min(20, Math.max(1, Number(settings?.presenceSuspensionLimit ?? 5)));
+
+    await connection.execute(
+      `INSERT INTO face_live_presence_incidents
+        (id, room_id, host_application_user_id, incident_type, consecutive_failures, evidence_metadata)
+       VALUES (?, ?, ?, 'LIVE_AUTO_STOPPED', ?, JSON_OBJECT(
+         'detector', 'google_mlkit_face_detection',
+         'processing', 'on_device',
+         'imageRetained', FALSE
+       ))`,
+      [randomUUID(), room.id, identity.userId, input.consecutiveFailures],
+    );
+    const [countRows] = await connection.query<(RowDataPacket & { count: number })[]>(
+      `SELECT COUNT(*) count FROM face_live_presence_incidents
+       WHERE host_application_user_id = ? AND incident_type = 'LIVE_AUTO_STOPPED'
+         AND created_at >= DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR)`,
+      [identity.userId],
+    );
+    const autoStopCount = Number(countRows[0]?.count ?? 0);
+    let suspended = false;
+    if (autoStopCount >= suspensionLimit) {
+      const [activeRows] = await connection.query<RowDataPacket[]>(
+        `SELECT id FROM moderation_restrictions
+         WHERE application_user_id = ? AND restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+           AND status = 'ACTIVE' AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3))
+         LIMIT 1 FOR UPDATE`,
+        [identity.userId],
+      );
+      if (!activeRows[0]) {
+        const [masterRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+          "SELECT id FROM platform_accounts WHERE role = 'MASTER' AND status = 'ACTIVE' ORDER BY created_at LIMIT 1",
+        );
+        if (!masterRows[0]) throw new Error("Master moderation account is unavailable.");
+        await connection.execute(
+          `INSERT INTO moderation_restrictions
+            (id, application_user_id, restriction_type, ends_at, reason, actor_account_id)
+           VALUES (?, ?, 'SUSPENSION', NULL, ?, ?)`,
+          [randomUUID(), identity.userId,
+            `Automatic Face Live presence protection: ${autoStopCount} stopped sessions within 24 hours.`,
+            masterRows[0].id],
+        );
+        await connection.execute(
+          `INSERT INTO mobile_notifications
+            (id, application_user_id, notification_type, title, message, action_target)
+           VALUES (?, ?, 'MODERATION', 'Live access suspended',
+             'Repeated camera-presence stops triggered a Live suspension pending staff review.', 'profile/live-access')`,
+          [randomUUID(), identity.userId],
+        );
+      }
+      suspended = true;
+    }
+    await connection.execute(
+      `INSERT INTO audit_logs
+        (id, actor_role, action, module, target_type, target_id, new_data, reason)
+       VALUES (?, 'HOST', 'FACE_LIVE_PRESENCE_AUTO_STOP', 'FACE_LIVE', 'LIVE_ROOM', ?,
+         JSON_OBJECT('consecutiveFailures', ?, 'autoStopCount24h', ?, 'suspended', ?),
+         'On-device face presence limit reached; no image was uploaded or retained.')`,
+      [randomUUID(), room.id, input.consecutiveFailures, autoStopCount, suspended],
+    );
+    return { suspended, autoStopCount, suspensionLimit };
+  });
+}
+
+export async function updateRoomSettings(identity: MobileIdentity, input: { roomCode: string; themeIndex?: number; themeEnabled?: boolean; pkRequestsEnabled?: boolean; chatLocked?: boolean; password?: string; removePassword: boolean; topPublicId?: string; resetTopDp: boolean }) {
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; chat_locked: number; password_hash: string | null; password_length: number | null; top_application_user_id: string | null })[]>(
+      `SELECT room.id room_id, member.room_role actor_role, room.theme_index, room.chat_locked,
+              room.password_hash, room.password_length, room.theme_enabled, room.pk_requests_enabled, room.top_application_user_id
+       FROM live_rooms room INNER JOIN live_room_members member ON member.room_id = room.id
+         AND member.application_user_id = ? AND member.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [identity.userId, input.roomCode],
+    );
+    const room = rows[0];
+    if (!room || !["OWNER", "ADMIN"].includes(room.actor_role)) throw new Error("Only the Room Owner or a Room Admin can update room tools.");
+    if ((input.password != null || input.removePassword) && room.actor_role !== "OWNER") throw new Error("Only the Room Owner can change the room password.");
+    if (input.password != null && !/^(\d{4}|\d{6}|\d{10})$/.test(input.password)) throw new Error("Use a 4, 6, or 10 digit room password.");
+    const passwordHash = input.removePassword ? null : input.password ? await bcrypt.hash(input.password, 10) : room.password_hash;
+    const passwordLength = input.removePassword ? null : input.password ? input.password.length : room.password_length;
+    let topUserId = input.resetTopDp ? null : room.top_application_user_id;
+    if (input.topPublicId) {
+      const [topRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+        `SELECT user.id FROM live_room_members member
+         INNER JOIN application_users user ON user.id = member.application_user_id
+         WHERE member.room_id = ? AND member.left_at IS NULL AND user.public_id = ?
+           AND user.account_status = 'ACTIVE' LIMIT 1`,
+        [room.room_id, input.topPublicId],
+      );
+      if (!topRows[0]) throw new Error("Top DP must be an active member of this room.");
+      topUserId = topRows[0].id;
+    }
+    await connection.execute(
+      `UPDATE live_rooms SET theme_index = ?, theme_enabled = ?, pk_requests_enabled = ?, chat_locked = ?, password_hash = ?, password_length = ?, top_application_user_id = ?,
+         privacy = IF(? IS NULL, IF(privacy = 'LOCKED', 'PUBLIC', privacy), 'LOCKED')
+       WHERE id = ?`,
+      [input.themeIndex ?? Number(room.theme_index), input.themeEnabled ?? Boolean(room.theme_enabled), input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), input.chatLocked ?? Boolean(room.chat_locked), passwordHash, passwordLength, topUserId,
+        passwordHash, room.room_id],
+    );
+    return { themeIndex: input.themeIndex ?? Number(room.theme_index), themeEnabled: input.themeEnabled ?? Boolean(room.theme_enabled), pkRequestsEnabled: input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), chatLocked: input.chatLocked ?? Boolean(room.chat_locked), passwordRequired: passwordHash != null, topPublicId: input.topPublicId ?? null };
+  });
+}
+
+export async function sendRoomChat(identity: MobileIdentity, input: { roomCode: string; body: string }) {
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; room_role: string; chat_locked: number })[]>(
+      `SELECT room.id room_id, member.room_role, room.chat_locked
+       FROM live_rooms room INNER JOIN live_room_members member ON member.room_id = room.id
+         AND member.application_user_id = ? AND member.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1`,
+      [identity.userId, input.roomCode],
+    );
+    const room = rows[0];
+    if (!room) throw new Error("Join the room before sending chat.");
+    if (room.chat_locked && !["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Room chat is locked by the room staff.");
+    const id = randomUUID();
+    await connection.execute(
+      "INSERT INTO live_room_messages (id, room_id, sender_application_user_id, body) VALUES (?, ?, ?, ?)",
+      [id, room.room_id, identity.userId, input.body],
+    );
+    return { id, createdAt: new Date().toISOString() };
+  });
+}
+
+export async function clearRoomChat(identity: MobileIdentity, roomCode: string) {
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; room_role: string })[]>(
+      `SELECT room.id room_id, member.room_role FROM live_rooms room
+       INNER JOIN live_room_members member ON member.room_id = room.id
+         AND member.application_user_id = ? AND member.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [identity.userId, roomCode],
+    );
+    const room = rows[0];
+    if (!room || !["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the Room Owner or a Room Admin can clear chat.");
+    const [result] = await connection.execute(
+      "UPDATE live_room_messages SET visible = FALSE, cleared_by_application_user_id = ?, cleared_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND visible = TRUE",
+      [identity.userId, room.room_id],
+    );
+    return { cleared: (result as { affectedRows?: number }).affectedRows ?? 0 };
   });
 }
 

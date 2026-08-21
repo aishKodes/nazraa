@@ -224,12 +224,95 @@ export async function listWithdrawals(scope: Scope) {
 
 export async function listRooms(scope: Scope) {
   const filter = scopeWhere(scope, "r.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string })[]>(
-    `SELECT r.id, r.room_code, r.room_type, r.status, r.audience_count, r.started_at, u.full_name, u.external_user_id, u.id application_user_id
+  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number })[]>(
+    `SELECT r.id, r.room_code, r.room_type, r.status, r.audience_count, r.started_at,
+            r.theme_index, r.theme_enabled, r.pk_requests_enabled, (r.password_hash IS NOT NULL) password_protected, r.chat_locked,
+            (SELECT COUNT(*) FROM live_pk_sessions pk WHERE pk.source_room_id = r.id OR pk.target_room_id = r.id) pk_count,
+            (SELECT COUNT(*) FROM face_live_presence_incidents incident WHERE incident.room_id = r.id) presence_incidents,
+            u.full_name, u.external_user_id, u.id application_user_id
      FROM live_rooms r INNER JOIN application_users u ON u.id = r.host_application_user_id
      WHERE ${filter.clause} ORDER BY r.started_at DESC LIMIT 100`, filter.values,
   );
-  return rows.map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id }));
+  return rows.map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id, themeIndex: Number(row.theme_index), themeEnabled: Boolean(row.theme_enabled), pkRequestsEnabled: Boolean(row.pk_requests_enabled), passwordProtected: Boolean(row.password_protected), chatLocked: Boolean(row.chat_locked), pkCount: Number(row.pk_count), presenceIncidents: Number(row.presence_incidents) }));
+}
+
+export async function listPresenceIncidents(scope: Scope) {
+  const filter = scopeWhere(scope, "user.agency_account_id");
+  const [rows] = await db().query<(RowDataPacket & {
+    id: string; room_code: string; room_type: string; incident_type: string;
+    consecutive_failures: number; created_at: string; application_user_id: string;
+    public_id: number; full_name: string; restriction_id: string | null;
+  })[]>(
+    `SELECT incident.id, room.room_code, room.room_type, incident.incident_type,
+            incident.consecutive_failures, incident.created_at,
+            user.id application_user_id, user.public_id, user.full_name,
+            restriction.id restriction_id
+     FROM face_live_presence_incidents incident
+     INNER JOIN live_rooms room ON room.id = incident.room_id
+     INNER JOIN application_users user ON user.id = incident.host_application_user_id
+     LEFT JOIN moderation_restrictions restriction
+       ON restriction.application_user_id = user.id
+      AND restriction.restriction_type = 'SUSPENSION'
+      AND restriction.status = 'ACTIVE'
+      AND (restriction.ends_at IS NULL OR restriction.ends_at > CURRENT_TIMESTAMP(3))
+     WHERE ${filter.clause}
+     ORDER BY incident.created_at DESC LIMIT 100`,
+    filter.values,
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    roomCode: row.room_code,
+    roomType: row.room_type,
+    incidentType: row.incident_type,
+    consecutiveFailures: Number(row.consecutive_failures),
+    createdAt: row.created_at,
+    applicationUserId: row.application_user_id,
+    userPublicId: String(row.public_id),
+    userName: row.full_name,
+    restrictionId: row.restriction_id,
+  }));
+}
+
+export async function restoreLiveAccess(input: { scope: Scope; restrictionId: string; reason: string }) {
+  if (input.reason.trim().length < 5) throw new Error("Provide a clear review reason.");
+  const filter = scopeWhere(input.scope, "user.agency_account_id");
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & {
+      id: string; application_user_id: string; full_name: string;
+    })[]>(
+      `SELECT restriction.id, restriction.application_user_id, user.full_name
+       FROM moderation_restrictions restriction
+       INNER JOIN application_users user ON user.id = restriction.application_user_id
+       WHERE restriction.id = ? AND restriction.restriction_type = 'SUSPENSION'
+         AND restriction.status = 'ACTIVE' AND ${filter.clause}
+       LIMIT 1 FOR UPDATE`,
+      [input.restrictionId, ...filter.values],
+    );
+    const restriction = rows[0];
+    if (!restriction) throw new Error("The active Live suspension was not found in your scope.");
+    await connection.execute(
+      "UPDATE moderation_restrictions SET status = 'REVOKED', ends_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+      [restriction.id],
+    );
+    await connection.execute(
+      `INSERT INTO mobile_notifications
+        (id, application_user_id, notification_type, title, message, action_target)
+       VALUES (?, ?, 'MODERATION', 'Live access restored', ?, 'profile/live-access')`,
+      [randomUUID(), restriction.application_user_id, input.reason.trim()],
+    );
+    await audit(connection, {
+      actorId: input.scope.account.id,
+      actorRole: input.scope.account.role,
+      action: "moderation.live_access_restored",
+      module: "moderation",
+      targetType: "application_user",
+      targetId: restriction.application_user_id,
+      previous: { restrictionId: restriction.id, status: "ACTIVE" },
+      next: { status: "REVOKED" },
+      reason: input.reason.trim(),
+    });
+    return { userName: restriction.full_name };
+  });
 }
 
 export async function listAudit(scope: Scope) {

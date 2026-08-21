@@ -5,11 +5,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "vercel-build": "npm run migrate && next build",
+    "vercel-build": "npm run migrate && npm run provision:master && next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "bootstrap:master": "tsx scripts/bootstrap-master.ts",
+    "provision:master": "tsx scripts/provision-master.ts",
     "migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {

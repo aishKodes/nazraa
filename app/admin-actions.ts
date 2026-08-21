@@ -7,8 +7,8 @@ import { z } from "zod";
 import { requirePermission } from "@/lib/auth/guard";
 import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
-import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
-import { updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
+import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
+import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
@@ -231,6 +231,68 @@ export async function submitMobileSocialSettings(formData: FormData) {
   redirect(destination("/dashboard/settings", "success", "Private-message pricing saved."));
 }
 
+export async function submitRoomFeatureSettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    interactionRows: z.string().trim().min(1).max(4000),
+    interactionAssetKey: z.string().trim().regex(/^[a-z0-9_-]{2,40}$/).optional().or(z.literal("")),
+    pkModes: z.string().trim().min(1).max(200),
+    rocket1Required: z.coerce.number().int().positive(), rocket1Reward: z.coerce.number().int().min(0),
+    rocket2Required: z.coerce.number().int().positive(), rocket2Reward: z.coerce.number().int().min(0),
+    rocket3Required: z.coerce.number().int().positive(), rocket3Reward: z.coerce.number().int().min(0),
+    rocketEnabled: z.enum(["true", "false"]),
+    presenceWarningLimit: z.coerce.number().int().min(3).max(30),
+    presenceSuspensionLimit: z.coerce.number().int().min(1).max(20),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the room interaction, Rocket, PK, and presence values."));
+  const interactionRows = parsed.data.interactionRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const interactionSchema = z.tuple([
+    z.string().regex(/^[a-z0-9_-]{2,40}$/),
+    z.string().min(1).max(24),
+    z.string().min(1).max(16),
+    z.enum(["enabled", "disabled"]),
+  ]);
+  const interactions = interactionRows.map((line) => interactionSchema.safeParse(line.split("|").map((part) => part.trim())));
+  if (interactions.some((item) => !item.success) || new Set(interactions.map((item) => item.success ? item.data[0] : "")).size !== interactions.length) {
+    redirect(destination("/dashboard/settings", "error", "Use one unique interaction per line: key | label | emoji | enabled/disabled."));
+  }
+  const normalizedInteractions = interactions.map((item) => {
+    if (!item.success) throw new Error("Invalid interaction row.");
+    return { key: item.data[0], label: item.data[1], emoji: item.data[2], enabled: item.data[3] === "enabled" };
+  });
+  const pkModes = parsed.data.pkModes.split(",").map((item) => item.trim()).filter(Boolean);
+  if (!pkModes.length) redirect(destination("/dashboard/settings", "error", "Add at least one PK mode."));
+  const interactionAssetFile = formData.get("interactionAsset");
+  let interactionAsset;
+  try {
+    interactionAsset = interactionAssetFile instanceof File && interactionAssetFile.size
+      ? await preparePublicImage(interactionAssetFile, 1024 * 1024, "Interaction animation", { maxWidth: 512, maxHeight: 512, animated: true })
+      : undefined;
+  } catch (error) {
+    redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Interaction artwork could not be processed."));
+  }
+  if (interactionAsset && !parsed.data.interactionAssetKey) redirect(destination("/dashboard/settings", "error", "Enter the interaction key that should receive the uploaded animation."));
+  if (parsed.data.interactionAssetKey && !normalizedInteractions.some((item) => item.key === parsed.data.interactionAssetKey)) redirect(destination("/dashboard/settings", "error", "The animation key must match an interaction row."));
+  await saveRoomFeatureSettings({
+    scope,
+    interactions: normalizedInteractions,
+    interactionAssetKey: parsed.data.interactionAssetKey || undefined,
+    interactionAsset,
+    pkDurations: [2, 5, 10],
+    pkModes,
+    rocketLevels: [
+      { level: 1, requiredCoins: parsed.data.rocket1Required, rewardCoins: parsed.data.rocket1Reward },
+      { level: 2, requiredCoins: parsed.data.rocket2Required, rewardCoins: parsed.data.rocket2Reward },
+      { level: 3, requiredCoins: parsed.data.rocket3Required, rewardCoins: parsed.data.rocket3Reward },
+    ],
+    rocketEnabled: parsed.data.rocketEnabled === "true",
+    presenceWarningLimit: parsed.data.presenceWarningLimit,
+    presenceSuspensionLimit: parsed.data.presenceSuspensionLimit,
+  });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Room feature configuration published to the app."));
+}
+
 export async function submitRiskStatus(formData: FormData) {
   const scope = await requirePermission("risk.manage"); const parsed = z.object({ flagId: z.string().uuid(), status: z.enum(["REVIEWING", "RESOLVED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/risk", "error", "Choose a status and provide a reason."));
@@ -242,6 +304,23 @@ export async function submitRoomStatus(formData: FormData) {
   if (!parsed.success) redirect(destination("/dashboard/rooms", "error", "Choose a room action and provide a reason."));
   try { await updateRoomStatus({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/rooms", "error", error instanceof Error ? error.message : "Room action failed.")); }
   revalidatePath("/dashboard/rooms"); redirect(destination("/dashboard/rooms", "success", `Room ${parsed.data.status.toLowerCase()}.`));
+}
+
+export async function submitRestoreLiveAccess(formData: FormData) {
+  const scope = await requirePermission("rooms.manage");
+  const parsed = z.object({
+    restrictionId: z.string().uuid(),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/rooms", "error", "Provide a valid Live suspension and review reason."));
+  let result: Awaited<ReturnType<typeof restoreLiveAccess>>;
+  try {
+    result = await restoreLiveAccess({ scope, ...parsed.data });
+  } catch (error) {
+    redirect(destination("/dashboard/rooms", "error", error instanceof Error ? error.message : "Live access could not be restored."));
+  }
+  revalidatePath("/dashboard/rooms");
+  redirect(destination("/dashboard/rooms", "success", `${result.userName}'s Live access was restored.`));
 }
 
 export async function submitDocumentReview(formData: FormData) {

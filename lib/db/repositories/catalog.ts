@@ -166,3 +166,63 @@ export async function saveMobileSocialSettings(input: { scope: Scope; privateMes
     );
   } });
 }
+
+export async function saveRoomFeatureSettings(input: {
+  scope: Scope;
+  interactions: { key: string; label: string; emoji: string; enabled: boolean }[];
+  interactionAssetKey?: string;
+  interactionAsset?: PreparedPublicImage;
+  pkDurations: number[];
+  pkModes: string[];
+  rocketLevels: { level: number; requiredCoins: number; rewardCoins: number }[];
+  rocketEnabled: boolean;
+  presenceWarningLimit: number;
+  presenceSuspensionLimit: number;
+}) {
+  await auditedMutation({
+    scope: input.scope,
+    action: "settings.room_features_update",
+    module: "settings",
+    targetType: "system_setting",
+    targetId: "mobile.room_features",
+    reason: "Updated Party and Live room feature configuration",
+    run: async (connection) => {
+      const [currentRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+        "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1 FOR UPDATE",
+      );
+      const raw = currentRows[0]?.setting_value;
+      const current: { interactions?: { key?: string; visualUrl?: string }[] } | undefined = typeof raw === "string"
+        ? JSON.parse(raw) as { interactions?: { key?: string; visualUrl?: string }[] }
+        : raw as { interactions?: { key?: string; visualUrl?: string }[] } | undefined;
+      const existingAssets = new Map((current?.interactions ?? []).map((item) => [item.key, item.visualUrl]));
+      let uploadedUrl: string | undefined;
+      if (input.interactionAsset && input.interactionAssetKey) {
+        const assetId = randomUUID();
+        uploadedUrl = `https://nazraa.vercel.app/api/v1/assets/interactions/${assetId}`;
+        await connection.execute(
+          "INSERT INTO room_interaction_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)",
+          [assetId, input.interactionAsset.mimeType, input.interactionAsset.data, input.interactionAsset.byteSize, input.interactionAsset.originalName, input.scope.account.id],
+        );
+      }
+      const interactions = input.interactions.map((item) => ({
+        ...item,
+        visualUrl: item.key === input.interactionAssetKey && uploadedUrl
+          ? uploadedUrl
+          : existingAssets.get(item.key) || undefined,
+      }));
+      await connection.execute(
+        `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.room_features', ?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+        [JSON.stringify({
+          interactions,
+          pkDurations: input.pkDurations,
+          pkModes: input.pkModes,
+          rocketLevels: input.rocketLevels,
+          rocketEnabled: input.rocketEnabled,
+          presenceWarningLimit: input.presenceWarningLimit,
+          presenceSuspensionLimit: input.presenceSuspensionLimit,
+        }), input.scope.account.id],
+      );
+    },
+  });
+}

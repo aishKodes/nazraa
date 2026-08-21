@@ -13,13 +13,21 @@ import {
 } from "@/lib/db/repositories/mobile-product";
 import {
   claimDailyReward,
+  clearRoomChat,
+  closePkSession,
+  recordFacePresenceAutoStop,
+  createPkSession,
   exchangeDiamonds,
   finalizeLiveSession,
   joinLiveRoom,
   kickRoomMember,
   leaveLiveRoom,
   roomPublishingDecision,
+  sendRoomChat,
+  sendRoomInteraction,
   setRoomAdmin,
+  setRoomMemberMuted,
+  updateRoomSettings,
   submitAutomaticFaceVerification,
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
@@ -166,8 +174,10 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         privacy: z.enum(["public", "followers", "locked"]),
         seatCount: z.number().int().min(0).max(20),
         themeIndex: z.number().int().min(0).max(20),
+        themeEnabled: z.boolean().default(true),
         countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()).optional(),
         photoDataUrl: z.string().max(2_100_000).optional(),
+        password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(),
       }).parse(body);
       const permission = parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
       if (!mobileCan(identity, permission)) return errorResponse(new Error("Your role cannot start this room type."), 403);
@@ -175,8 +185,8 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       return NextResponse.json(await createRoom(identity, parsed), { status: 201 });
     }
     if (resource === "room-join") {
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
-      return NextResponse.json(await joinLiveRoom(identity, parsed.roomCode));
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional() }).parse(body);
+      return NextResponse.json(await joinLiveRoom(identity, parsed.roomCode, parsed.password));
     }
     if (resource === "room-leave") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
@@ -190,6 +200,41 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "room-kick") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/) }).parse(body);
       return NextResponse.json(await kickRoomMember(identity, parsed));
+    }
+    if (resource === "room-microphone") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), muted: z.boolean() }).parse(body);
+      return NextResponse.json(await setRoomMemberMuted(identity, parsed));
+    }
+    if (resource === "room-interactions") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), interactionKey: z.string().trim().regex(/^[a-z0-9_-]{2,40}$/) }).parse(body);
+      return NextResponse.json(await sendRoomInteraction(identity, parsed), { status: 201 });
+    }
+    if (resource === "pk-sessions") {
+      const parsed = z.object({ sourceRoomCode: z.string().trim().min(3).max(80), targetRoomCode: z.string().trim().min(3).max(80), mode: z.string().trim().min(2).max(32), durationMinutes: z.number().int() }).parse(body);
+      return NextResponse.json(await createPkSession(identity, parsed), { status: 201 });
+    }
+    if (resource === "pk-end") {
+      const parsed = z.object({ sessionId: z.string().uuid(), completed: z.boolean() }).parse(body);
+      return NextResponse.json(await closePkSession(identity, parsed));
+    }
+    if (resource === "face-presence") {
+      const parsed = z.object({
+        roomCode: z.string().trim().min(3).max(80),
+        consecutiveFailures: z.number().int().min(1).max(30),
+      }).parse(body);
+      return NextResponse.json(await recordFacePresenceAutoStop(identity, parsed), { status: 201 });
+    }
+    if (resource === "room-settings") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), themeIndex: z.number().int().min(0).max(20).optional(), themeEnabled: z.boolean().optional(), pkRequestsEnabled: z.boolean().optional(), chatLocked: z.boolean().optional(), password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(), removePassword: z.boolean().default(false), topPublicId: z.string().regex(/^\d+$/).optional(), resetTopDp: z.boolean().default(false) }).parse(body);
+      return NextResponse.json(await updateRoomSettings(identity, parsed));
+    }
+    if (resource === "room-chat") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), body: z.string().trim().min(1).max(500) }).parse(body);
+      return NextResponse.json(await sendRoomChat(identity, parsed), { status: 201 });
+    }
+    if (resource === "room-chat-clear") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
+      return NextResponse.json(await clearRoomChat(identity, parsed.roomCode));
     }
     if (resource === "live-end") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
