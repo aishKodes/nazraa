@@ -20,34 +20,34 @@ export function rolesCreatableBy(role: Role) { return creatableRoles[role]; }
 
 export async function listPlatformAccounts(scope: Scope, role?: Role) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_account_id: string | null; parent_name: string | null; created_at: string; last_login_at: string | null; document_count: number })[]>(
-    `SELECT a.id, a.public_id, a.role, a.full_name, a.email, a.mobile, a.country_code, a.status, a.parent_account_id,
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; admin_kind: "ADMIN" | "BD" | null; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_account_id: string | null; parent_name: string | null; created_at: string; last_login_at: string | null; document_count: number })[]>(
+    `SELECT a.id, a.public_id, a.role, a.admin_kind, a.full_name, a.email, a.mobile, a.country_code, a.status, a.parent_account_id,
             parent.full_name parent_name, a.created_at, a.last_login_at, COUNT(d.id) document_count
      FROM platform_accounts a LEFT JOIN platform_accounts parent ON parent.id = a.parent_account_id
      LEFT JOIN private_documents d ON d.owner_type = 'PLATFORM_ACCOUNT' AND d.owner_id = a.id
      WHERE ${scoped.clause}${role ? " AND a.role = ?" : ""}
      GROUP BY a.id ORDER BY a.created_at DESC LIMIT 200`, [...scoped.values, ...(role ? [role] : [])],
   );
-  return rows.map((row) => ({ id: row.id, role: row.role, code: String(row.public_id), name: row.full_name, email: row.email, mobile: row.mobile, country: row.country_code, status: row.status, parentId: row.parent_account_id, parentName: row.parent_name, createdAt: row.created_at, lastLoginAt: row.last_login_at, documentCount: Number(row.document_count) }));
+  return rows.map((row) => ({ id: row.id, role: row.role, displayRole: row.role === "ADMIN" && row.admin_kind === "BD" ? "BD" : row.role.replaceAll("_", " "), adminKind: row.admin_kind, code: String(row.public_id), name: row.full_name, email: row.email, mobile: row.mobile, country: row.country_code, status: row.status, parentId: row.parent_account_id, parentName: row.parent_name, createdAt: row.created_at, lastLoginAt: row.last_login_at, documentCount: Number(row.document_count) }));
 }
 
 export async function listParentOptions(scope: Scope) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; public_id: number })[]>(
-    `SELECT id, role, full_name, public_id FROM platform_accounts
+  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; admin_kind: "ADMIN" | "BD" | null; full_name: string; public_id: number })[]>(
+    `SELECT id, role, admin_kind, full_name, public_id FROM platform_accounts
      WHERE ${scoped.clause} AND role IN ('SUPER_ADMIN','ADMIN') AND status = 'ACTIVE' ORDER BY role, full_name`, scoped.values,
   );
-  return rows.map((row) => ({ id: row.id, role: row.role, name: row.full_name, code: String(row.public_id) }));
+  return rows.map((row) => ({ id: row.id, role: row.role, displayRole: row.role === "ADMIN" && row.admin_kind === "BD" ? "BD" : row.role.replaceAll("_", " "), adminKind: row.admin_kind, name: row.full_name, code: String(row.public_id) }));
 }
 
 export async function getPlatformAccountDetail(scope: Scope, accountId: string) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_name: string | null; created_at: string; last_login_at: string | null })[]>(
-    `SELECT a.id, a.public_id, a.role, a.full_name, a.email, a.mobile, a.country_code, a.status, p.full_name parent_name, a.created_at, a.last_login_at
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; admin_kind: "ADMIN" | "BD" | null; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_name: string | null; created_at: string; last_login_at: string | null })[]>(
+    `SELECT a.id, a.public_id, a.role, a.admin_kind, a.full_name, a.email, a.mobile, a.country_code, a.status, p.full_name parent_name, a.created_at, a.last_login_at
      FROM platform_accounts a LEFT JOIN platform_accounts p ON p.id = a.parent_account_id WHERE a.id = ? AND ${scoped.clause} LIMIT 1`,
     [accountId, ...scoped.values],
   );
-  return rows[0] ? { id: rows[0].id, role: rows[0].role, code: String(rows[0].public_id), name: rows[0].full_name, email: rows[0].email, mobile: rows[0].mobile, country: rows[0].country_code, status: rows[0].status, parentName: rows[0].parent_name, createdAt: rows[0].created_at, lastLoginAt: rows[0].last_login_at } : null;
+  return rows[0] ? { id: rows[0].id, role: rows[0].role, displayRole: rows[0].role === "ADMIN" && rows[0].admin_kind === "BD" ? "BD" : rows[0].role.replaceAll("_", " "), adminKind: rows[0].admin_kind, code: String(rows[0].public_id), name: rows[0].full_name, email: rows[0].email, mobile: rows[0].mobile, country: rows[0].country_code, status: rows[0].status, parentName: rows[0].parent_name, createdAt: rows[0].created_at, lastLoginAt: rows[0].last_login_at } : null;
 }
 
 export async function listAccountDocuments(scope: Scope, accountId: string) {
@@ -95,7 +95,7 @@ async function resolveParent(scope: Scope, targetRole: Role, requestedParentId?:
   return rows[0].id;
 }
 
-export async function createPlatformAccount(input: { scope: Scope; role: Role; fullName: string; email?: string; mobile?: string; countryCode: string; applicationUserId?: string; password: string; requestedParentId?: string; documents: PreparedDocument[] }) {
+export async function createPlatformAccount(input: { scope: Scope; role: Role; adminKind?: "ADMIN" | "BD"; fullName: string; email?: string; mobile?: string; countryCode: string; applicationUserId?: string; password: string; requestedParentId?: string; documents: PreparedDocument[] }) {
   if (!creatableRoles[input.scope.account.role].includes(input.role)) throw new Error("Your role cannot create that account type.");
   if (input.password.length < 8) throw new Error("Password must contain at least 8 characters.");
   const parentId = await resolveParent(input.scope, input.role, input.requestedParentId);
@@ -106,9 +106,9 @@ export async function createPlatformAccount(input: { scope: Scope; role: Role; f
   await withTransaction(async (connection) => {
     publicId = await generateManagementPublicId(connection);
     await connection.execute(
-      `INSERT INTO platform_accounts (id, public_id, role, role_code, full_name, application_user_id, email, mobile, password_hash, status, parent_account_id, country_code, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
-      [accountId, publicId, input.role, roleCode, input.fullName, input.applicationUserId || null, input.email || null, input.mobile || null, passwordHash, parentId, input.countryCode, input.scope.account.id],
+      `INSERT INTO platform_accounts (id, public_id, role, admin_kind, role_code, full_name, application_user_id, email, mobile, password_hash, status, parent_account_id, country_code, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
+      [accountId, publicId, input.role, input.role === "ADMIN" ? input.adminKind ?? "ADMIN" : null, roleCode, input.fullName, input.applicationUserId || null, input.email || null, input.mobile || null, passwordHash, parentId, input.countryCode, input.scope.account.id],
     );
     if (input.role === "COIN_SELLER") await connection.execute("INSERT INTO seller_profiles (account_id) VALUES (?)", [accountId]);
     for (const document of input.documents) {
@@ -121,10 +121,31 @@ export async function createPlatformAccount(input: { scope: Scope; role: Role; f
     await connection.execute(
       `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, new_data, reason)
        VALUES (?, ?, ?, 'account.create', 'accounts', 'platform_account', ?, ?, 'Created through role-controlled account form')`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, accountId, JSON.stringify({ role: input.role, publicId, parentId })],
+      [randomUUID(), input.scope.account.id, input.scope.account.role, accountId, JSON.stringify({ role: input.role, adminKind: input.role === "ADMIN" ? input.adminKind ?? "ADMIN" : null, publicId, parentId })],
     );
   });
   return { accountId, publicId };
+}
+
+export async function reassignPlatformAccount(input: { scope: Scope; accountId: string; parentAccountId: string; reason: string }) {
+  if (input.scope.account.role !== "MASTER") throw new Error("Only Master can reassign hierarchy branches.");
+  if (input.accountId === input.parentAccountId || input.accountId === input.scope.account.id) throw new Error("Choose a valid child account and parent.");
+  await withTransaction(async (connection) => {
+    const [targets] = await connection.query<(RowDataPacket & { id: string; role: Role; parent_account_id: string | null })[]>("SELECT id, role, parent_account_id FROM platform_accounts WHERE id = ? LIMIT 1 FOR UPDATE", [input.accountId]);
+    const target = targets[0];
+    if (!target || !["SUPER_ADMIN", "ADMIN", "AGENCY"].includes(target.role)) throw new Error("Only Super Admin, Admin/BD, or Agency nodes can be reassigned.");
+    const requiredParentRole: Role = target.role === "SUPER_ADMIN" ? "MASTER" : target.role === "ADMIN" ? "SUPER_ADMIN" : "ADMIN";
+    const [parents] = await connection.query<(RowDataPacket & { id: string; role: Role })[]>("SELECT id, role FROM platform_accounts WHERE id = ? AND status = 'ACTIVE' LIMIT 1 FOR UPDATE", [input.parentAccountId]);
+    const parent = parents[0];
+    if (!parent || parent.role !== requiredParentRole) throw new Error(`This node must be assigned under an active ${requiredParentRole.replaceAll("_", " ")}.`);
+    if (target.parent_account_id === parent.id) throw new Error("That account is already assigned to the selected parent.");
+    await connection.execute("UPDATE platform_accounts SET parent_account_id = ? WHERE id = ?", [parent.id, target.id]);
+    await connection.execute(
+      `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
+       VALUES (?, ?, ?, 'hierarchy.reassign', 'hierarchy', 'platform_account', ?, ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, target.id, JSON.stringify({ parentAccountId: target.parent_account_id }), JSON.stringify({ parentAccountId: parent.id }), input.reason],
+    );
+  });
 }
 
 export async function updateAccountStatus(input: { scope: Scope; accountId: string; nextStatus: "ACTIVE" | "SUSPENDED" | "DISABLED"; reason: string }) {

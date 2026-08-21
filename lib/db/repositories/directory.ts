@@ -72,8 +72,8 @@ export async function hierarchy(scope: Scope) {
       ? `h.agency_account_id IN (${scope.accountIds.map(() => "?").join(",")})`
       : "1=0";
   const [accountRows, hostRows] = await Promise.all([
-    db().query<(RowDataPacket & { id: string; public_id: number; role: string; full_name: string; parent_account_id: string | null; status: string })[]>(
-      `SELECT id, public_id, role, full_name, parent_account_id, status
+    db().query<(RowDataPacket & { id: string; public_id: number; role: string; admin_kind: string | null; full_name: string; parent_account_id: string | null; status: string })[]>(
+      `SELECT id, public_id, role, admin_kind, full_name, parent_account_id, status
        FROM platform_accounts
        WHERE role IN ('MASTER','SUPER_ADMIN','ADMIN','AGENCY') AND ${accountWhere}
        ORDER BY created_at`,
@@ -96,7 +96,7 @@ export async function hierarchy(scope: Scope) {
   };
   const nodes: HierarchyNode[] = [
     ...accountRows[0].map((row) => ({
-      id: row.id, role: row.role, code: String(row.public_id), name: row.full_name,
+      id: row.id, role: row.role === "ADMIN" && row.admin_kind === "BD" ? "BD" : row.role, code: String(row.public_id), name: row.full_name,
       parentId: row.parent_account_id, status: row.status,
       detailHref: `/dashboard/accounts/${row.id}`, hostCount: 0, liveMinutes: 0, sessions: 0, giftValue: 0,
     })),

@@ -62,6 +62,44 @@ function switchRole(role: string, isHost: boolean) {
   return isHost ? "host" : "user";
 }
 
+function mobileAvatarUrl(row: RowDataPacket, prefix = "") {
+  const publicId = row[`${prefix}public_id`];
+  const uploadedAt = row[`${prefix}avatar_updated_at`];
+  if (publicId != null && uploadedAt != null) {
+    return `https://nazraa.vercel.app/api/v1/mobile/avatar/${publicId}?v=${new Date(uploadedAt as string | Date).getTime()}`;
+  }
+  return row[`${prefix}avatar_url`] ?? null;
+}
+
+async function pruneInactiveRooms() {
+  await withTransaction(async (connection) => {
+    const [staleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT room.id FROM live_rooms room
+       WHERE room.status IN ('ACTIVE','LOCKED')
+         AND NOT EXISTS (
+           SELECT 1 FROM live_room_members owner
+           WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL
+             AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         ) FOR UPDATE`,
+    );
+    if (!staleRows.length) return;
+    const ids = staleRows.map((row) => row.id);
+    const placeholders = ids.map(() => "?").join(",");
+    await connection.execute(
+      `UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id IN (${placeholders})`,
+      ids,
+    );
+    await connection.execute(
+      `UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), audience_count = 0 WHERE id IN (${placeholders})`,
+      ids,
+    );
+    await connection.execute(
+      `UPDATE live_session_accounting SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), status = IF(status = 'ACTIVE', 'VOID', status) WHERE room_id IN (${placeholders})`,
+      ids,
+    );
+  });
+}
+
 async function settingsMap() {
   const [rows] = await db().query<(RowDataPacket & { setting_key: string; setting_value: unknown })[]>(
     "SELECT setting_key, setting_value FROM system_settings",
@@ -70,12 +108,14 @@ async function settingsMap() {
 }
 
 export async function mobileBootstrap(identity: MobileIdentity) {
+  await pruneInactiveRooms();
   const [
     profileRows,
     walletRows,
     transactionRows,
     roomRows,
     roomMemberRows,
+    roomGiftRows,
     peopleRows,
     giftRows,
     bannerRows,
@@ -112,11 +152,12 @@ export async function mobileBootstrap(identity: MobileIdentity) {
               room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.country_code,
               room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled,
               top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
+              top_avatar.updated_at top_avatar_updated_at,
               top_user.country_code top_country, top_user.language_code top_language,
               top_user.level_number top_level, top_user.vip_tier top_vip,
               room.status, room.audience_count,
               user.public_id host_public_id, user.full_name host_name, user.level_number host_level,
-              user.vip_tier host_vip, user.avatar_url host_avatar_url, user.country_code host_country,
+              user.vip_tier host_vip, user.avatar_url host_avatar_url, host_avatar.updated_at host_avatar_updated_at, user.country_code host_country,
               user.language_code host_language,
               (SELECT operator.role FROM platform_accounts operator
                WHERE operator.status = 'ACTIVE' AND
@@ -125,22 +166,52 @@ export async function mobileBootstrap(identity: MobileIdentity) {
                ORDER BY operator.created_at LIMIT 1) host_platform_role,
               account.public_id agency_public_id, account.full_name agency_name
        FROM live_rooms room INNER JOIN application_users user ON user.id = room.host_application_user_id
+       LEFT JOIN application_user_avatars host_avatar ON host_avatar.application_user_id = user.id
        LEFT JOIN application_users top_user ON top_user.id = room.top_application_user_id
+       LEFT JOIN application_user_avatars top_avatar ON top_avatar.application_user_id = top_user.id
        LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
-       WHERE room.status IN ('ACTIVE','LOCKED') ORDER BY room.started_at DESC LIMIT 100`,
+       WHERE room.status IN ('ACTIVE','LOCKED')
+         AND EXISTS (SELECT 1 FROM live_room_members owner WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)
+       ORDER BY room.started_at DESC LIMIT 60`,
     ),
     db().query<RowDataPacket[]>(
-      `SELECT room.room_code, member.room_role, user.public_id, user.full_name, user.avatar_url
+      `SELECT room.room_code, member.room_role, member.muted, user.public_id, user.full_name, user.avatar_url,
+              avatar.updated_at avatar_updated_at,
+              COALESCE(gifts.received_value, 0) received_gift_value
        FROM live_room_members member INNER JOIN live_rooms room ON room.id = member.room_id
        INNER JOIN application_users user ON user.id = member.application_user_id
-       WHERE room.status IN ('ACTIVE','LOCKED') AND member.left_at IS NULL AND member.room_role IN ('OWNER','ADMIN')
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       LEFT JOIN (
+         SELECT room_id, receiver_application_user_id, SUM(coin_value) received_value
+         FROM live_room_gift_events GROUP BY room_id, receiver_application_user_id
+       ) gifts ON gifts.room_id = member.room_id AND gifts.receiver_application_user_id = member.application_user_id
+       WHERE room.status IN ('ACTIVE','LOCKED') AND member.left_at IS NULL
+         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
        ORDER BY room.room_code, member.room_role = 'OWNER' DESC, member.updated_at`,
     ),
     db().query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, user.avatar_url, user.country_code, user.language_code,
+      `SELECT room.room_code, event.id, event.quantity, event.coin_value, event.created_at,
+              gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
+              sender.public_id sender_public_id, sender.full_name sender_name, sender.avatar_url sender_avatar_url,
+              sender_avatar.updated_at sender_avatar_updated_at,
+              receiver.public_id receiver_public_id, receiver.full_name receiver_name, receiver.avatar_url receiver_avatar_url,
+              receiver_avatar.updated_at receiver_avatar_updated_at
+       FROM live_room_gift_events event
+       INNER JOIN live_rooms room ON room.id = event.room_id
+       INNER JOIN gift_catalog gift ON gift.id = event.gift_catalog_id
+       INNER JOIN application_users sender ON sender.id = event.sender_application_user_id
+       INNER JOIN application_users receiver ON receiver.id = event.receiver_application_user_id
+       LEFT JOIN application_user_avatars sender_avatar ON sender_avatar.application_user_id = sender.id
+       LEFT JOIN application_user_avatars receiver_avatar ON receiver_avatar.application_user_id = receiver.id
+       WHERE room.status IN ('ACTIVE','LOCKED')
+       ORDER BY event.created_at DESC LIMIT 300`,
+    ),
+    db().query<RowDataPacket[]>(
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at, user.country_code, user.language_code,
               user.level_number, user.vip_tier, user.is_host,
               account.role platform_role
        FROM application_users user
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        LEFT JOIN platform_accounts account ON account.status = 'ACTIVE'
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        WHERE user.account_status = 'ACTIVE' ORDER BY user.last_active_at DESC LIMIT 80`,
@@ -242,10 +313,15 @@ export async function mobileBootstrap(identity: MobileIdentity) {
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
 
-  const roomManagers = new Map<string, RowDataPacket[]>();
+  const roomMembers = new Map<string, RowDataPacket[]>();
   for (const member of roomMemberRows[0]) {
     const roomCode = String(member.room_code);
-    roomManagers.set(roomCode, [...(roomManagers.get(roomCode) ?? []), member]);
+    roomMembers.set(roomCode, [...(roomMembers.get(roomCode) ?? []), member]);
+  }
+  const roomGifts = new Map<string, RowDataPacket[]>();
+  for (const gift of roomGiftRows[0]) {
+    const roomCode = String(gift.room_code);
+    roomGifts.set(roomCode, [...(roomGifts.get(roomCode) ?? []), gift]);
   }
   const rooms = roomRows[0].map((row, index) => ({
     id: String(row.room_code), title: String(row.title), category: String(row.category),
@@ -258,15 +334,27 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     pkRequestsEnabled: Boolean(row.pk_requests_enabled),
     countryCode: row.country_code,
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
-    host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: row.host_avatar_url,
+    host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
       country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level),
       vip: Number(row.host_vip), role: productRole(row.host_platform_role, true) },
     topUser: row.top_public_id == null ? null : {
-      id: String(row.top_public_id), name: String(row.top_name), avatarUrl: row.top_avatar_url,
+      id: String(row.top_public_id), name: String(row.top_name), avatarUrl: mobileAvatarUrl(row, "top_"),
       country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level),
       vip: Number(row.top_vip), role: "user",
     },
-    managers: (roomManagers.get(String(row.room_code)) ?? []).map((member) => ({ id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, roomRole: String(member.room_role).toLowerCase() })),
+    managers: (roomMembers.get(String(row.room_code)) ?? [])
+      .filter((member) => member.room_role === "OWNER" || member.room_role === "ADMIN")
+      .map((member) => ({ id: String(member.public_id), name: String(member.full_name), avatarUrl: mobileAvatarUrl(member), roomRole: String(member.room_role).toLowerCase() })),
+    participants: (roomMembers.get(String(row.room_code)) ?? []).map((member) => ({
+      user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: mobileAvatarUrl(member) },
+      roomRole: String(member.room_role).toLowerCase(), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
+    })),
+    giftEvents: (roomGifts.get(String(row.room_code)) ?? []).slice(0, 50).map((event) => ({
+      id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
+      gift: { id: String(event.gift_key), name: String(event.gift_name), symbol: event.gift_emoji ? String(event.gift_emoji) : giftSymbol(String(event.gift_key), String(event.gift_name)), imageUrl: event.gift_visual_url },
+      sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: mobileAvatarUrl(event, "sender_") },
+      receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: mobileAvatarUrl(event, "receiver_") },
+    })).reverse(),
   }));
 
   const currentAgency = agencyRows[0][0];
@@ -294,14 +382,14 @@ export async function mobileBootstrap(identity: MobileIdentity) {
       app: settings["mobile.app_config"] ?? {},
       levels: levelConfig,
     },
-    wallet: { coins, diamonds, reservedDiamonds, gameCredits: 0 },
+    wallet: { coins, diamonds, reservedDiamonds, gameCredits: coins },
     transactions: transactionRows[0].map((row) => ({
       id: String(row.transaction_code), title: String(row.reason || row.transaction_type), amount: Number(row.amount),
       createdAt: row.created_at, currency: String(row.asset_type), isCredit: row.destination_id === identity.userId,
       ledger: row.asset_type === "DIAMOND" ? "hostEarnings" : "socialCoins", type: String(row.transaction_type),
     })),
     rooms,
-    people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
+    people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
       country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number),
       vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
     gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
@@ -424,7 +512,9 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   const access = roomType === "PARTY" ? policy.party : roomType === "FACE" ? policy.face : policy.video;
   if (!access.allowed) throw new Error(access.reason);
   const roomId = randomUUID();
-  const photo = input.photoDataUrl ? publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Room photo") : null;
+  const photo = input.photoDataUrl
+    ? await publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Room photo", { maxWidth: 1440, maxHeight: 1920 })
+    : null;
   const photoAssetId = photo ? randomUUID() : null;
   if (input.privacy === "locked" && !/^(\d{4}|\d{6}|\d{10})$/.test(input.password ?? "")) {
     throw new Error("Locked rooms require a 4, 6, or 10 digit password.");
@@ -467,13 +557,35 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   return { id: roomId, roomCode: input.roomCode, status: "ACTIVE" };
 }
 
-export async function sendGift(identity: MobileIdentity, input: { giftId: string; recipient: string; quantity: number }) {
+export async function sendGift(identity: MobileIdentity, input: { roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   return withTransaction(async (connection) => {
-    const [giftRows] = await connection.query<(RowDataPacket & { name: string; coin_price: number })[]>("SELECT name, coin_price FROM gift_catalog WHERE gift_key = ? AND active = TRUE LIMIT 1", [input.giftId]);
-    const [recipientRows] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>("SELECT id, full_name FROM application_users WHERE (public_id = ? OR full_name = ?) AND account_status = 'ACTIVE' ORDER BY public_id LIMIT 1", [input.recipient, input.recipient]);
-    const gift = giftRows[0]; const recipient = recipientRows[0];
-    if (!gift || !recipient) throw new Error("The gift or recipient is unavailable.");
+    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; coin_price: number })[]>("SELECT id, name, emoji, visual_url, coin_price FROM gift_catalog WHERE gift_key = ? AND active = TRUE LIMIT 1", [input.giftId]);
+    const [roomRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT room.id FROM live_rooms room
+       INNER JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [identity.userId, input.roomCode],
+    );
+    const room = roomRows[0];
+    if (!room) throw new Error("Join this room before sending a gift.");
+    const [recipientRows] = await connection.query<(RowDataPacket & { id: string; public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null })[]>(
+      `SELECT user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at
+       FROM live_room_members member INNER JOIN application_users user ON user.id = member.application_user_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       WHERE member.room_id = ? AND member.left_at IS NULL
+         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         AND user.public_id = ? AND user.account_status = 'ACTIVE' LIMIT 1 FOR UPDATE`,
+      [room.id, input.recipientPublicId],
+    );
+    const [senderProfileRows] = await connection.query<(RowDataPacket & { public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null })[]>(
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at
+       FROM application_users user LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       WHERE user.id = ? LIMIT 1`,
+      [identity.userId],
+    );
+    const gift = giftRows[0]; const recipient = recipientRows[0]; const sender = senderProfileRows[0];
+    if (!gift || !recipient || !sender) throw new Error("The gift or active room recipient is unavailable.");
     const total = Number(gift.coin_price) * input.quantity;
     await ensureWallet(connection, identity.userId, "COIN"); await ensureWallet(connection, recipient.id, "DIAMOND");
     const [senderRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' FOR UPDATE", [identity.userId]);
@@ -494,7 +606,66 @@ export async function sendGift(identity: MobileIdentity, input: { giftId: string
     );
     await connection.execute("UPDATE application_users SET consumption_points = consumption_points + ? WHERE id = ?", [total, identity.userId]);
     await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [total, recipient.id]);
-    return { success: true, remainingCoins: Number(senderRows[0].available_balance) - total, message: `Sent to ${recipient.full_name}` };
+    await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+    const eventId = randomUUID();
+    await connection.execute(
+      `INSERT INTO live_room_gift_events
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total],
+    );
+    return {
+      success: true,
+      remainingCoins: Number(senderRows[0].available_balance) - total,
+      message: `Sent to ${recipient.full_name}`,
+      event: {
+        id: eventId, quantity: input.quantity, value: total, createdAt: new Date().toISOString(),
+        gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url },
+        sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender) },
+        receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient) },
+      },
+    };
+  });
+}
+
+export async function mutateGameWallet(identity: MobileIdentity, input: {
+  clientTransactionId: string; direction: "DEBIT" | "CREDIT"; amount: number; game: string; reason: string;
+}) {
+  if (!Number.isSafeInteger(input.amount) || input.amount < 1 || input.amount > 10_000_000) throw new Error("Choose a valid game amount.");
+  return withTransaction(async (connection) => {
+    const [existingRows] = await connection.query<(RowDataPacket & { direction: string; amount: number; balance_after: number })[]>(
+      "SELECT direction, amount, balance_after FROM game_wallet_events WHERE client_transaction_id = ? AND application_user_id = ? LIMIT 1 FOR UPDATE",
+      [input.clientTransactionId, identity.userId],
+    );
+    const existing = existingRows[0];
+    if (existing) {
+      if (existing.direction !== input.direction || Number(existing.amount) !== input.amount) throw new Error("This game transaction ID was already used.");
+      return { success: true, coinBalance: Number(existing.balance_after), message: "Already recorded" };
+    }
+    await ensureWallet(connection, identity.userId, "COIN");
+    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
+      [identity.userId],
+    );
+    const before = Number(walletRows[0].available_balance);
+    if (input.direction === "DEBIT" && before < input.amount) throw new Error("Not enough coins.");
+    const after = input.direction === "DEBIT" ? before - input.amount : before + input.amount;
+    await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [after, walletRows[0].id]);
+    const ledgerId = randomUUID();
+    const transactionCode = code(input.direction === "DEBIT" ? "GMD" : "GMC");
+    await connection.execute(
+      `INSERT INTO ledger_transactions
+       (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, metadata)
+       VALUES (?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, JSON_OBJECT('game', ?))`,
+      [ledgerId, transactionCode, `GAME:${input.clientTransactionId}`, `GAME_${input.direction}`, input.direction === "DEBIT" ? "APPLICATION_USER" : "GAME", input.direction === "DEBIT" ? identity.userId : null, input.direction === "DEBIT" ? "GAME" : "APPLICATION_USER", input.direction === "DEBIT" ? null : identity.userId, input.amount, input.reason, input.game],
+    );
+    await connection.execute(
+      `INSERT INTO game_wallet_events
+       (id, client_transaction_id, application_user_id, direction, amount, game_name, reason, balance_after, ledger_transaction_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), input.clientTransactionId, identity.userId, input.direction, input.amount, input.game, input.reason, after, ledgerId],
+    );
+    return { success: true, coinBalance: after, message: input.direction === "DEBIT" ? "Accepted" : "Paid" };
   });
 }
 

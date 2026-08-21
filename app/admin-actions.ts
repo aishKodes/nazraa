@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission } from "@/lib/auth/guard";
-import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
+import { createPlatformAccount, reassignPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
@@ -23,10 +23,10 @@ function destination(path: string, kind: "error" | "success", message: string) {
 export async function submitCreateAccount(formData: FormData) {
   const scope = await requirePermission("accounts.create");
   const parsed = z.object({
-    role: z.enum(roles), fullName: z.string().trim().min(2).max(120), email: z.string().trim().email().optional().or(z.literal("")),
+    accountType: z.enum([...roles, "BD"]), fullName: z.string().trim().min(2).max(120), email: z.string().trim().email().optional().or(z.literal("")),
     mobile: z.string().trim().max(24).optional(), countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
     applicationUserId: z.string().trim().max(80).optional(), password: z.string().min(8).max(200), requestedParentId: z.string().uuid().optional().or(z.literal("")),
-  }).safeParse(Object.fromEntries(["role", "fullName", "email", "mobile", "countryCode", "applicationUserId", "password", "requestedParentId"].map((key) => [key, formData.get(key)])));
+  }).safeParse(Object.fromEntries(["accountType", "fullName", "email", "mobile", "countryCode", "applicationUserId", "password", "requestedParentId"].map((key) => [key, formData.get(key)])));
   if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Check the required account details and use a password of at least 8 characters."));
   let result: Awaited<ReturnType<typeof createPlatformAccount>>;
   try {
@@ -39,13 +39,25 @@ export async function submitCreateAccount(formData: FormData) {
         if (document) documents.push(document);
       }
     }
-    result = await createPlatformAccount({ scope, ...parsed.data, documents });
+    const { accountType, ...data } = parsed.data;
+    result = await createPlatformAccount({ scope, ...data, role: accountType === "BD" ? "ADMIN" : accountType, adminKind: accountType === "BD" ? "BD" : accountType === "ADMIN" ? "ADMIN" : undefined, documents });
   } catch (error) {
     redirect(destination("/dashboard/accounts", "error", error instanceof Error ? error.message : "Account could not be created."));
   }
   revalidatePath("/dashboard/accounts");
   revalidatePath("/dashboard/hierarchy");
   redirect(destination("/dashboard/accounts", "success", `Management ID ${result.publicId} created. Share the six-digit ID and password securely.`));
+}
+
+export async function submitHierarchyReassignment(formData: FormData) {
+  const scope = await requirePermission("accounts.manage");
+  const parsed = z.object({ accountId: z.string().uuid(), parentAccountId: z.string().uuid(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/hierarchy", "error", "Choose a child, parent, and enter a clear reason."));
+  try { await reassignPlatformAccount({ scope, ...parsed.data }); } catch (error) {
+    redirect(destination("/dashboard/hierarchy", "error", error instanceof Error ? error.message : "Hierarchy could not be updated."));
+  }
+  revalidatePath("/dashboard/hierarchy"); revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/agencies");
+  redirect(destination("/dashboard/hierarchy", "success", "Hierarchy assignment updated and audited."));
 }
 
 export async function submitAccountStatus(formData: FormData) {
@@ -176,7 +188,7 @@ export async function submitBannerStatus(formData: FormData) {
 
 export async function submitAgencyApplicationReview(formData: FormData) {
   const scope = await requirePermission("agencies.read");
-  const parsed = z.object({ applicationId: z.string().uuid(), type: z.enum(["JOIN", "CREATE"]), decision: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().min(5).max(500), parentAccountId: z.string().uuid().optional().or(z.literal("")) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ applicationId: z.string().uuid(), type: z.enum(["JOIN", "CREATE"]), decision: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/agencies", "error", "Choose a decision and enter a clear review reason."));
   try {
     if (parsed.data.type === "JOIN") await reviewAgencyJoin({ scope, ...parsed.data });

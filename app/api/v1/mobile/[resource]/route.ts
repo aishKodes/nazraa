@@ -8,6 +8,7 @@ import {
   createRoom,
   createWithdrawalRequest,
   mobileBootstrap,
+  mutateGameWallet,
   sendGift,
   setFollow,
 } from "@/lib/db/repositories/mobile-product";
@@ -22,6 +23,7 @@ import {
   joinLiveRoom,
   kickRoomMember,
   leaveLiveRoom,
+  refreshRoomPresence,
   roomPublishingDecision,
   sendRoomChat,
   sendRoomInteraction,
@@ -32,7 +34,7 @@ import {
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
-import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, reportDiscoveryPost, reportPrivateMessage, searchAgency, sendPrivateMessage, setPrivateMessageBlock } from "@/lib/db/repositories/mobile-social";
+import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, reportDiscoveryPost, reportPrivateMessage, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
 
 export const dynamic = "force-dynamic";
 
@@ -127,11 +129,21 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
       return NextResponse.json(await applyToJoinAgency(identity, parsed.publicId), { status: 201 });
     }
+    if (resource === "agency-parent-verify") {
+      const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
+      return NextResponse.json(await verifyAgencyParent(parsed.publicId));
+    }
     if (resource === "agency-apply") {
       const parsed = z.object({
         name: z.string().trim().min(3).max(120),
+        ownerName: z.string().trim().min(2).max(120),
         countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
         whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
+        pan: z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/)),
+        aadhaar: z.string().transform((value) => value.replace(/\D/g, "")).pipe(z.string().regex(/^\d{12}$/)),
+        parentCode: z.string().regex(/^\d{6}$/),
+        documentDataUrl: z.string().max(2_850_000),
+        documentName: z.string().trim().min(1).max(255),
         logoDataUrl: z.string().max(1_500_000).optional(),
       }).parse(body);
       return NextResponse.json(await applyToCreateAgency(identity, parsed), { status: 201 });
@@ -192,6 +204,10 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
       return NextResponse.json(await leaveLiveRoom(identity, parsed.roomCode));
     }
+    if (resource === "room-presence") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
+      return NextResponse.json(await refreshRoomPresence(identity, parsed.roomCode));
+    }
     if (resource === "room-admins") {
       if (!mobileCan(identity, "rooms.manage.own")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), makeAdmin: z.boolean() }).parse(body);
@@ -242,8 +258,19 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     }
     if (resource === "gifts") {
       if (!mobileCan(identity, "gifts.send")) return errorResponse(new Error("Forbidden."), 403);
-      const parsed = z.object({ giftId: z.string().trim().min(1).max(80), recipient: z.string().trim().min(1).max(120), quantity: z.number().int().min(1).max(99) }).parse(body);
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), giftId: z.string().trim().min(1).max(80), recipientPublicId: z.string().regex(/^\d+$/), quantity: z.number().int().min(1).max(99) }).parse(body);
       return NextResponse.json(await sendGift(identity, parsed));
+    }
+    if (resource === "game-wallet") {
+      if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
+      const parsed = z.object({
+        clientTransactionId: z.string().uuid(),
+        direction: z.enum(["DEBIT", "CREDIT"]),
+        amount: z.number().int().positive().max(10_000_000),
+        game: z.string().trim().min(1).max(120),
+        reason: z.string().trim().min(1).max(240),
+      }).parse(body);
+      return NextResponse.json(await mutateGameWallet(identity, parsed), { status: 201 });
     }
     if (resource === "face") {
       if (!mobileCan(identity, "face.submit")) return errorResponse(new Error("Forbidden."), 403);

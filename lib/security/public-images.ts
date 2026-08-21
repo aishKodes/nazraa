@@ -40,12 +40,25 @@ export async function preparePublicImage(
   };
 }
 
-export function publicImageFromDataUrl(value: string, maxBytes: number, label: string): PreparedPublicImage {
+export async function publicImageFromDataUrl(
+  value: string,
+  maxBytes: number,
+  label: string,
+  options: { maxWidth: number; maxHeight: number } = { maxWidth: 1600, maxHeight: 1600 },
+): Promise<PreparedPublicImage> {
   const match = value.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
   if (!match) throw new Error(`${label} must be a JPG, PNG, or WebP image.`);
   const data = Buffer.from(match[2], "base64");
-  if (!data.length || data.length > maxBytes) throw new Error(`${label} is too large.`);
+  if (!data.length || data.length > Math.max(maxBytes * 4, 8 * 1024 * 1024)) throw new Error(`${label} is too large.`);
   const mimeType = detectedMime(data);
   if (!mimeType || mimeType !== match[1]) throw new Error(`${label} image data is invalid.`);
-  return { mimeType, data, byteSize: data.length, originalName: "mobile-upload" };
+  const optimized = await sharp(data, { limitInputPixels: 40_000_000 })
+    .rotate()
+    .resize({ width: options.maxWidth, height: options.maxHeight, fit: "inside", withoutEnlargement: true })
+    .webp({ quality: 82, effort: 4 })
+    .toBuffer();
+  if (optimized.length < 1_000 || optimized.length > maxBytes) {
+    throw new Error(`${label} remains too large after optimization. Choose a smaller image.`);
+  }
+  return { mimeType: "image/webp", data: optimized, byteSize: optimized.length, originalName: "mobile-upload.webp" };
 }

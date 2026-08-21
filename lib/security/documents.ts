@@ -43,6 +43,26 @@ export async function preparePrivateDocument(file: File, id: string, documentTyp
   };
 }
 
+export function preparePrivateDocumentDataUrl(input: { dataUrl: string; id: string; documentType: string; originalName: string }): PreparedDocument {
+  const match = /^data:(image\/(?:jpeg|png)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(input.dataUrl);
+  if (!match) throw new Error(`${input.documentType} must be a JPG, PNG, or PDF.`);
+  const plain = Buffer.from(match[2], "base64");
+  if (!plain.length || plain.length > 2 * 1024 * 1024) throw new Error(`${input.documentType} must be 2 MB or smaller.`);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const encryptedData = Buffer.concat([cipher.update(plain), cipher.final()]);
+  return {
+    id: input.id,
+    documentType: input.documentType,
+    originalName: input.originalName.replace(/[^a-zA-Z0-9._ -]/g, "_").slice(0, 255) || "agency-proof",
+    mimeType: match[1],
+    byteSize: plain.length,
+    encryptedData,
+    iv,
+    tag: cipher.getAuthTag(),
+  };
+}
+
 export function decryptPrivateDocument(input: { encryptedData: Buffer; iv: Buffer; tag: Buffer }) {
   const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), input.iv);
   decipher.setAuthTag(input.tag);

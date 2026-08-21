@@ -6,17 +6,7 @@ import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
-
-function imageDataUrl(value?: string) {
-  if (!value) return null;
-  const match = value.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
-  if (!match) throw new Error("Agency logo must be a JPG, PNG, or WebP image.");
-  const bytes = Buffer.from(match[2], "base64");
-  if (bytes.length < 1_000 || bytes.length > 1024 * 1024) {
-    throw new Error("Agency logo must be between 1 KB and 1 MB.");
-  }
-  return { mimeType: match[1], bytes };
-}
+import { encryptPrivateText, preparePrivateDocumentDataUrl } from "@/lib/security/documents";
 
 export async function agencyApplicationsForUser(identity: MobileIdentity) {
   try {
@@ -31,16 +21,18 @@ export async function agencyApplicationsForUser(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT application.id, application.status, application.review_reason, application.created_at,
-              approved.public_id agency_public_id, application.agency_name
+              approved.public_id agency_public_id, application.agency_name,
+              parent.public_id parent_public_id, parent.full_name parent_name, parent.admin_kind
        FROM agency_creation_applications application
        LEFT JOIN platform_accounts approved ON approved.id = application.approved_agency_account_id
+       LEFT JOIN platform_accounts parent ON parent.id = application.parent_account_id
        WHERE application.application_user_id = ? ORDER BY application.created_at DESC LIMIT 20`,
       [identity.userId],
     ),
     ]);
     return [
       ...joins[0].map((row) => ({ id: String(row.id), type: "join", status: String(row.status).toLowerCase(), agencyId: String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, createdAt: row.created_at })),
-      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, createdAt: row.created_at })),
+      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, parent: row.parent_public_id == null ? null : { id: String(row.parent_public_id), name: String(row.parent_name), role: row.admin_kind === "BD" ? "BD" : "Admin" }, createdAt: row.created_at })),
     ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   } catch (error) {
     // Keeps mobile bootstrap available while a production migration rolls out.
@@ -64,6 +56,18 @@ export async function searchAgency(publicId: string) {
   return { id: String(agency.public_id), name: String(agency.full_name), country: agency.country_code ?? "", status: String(agency.status), hostCount: Number(agency.host_count) };
 }
 
+export async function verifyAgencyParent(publicId: string) {
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; admin_kind: "ADMIN" | "BD" | null })[]>(
+    `SELECT id, public_id, full_name, admin_kind
+     FROM platform_accounts
+     WHERE public_id = ? AND role = 'ADMIN' AND status = 'ACTIVE' LIMIT 1`,
+    [publicId],
+  );
+  const parent = rows[0];
+  if (!parent) throw new Error("No active Admin or BD was found with that six-digit code.");
+  return { id: String(parent.public_id), name: parent.full_name, role: parent.admin_kind === "BD" ? "BD" : "Admin" };
+}
+
 export async function applyToJoinAgency(identity: MobileIdentity, publicId: string) {
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
@@ -78,21 +82,54 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
   });
 }
 
-export async function applyToCreateAgency(identity: MobileIdentity, input: { name: string; countryCode: string; whatsappE164: string; logoDataUrl?: string }) {
-  const logo = imageDataUrl(input.logoDataUrl);
+export async function applyToCreateAgency(identity: MobileIdentity, input: {
+  name: string;
+  ownerName: string;
+  countryCode: string;
+  whatsappE164: string;
+  pan: string;
+  aadhaar: string;
+  parentCode: string;
+  documentDataUrl: string;
+  documentName: string;
+  logoDataUrl?: string;
+}) {
+  const logo = input.logoDataUrl
+    ? await publicImageFromDataUrl(input.logoDataUrl, 1024 * 1024, "Agency logo", { maxWidth: 900, maxHeight: 900 })
+    : null;
+  const proof = preparePrivateDocumentDataUrl({ dataUrl: input.documentDataUrl, id: randomUUID(), documentType: "AGENCY_KYC_PROOF", originalName: input.documentName });
+  const pan = input.pan.toUpperCase();
+  const aadhaar = input.aadhaar.replace(/\D/g, "");
+  const encryptedPan = encryptPrivateText(pan);
+  const encryptedAadhaar = encryptPrivateText(aadhaar);
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     if (users[0]?.agency_account_id) throw new Error("This account is already linked to an Agency.");
     const [pending] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [identity.userId]);
     if (pending.length) throw new Error("Your Agency creation application is already pending.");
+    const [parents] = await connection.query<(RowDataPacket & { id: string; public_id: number; full_name: string; admin_kind: "ADMIN" | "BD" | null })[]>(
+      "SELECT id, public_id, full_name, admin_kind FROM platform_accounts WHERE public_id = ? AND role = 'ADMIN' AND status = 'ACTIVE' LIMIT 1 FOR SHARE",
+      [input.parentCode],
+    );
+    const parent = parents[0];
+    if (!parent) throw new Error("The selected Admin or BD is no longer active. Verify the parent code again.");
+    const applicationId = randomUUID();
     await connection.execute(
       `INSERT INTO agency_creation_applications
-        (id, application_user_id, agency_name, country_code, business_whatsapp_e164, logo_mime_type, logo_data, logo_byte_size)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), identity.userId, input.name, input.countryCode, input.whatsappE164, logo?.mimeType ?? null, logo?.bytes ?? null, logo?.bytes.length ?? null],
+        (id, application_user_id, agency_name, owner_name, country_code, business_whatsapp_e164, parent_account_id,
+         pan_last4, pan_encrypted, pan_iv, pan_tag, aadhaar_last4, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
+         logo_mime_type, logo_data, logo_byte_size, document_original_name, document_mime_type, document_byte_size,
+         document_encrypted_data, document_encryption_iv, document_encryption_tag)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [applicationId, identity.userId, input.name, input.ownerName, input.countryCode, input.whatsappE164, parent.id,
+       pan.slice(-4), encryptedPan.encryptedData, encryptedPan.iv, encryptedPan.tag,
+       aadhaar.slice(-4), encryptedAadhaar.encryptedData, encryptedAadhaar.iv, encryptedAadhaar.tag,
+       logo?.mimeType ?? null, logo?.data ?? null, logo?.byteSize ?? null,
+       proof.originalName, proof.mimeType, proof.byteSize, proof.encryptedData, proof.iv, proof.tag],
     );
-    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'Agency creation pending', 'Nazraa operations received your Agency application.', 'agency')", [randomUUID(), identity.userId]);
-    return { status: "pending" };
+    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'Agency creation pending', ?, 'agency')", [randomUUID(), identity.userId, `${parent.admin_kind === "BD" ? "BD" : "Admin"} ${parent.full_name} will review this application.`]);
+    await connection.execute("INSERT INTO audit_logs (id, action, module, target_type, target_id, new_data, reason) VALUES (?, 'agency.creation_submit', 'agencies', 'agency_creation_application', ?, ?, 'Submitted from authenticated mobile account')", [randomUUID(), applicationId, JSON.stringify({ parentAccountId: parent.id, parentPublicId: Number(parent.public_id), hasEncryptedKyc: true })]);
+    return { status: "pending", parent: { id: String(parent.public_id), name: parent.full_name, role: parent.admin_kind === "BD" ? "BD" : "Admin" } };
   });
 }
 
@@ -121,7 +158,7 @@ export async function discoveryPosts() {
 }
 
 export async function createDiscoveryPost(identity: MobileIdentity, input: { caption: string; photoDataUrl: string }) {
-  const image = publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Post photo");
+  const image = await publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Post photo", { maxWidth: 1440, maxHeight: 1920 });
   const assetId = randomUUID();
   const postId = randomUUID();
   await withTransaction(async (connection) => {

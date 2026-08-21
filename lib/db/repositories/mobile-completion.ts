@@ -9,6 +9,7 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { FaceBiometricService } from "@/lib/services/face-biometric-service";
 import { preparePrivateDocument } from "@/lib/security/documents";
+import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import { agencyApplicationsForUser, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
 
 function code(prefix: string) {
@@ -22,20 +23,13 @@ async function ensureWallet(connection: PoolConnection, userId: string, assetTyp
   );
 }
 
-function avatarBytes(value?: string) {
-  if (!value) return null;
-  const match = value.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
-  if (!match) throw new Error("Profile photo must be a JPG, PNG, or WebP image.");
-  const bytes = Buffer.from(match[2], "base64");
-  if (bytes.length < 1_000 || bytes.length > 1024 * 1024) throw new Error("Profile photo must be between 1 KB and 1 MB.");
-  return { mimeType: match[1], bytes };
-}
-
 export async function updateMobileProfile(identity: MobileIdentity, input: {
   displayName: string; bio: string; gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY";
   countryCode: string; languageCode: string; whatsappE164: string; avatarDataUrl?: string;
 }) {
-  const avatar = avatarBytes(input.avatarDataUrl);
+  const avatar = input.avatarDataUrl
+    ? await publicImageFromDataUrl(input.avatarDataUrl, 1024 * 1024, "Profile photo", { maxWidth: 900, maxHeight: 900 })
+    : null;
   await withTransaction(async (connection) => {
     await connection.execute(
       `UPDATE application_users SET full_name = ?, bio = ?, gender = ?, country_code = ?, language_code = ?, whatsapp_e164 = ?
@@ -46,12 +40,15 @@ export async function updateMobileProfile(identity: MobileIdentity, input: {
       await connection.execute(
         `INSERT INTO application_user_avatars (application_user_id, mime_type, image_data, byte_size)
          VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE mime_type = VALUES(mime_type), image_data = VALUES(image_data), byte_size = VALUES(byte_size)`,
-        [identity.userId, avatar.mimeType, avatar.bytes, avatar.bytes.length],
+        [identity.userId, avatar.mimeType, avatar.data, avatar.byteSize],
       );
       await connection.execute("UPDATE application_users SET avatar_url = NULL WHERE id = ?", [identity.userId]);
     }
   });
-  return { updated: true };
+  return {
+    updated: true,
+    avatarUrl: avatar ? `https://nazraa.vercel.app/api/v1/mobile/avatar/${identity.publicId}?v=${Date.now()}` : undefined,
+  };
 }
 
 export async function avatarForPublicId(publicId: string) {
@@ -189,9 +186,9 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
       ? "OWNER"
       : room.room_type === "PARTY" && interactionAllowed ? "SPEAKER" : "AUDIENCE";
     await connection.execute(
-      `INSERT INTO live_room_members (room_id, application_user_id, room_role, muted, left_at)
-       VALUES (?, ?, ?, ?, NULL)
-       ON DUPLICATE KEY UPDATE room_role = IF(room_role IN ('OWNER','ADMIN'), room_role, VALUES(room_role)), muted = VALUES(muted), left_at = NULL`,
+      `INSERT INTO live_room_members (room_id, application_user_id, room_role, muted, left_at, last_seen_at)
+       VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
+       ON DUPLICATE KEY UPDATE room_role = IF(room_role IN ('OWNER','ADMIN'), room_role, VALUES(room_role)), muted = VALUES(muted), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
       [room.id, identity.userId, requestedRole, requestedRole === "AUDIENCE"],
     );
     await connection.execute(
@@ -216,7 +213,12 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
     );
     const room = rooms[0];
     if (!room) return { left: true };
-    if (room.host_application_user_id === identity.userId) throw new Error("The room owner must end the room.");
+    if (room.host_application_user_id === identity.userId) {
+      await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [room.id]);
+      await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), audience_count = 0 WHERE id = ?", [room.id]);
+      await connection.execute("UPDATE live_session_accounting SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), status = IF(status = 'ACTIVE', 'VOID', status) WHERE room_id = ?", [room.id]);
+      return { left: true, closed: true };
+    }
     await connection.execute(
       "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE WHERE room_id = ? AND application_user_id = ?",
       [room.id, identity.userId],
@@ -228,6 +230,73 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
       [room.id, room.id],
     );
     return { left: true };
+  });
+}
+
+export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string) {
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT room.id FROM live_rooms room
+       INNER JOIN live_room_members member ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [identity.userId, roomCode],
+    );
+    if (!rows[0]) return { active: false };
+    await connection.execute(
+      "UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      [rows[0].id, identity.userId],
+    );
+    const [participants] = await connection.query<RowDataPacket[]>(
+      `SELECT user.public_id, user.full_name, member.room_role, member.muted,
+              CASE WHEN avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                ELSE user.avatar_url END avatar_url,
+              COALESCE(gifts.received_value, 0) received_gift_value
+       FROM live_room_members member
+       INNER JOIN application_users user ON user.id = member.application_user_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       LEFT JOIN (
+         SELECT room_id, receiver_application_user_id, SUM(coin_value) received_value
+         FROM live_room_gift_events WHERE room_id = ? GROUP BY room_id, receiver_application_user_id
+       ) gifts ON gifts.room_id = member.room_id AND gifts.receiver_application_user_id = member.application_user_id
+       WHERE member.room_id = ? AND member.left_at IS NULL
+         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+       ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
+      [rows[0].id, rows[0].id],
+    );
+    const [giftEvents] = await connection.query<RowDataPacket[]>(
+      `SELECT event.id, event.quantity, event.coin_value, event.created_at,
+              gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
+              sender.public_id sender_public_id, sender.full_name sender_name,
+              CASE WHEN sender_avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', sender.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(sender_avatar.updated_at) * 1000))
+                ELSE sender.avatar_url END sender_avatar_url,
+              receiver.public_id receiver_public_id, receiver.full_name receiver_name,
+              CASE WHEN receiver_avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
+                ELSE receiver.avatar_url END receiver_avatar_url
+       FROM live_room_gift_events event
+       INNER JOIN gift_catalog gift ON gift.id = event.gift_catalog_id
+       INNER JOIN application_users sender ON sender.id = event.sender_application_user_id
+       INNER JOIN application_users receiver ON receiver.id = event.receiver_application_user_id
+       LEFT JOIN application_user_avatars sender_avatar ON sender_avatar.application_user_id = sender.id
+       LEFT JOIN application_user_avatars receiver_avatar ON receiver_avatar.application_user_id = receiver.id
+       WHERE event.room_id = ? ORDER BY event.created_at DESC LIMIT 50`,
+      [rows[0].id],
+    );
+    return {
+      active: true,
+      participants: participants.map((member) => ({
+        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url },
+        roomRole: String(member.room_role).toLowerCase(), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
+      })),
+      giftEvents: giftEvents.reverse().map((event) => ({
+        id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
+        gift: { id: String(event.gift_key), name: String(event.gift_name), symbol: event.gift_emoji ?? "🎁", imageUrl: event.gift_visual_url },
+        sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: event.sender_avatar_url },
+        receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: event.receiver_avatar_url },
+      })),
+    };
   });
 }
 
@@ -678,7 +747,8 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
        reward_rule_id = ?, reward_coins = ?, reward_ledger_id = ?, status = 'FINALIZED', finalized_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
       [validSeconds, eligibleSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
     );
-    await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.room_id]);
+    await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [session.room_id]);
+    await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3), audience_count = 0 WHERE id = ?", [session.room_id]);
     return { transactionId: rewardCode, roomType: session.room_type.toLowerCase(), validSeconds, eligibleSeconds, rewardCoins };
   });
 }
