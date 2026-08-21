@@ -5,18 +5,13 @@ import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { PreparedDocument } from "@/lib/security/documents";
 
-export async function syncApplicationUser(input: { externalUserId: string; fullName: string; countryCode: string; avatarUrl?: string; agencyCode?: string }) {
-  let agencyId: string | null = null;
-  if (input.agencyCode) {
-    const [agencies] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM platform_accounts WHERE role = 'AGENCY' AND role_code = ? AND status = 'ACTIVE' LIMIT 1", [input.agencyCode.toUpperCase()]);
-    agencyId = agencies[0]?.id ?? null;
-  }
+export async function syncApplicationUser(input: { externalUserId: string; fullName: string; countryCode: string; avatarUrl?: string }) {
   const id = randomUUID();
   await db().execute(
-    `INSERT INTO application_users (id, external_user_id, full_name, avatar_url, country_code, agency_account_id, last_active_at)
-     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
-     ON DUPLICATE KEY UPDATE full_name = VALUES(full_name), avatar_url = VALUES(avatar_url), country_code = VALUES(country_code), agency_account_id = COALESCE(VALUES(agency_account_id), agency_account_id), last_active_at = CURRENT_TIMESTAMP(3)`,
-    [id, input.externalUserId, input.fullName, input.avatarUrl || null, input.countryCode, agencyId],
+    `INSERT INTO application_users (id, external_user_id, full_name, avatar_url, country_code, last_active_at)
+     VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))
+     ON DUPLICATE KEY UPDATE full_name = VALUES(full_name), avatar_url = VALUES(avatar_url), country_code = VALUES(country_code), last_active_at = CURRENT_TIMESTAMP(3)`,
+    [id, input.externalUserId, input.fullName, input.avatarUrl || null, input.countryCode],
   );
   const [rows] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM application_users WHERE external_user_id = ? LIMIT 1", [input.externalUserId]);
   return rows[0].id;
@@ -25,10 +20,12 @@ export async function syncApplicationUser(input: { externalUserId: string; fullN
 export async function createMobileHostApplication(input: { externalUserId: string; legalName: string; countryCode: string; governmentIdType: string; governmentIdLast4: string; agencyCode?: string; documents: PreparedDocument[] }) {
   const [users] = await db().query<(RowDataPacket & { id: string; agency_account_id: string | null })[]>("SELECT id, agency_account_id FROM application_users WHERE external_user_id = ? LIMIT 1", [input.externalUserId]);
   const user = users[0]; if (!user) throw new Error("Sync the application user before submitting a host application.");
-  let agencyId = user.agency_account_id;
+  const agencyId = user.agency_account_id;
   if (input.agencyCode) {
-    const [agencies] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM platform_accounts WHERE role = 'AGENCY' AND role_code = ? AND status = 'ACTIVE' LIMIT 1", [input.agencyCode.toUpperCase()]);
-    if (!agencies[0]) throw new Error("Agency code was not found."); agencyId = agencies[0].id;
+    if (!/^\d{6}$/.test(input.agencyCode)) throw new Error("Agency ID must contain exactly six digits.");
+    if (!agencyId) throw new Error("Apply to join this Agency first. Host applications cannot change Agency membership.");
+    const [agencies] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM platform_accounts WHERE id = ? AND role = 'AGENCY' AND public_id = ? AND status = 'ACTIVE' LIMIT 1", [agencyId, input.agencyCode]);
+    if (!agencies[0]) throw new Error("The Agency ID does not match your approved Agency membership.");
   }
   const hostId = randomUUID();
   await withTransaction(async (connection) => {
@@ -59,7 +56,7 @@ export async function createMobileSupportTicket(input: { externalUserId: string;
 }
 
 export async function publicMobileConfig() {
-  const [gifts] = await db().query<RowDataPacket[]>("SELECT gift_key `key`, name, category, coin_price coinPrice, visual_url visualUrl, animation_key animationKey FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name");
+  const [gifts] = await db().query<RowDataPacket[]>("SELECT gift_key `key`, name, category, emoji, coin_price coinPrice, visual_url visualUrl, animation_key animationKey FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name");
   const [banners] = await db().query<RowDataPacket[]>(
     `SELECT id, placement, title, subtitle, image_url imageUrl, action_type actionType, action_target actionTarget, priority
      FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3)) AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3)) ORDER BY priority DESC`,

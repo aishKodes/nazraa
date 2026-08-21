@@ -65,10 +65,71 @@ export async function listAgencies(scope: Scope) {
 }
 
 export async function hierarchy(scope: Scope) {
-  const where = scope.isGlobal ? "1=1" : `id IN (${scope.accountIds.map(() => "?").join(",")})`;
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: string; role_code: string; full_name: string; parent_account_id: string | null; status: string })[]>(
-    `SELECT id, role, role_code, full_name, parent_account_id, status FROM platform_accounts WHERE ${where} ORDER BY created_at`,
-    scope.isGlobal ? [] : scope.accountIds,
-  );
-  return rows.map((row) => ({ id: row.id, role: row.role, code: row.role_code, name: row.full_name, parentId: row.parent_account_id, status: row.status }));
+  const accountWhere = scope.isGlobal ? "1=1" : `id IN (${scope.accountIds.map(() => "?").join(",")})`;
+  const hostWhere = scope.isGlobal
+    ? "1=1"
+    : scope.accountIds.length
+      ? `h.agency_account_id IN (${scope.accountIds.map(() => "?").join(",")})`
+      : "1=0";
+  const [accountRows, hostRows] = await Promise.all([
+    db().query<(RowDataPacket & { id: string; public_id: number; role: string; full_name: string; parent_account_id: string | null; status: string })[]>(
+      `SELECT id, public_id, role, full_name, parent_account_id, status
+       FROM platform_accounts
+       WHERE role IN ('MASTER','SUPER_ADMIN','ADMIN','AGENCY') AND ${accountWhere}
+       ORDER BY created_at`,
+      scope.isGlobal ? [] : scope.accountIds,
+    ),
+    db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; agency_account_id: string; status: string; live_minutes_30d: number; sessions_30d: number; gifts_value_30d: number })[]>(
+      `SELECT h.id, u.public_id, u.full_name, h.agency_account_id, h.status,
+              h.live_minutes_30d, h.sessions_30d, h.gifts_value_30d
+       FROM host_profiles h
+       INNER JOIN application_users u ON u.id = h.application_user_id
+       WHERE h.agency_account_id IS NOT NULL AND ${hostWhere}
+       ORDER BY u.full_name`,
+      scope.isGlobal ? [] : scope.accountIds,
+    ),
+  ]);
+
+  type HierarchyNode = {
+    id: string; role: string; code: string; name: string; parentId: string | null; status: string;
+    detailHref: string; hostCount: number; liveMinutes: number; sessions: number; giftValue: number;
+  };
+  const nodes: HierarchyNode[] = [
+    ...accountRows[0].map((row) => ({
+      id: row.id, role: row.role, code: String(row.public_id), name: row.full_name,
+      parentId: row.parent_account_id, status: row.status,
+      detailHref: `/dashboard/accounts/${row.id}`, hostCount: 0, liveMinutes: 0, sessions: 0, giftValue: 0,
+    })),
+    ...hostRows[0].map((row) => ({
+      id: `host:${row.id}`, role: "HOST", code: String(row.public_id), name: row.full_name,
+      parentId: row.agency_account_id, status: row.status,
+      detailHref: `/dashboard/hosts/${row.id}`, hostCount: 1,
+      liveMinutes: Number(row.live_minutes_30d), sessions: Number(row.sessions_30d), giftValue: Number(row.gifts_value_30d),
+    })),
+  ];
+  const children = new Map<string, HierarchyNode[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    children.set(node.parentId, [...(children.get(node.parentId) ?? []), node]);
+  }
+  const summarized = new Map<string, Pick<HierarchyNode, "hostCount" | "liveMinutes" | "sessions" | "giftValue">>();
+  function summary(node: HierarchyNode, trail = new Set<string>()) {
+    if (summarized.has(node.id)) return summarized.get(node.id)!;
+    if (trail.has(node.id)) return { hostCount: node.hostCount, liveMinutes: node.liveMinutes, sessions: node.sessions, giftValue: node.giftValue };
+    const nextTrail = new Set(trail).add(node.id);
+    const total = (children.get(node.id) ?? []).reduce(
+      (result, child) => {
+        const childSummary = summary(child, nextTrail);
+        result.hostCount += childSummary.hostCount;
+        result.liveMinutes += childSummary.liveMinutes;
+        result.sessions += childSummary.sessions;
+        result.giftValue += childSummary.giftValue;
+        return result;
+      },
+      { hostCount: node.hostCount, liveMinutes: node.liveMinutes, sessions: node.sessions, giftValue: node.giftValue },
+    );
+    summarized.set(node.id, total);
+    return total;
+  }
+  return nodes.map((node) => ({ ...node, ...summary(node) }));
 }

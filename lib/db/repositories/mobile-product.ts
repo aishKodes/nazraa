@@ -131,7 +131,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        WHERE user.account_status = 'ACTIVE' ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
-    db().query<RowDataPacket[]>("SELECT gift_key, name, category, coin_price, visual_url, animation_key FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name"),
+    db().query<RowDataPacket[]>("SELECT gift_key, name, category, emoji, coin_price, visual_url, animation_key FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name"),
     db().query<RowDataPacket[]>(
       `SELECT id, placement, title, subtitle, image_url, action_type, action_target, priority, starts_at, ends_at
        FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3))
@@ -263,7 +263,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
       permissions: permissionsForMobileRole(identity.role),
     },
     config: {
-      features: settings["mobile.features"] ?? {}, commerce, app: settings["mobile.app"] ?? {}, levels: levelConfig,
+      features: settings["mobile.features"] ?? {}, commerce, app: settings["mobile.app_config"] ?? {}, levels: levelConfig,
     },
     wallet: { coins, diamonds, reservedDiamonds, gameCredits: 0 },
     transactions: transactionRows[0].map((row) => ({
@@ -273,7 +273,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     })),
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), country: row.country_code ?? "", level: Number(row.level_number), vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
-    gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
+    gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({ id: String(row.id), message: String(row.message), title: row.title, kind: row.notification_type ? "system" : "event", actionTarget: row.action_target, priority: 100 - index, startAt: row.created_at, endAt: "2999-12-31T23:59:59.000Z", isActive: true })),
     coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),

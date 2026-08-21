@@ -72,8 +72,8 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     <main className="main-area">
       <header className="topbar">
         <button className="mobile-menu" type="button" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
-        <form className="quick-search" action="/dashboard/users"><Search size={18} /><input ref={searchRef} name="q" aria-label="Global user search" placeholder="Search name or user ID" /><kbd>⌘ K</kbd></form>
-        <div className="top-actions"><Link href="/dashboard/notifications" className="icon-button" aria-label="Notifications"><Bell size={19} /></Link><span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
+        {can(account.role, "users.read") ? <form className="quick-search" action="/dashboard/users"><Search size={18} /><input ref={searchRef} name="q" aria-label="Scoped user search" placeholder="Search name or user ID" /><kbd>⌘ K</kbd></form> : <span />}
+        <div className="top-actions">{can(account.role, "notifications.read") ? <Link href="/dashboard/notifications" className="icon-button" aria-label="Notifications"><Bell size={19} /></Link> : null}<span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
       </header>
       <div className="page-content">{children}</div>
     </main>

@@ -7,7 +7,7 @@ import { z } from "zod";
 import { requirePermission } from "@/lib/auth/guard";
 import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
-import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, setBannerActive, setGiftActive, updateSupportTicket } from "@/lib/db/repositories/catalog";
+import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
@@ -124,14 +124,30 @@ export async function submitHostStatus(formData: FormData) {
 
 export async function submitCreateGift(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift key, name, category, price, and animation key."));
   try {
     const imageFile = formData.get("image");
-    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork") : undefined;
-    await createGift({ scope, ...parsed.data, image });
+    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork", { maxWidth: 512, maxHeight: 512, animated: true }) : undefined;
+    if (parsed.data.artworkMode === "IMAGE" && !image) throw new Error("Choose a gift picture.");
+    if (parsed.data.artworkMode === "EMOJI" && !parsed.data.emoji) throw new Error("Choose a gift emoji.");
+    await createGift({ scope, ...parsed.data, emoji: parsed.data.artworkMode === "EMOJI" ? parsed.data.emoji : undefined, image: parsed.data.artworkMode === "IMAGE" ? image : undefined });
   } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be created.")); }
   revalidatePath("/dashboard/gifts"); redirect(destination("/dashboard/gifts", "success", "Gift created."));
+}
+
+export async function submitGiftUpdate(formData: FormData) {
+  const scope = await requirePermission("gifts.manage");
+  const parsed = z.object({ id: z.string().uuid(), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift details and change reason."));
+  try {
+    const imageFile = formData.get("image");
+    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork", { maxWidth: 512, maxHeight: 512, animated: true }) : undefined;
+    if (parsed.data.artworkMode === "EMOJI" && !parsed.data.emoji) throw new Error("Choose a gift emoji.");
+    await updateGift({ scope, ...parsed.data, image });
+  } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be updated.")); }
+  revalidatePath("/dashboard/gifts");
+  redirect(destination("/dashboard/gifts", "success", "Gift details and mobile price updated."));
 }
 
 export async function submitGiftStatus(formData: FormData) {
@@ -146,8 +162,8 @@ export async function submitCreateBanner(formData: FormData) {
   if (!parsed.success || !(imageFile instanceof File) || !imageFile.size) redirect(destination("/dashboard/banners", "error", "Check the banner image, title, internal action, placement, and schedule."));
   if (parsed.data.startsAt && parsed.data.endsAt && new Date(parsed.data.endsAt) <= new Date(parsed.data.startsAt)) redirect(destination("/dashboard/banners", "error", "Banner end time must be after its start time."));
   try {
-    const image = await preparePublicImage(imageFile, 2 * 1024 * 1024, "Banner");
-    await createBanner({ scope, ...parsed.data, image });
+    const image = await preparePublicImage(imageFile, 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 });
+    await createBanner({ scope, ...parsed.data, enabled: formData.get("enabled") === "true", image });
   } catch (error) { redirect(destination("/dashboard/banners", "error", error instanceof Error ? error.message : "Banner could not be created.")); }
   revalidatePath("/dashboard/banners"); redirect(destination("/dashboard/banners", "success", "Banner created."));
 }

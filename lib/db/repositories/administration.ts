@@ -11,7 +11,7 @@ import type { Role, Scope } from "@/types/platform";
 
 const creatableRoles: Record<Role, Role[]> = {
   MASTER: ["SUPER_ADMIN", "ADMIN", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
-  SUPER_ADMIN: ["ADMIN"],
+  SUPER_ADMIN: ["ADMIN", "AGENCY"],
   ADMIN: ["AGENCY"],
   AGENCY: [], COIN_SELLER: [], MONITORING_CS: [],
 };
@@ -66,7 +66,7 @@ export async function updateDocumentVerification(input: { scope: Scope; document
     const target = await getPlatformAccountDetail(input.scope, document.owner_id);
     permitted = Boolean(target) && document.owner_id !== input.scope.account.id && (
       input.scope.account.role === "MASTER" ||
-      (input.scope.account.role === "SUPER_ADMIN" && target?.role === "ADMIN") ||
+      (input.scope.account.role === "SUPER_ADMIN" && (target?.role === "ADMIN" || target?.role === "AGENCY")) ||
       (input.scope.account.role === "ADMIN" && target?.role === "AGENCY")
     );
   } else {
@@ -136,7 +136,7 @@ export async function updateAccountStatus(input: { scope: Scope; accountId: stri
     );
     const target = rows[0];
     if (!target || target.role === "MASTER") throw new Error("That account cannot be managed in your scope.");
-    const manageable = input.scope.account.role === "MASTER" || (input.scope.account.role === "SUPER_ADMIN" && target.role === "ADMIN") || (input.scope.account.role === "ADMIN" && target.role === "AGENCY");
+    const manageable = input.scope.account.role === "MASTER" || (input.scope.account.role === "SUPER_ADMIN" && (target.role === "ADMIN" || target.role === "AGENCY")) || (input.scope.account.role === "ADMIN" && target.role === "AGENCY");
     if (!manageable) throw new Error("Your role cannot manage that account.");
     await connection.execute("UPDATE platform_accounts SET status = ? WHERE id = ?", [input.nextStatus, target.id]);
     await connection.execute("INSERT INTO account_status_history (id, account_id, from_status, to_status, reason, actor_account_id) VALUES (?, ?, ?, ?, ?, ?)", [randomUUID(), target.id, target.status, input.nextStatus, input.reason, input.scope.account.id]);
@@ -153,7 +153,7 @@ export async function resetAccountPassword(input: { scope: Scope; accountId: str
   const scoped = input.scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(input.scope, "id");
   const [rows] = await db().query<(RowDataPacket & { id: string; role: Role })[]>(`SELECT id, role FROM platform_accounts WHERE id = ? AND ${scoped.clause} LIMIT 1`, [input.accountId, ...scoped.values]);
   const target = rows[0];
-  const manageable = target && target.role !== "MASTER" && (input.scope.account.role === "MASTER" || (input.scope.account.role === "SUPER_ADMIN" && target.role === "ADMIN") || (input.scope.account.role === "ADMIN" && target.role === "AGENCY"));
+  const manageable = target && target.role !== "MASTER" && (input.scope.account.role === "MASTER" || (input.scope.account.role === "SUPER_ADMIN" && (target.role === "ADMIN" || target.role === "AGENCY")) || (input.scope.account.role === "ADMIN" && target.role === "AGENCY"));
   if (!manageable) throw new Error("That account cannot be managed in your scope.");
   const hash = await bcrypt.hash(input.password, 12);
   await withTransaction(async (connection) => {
