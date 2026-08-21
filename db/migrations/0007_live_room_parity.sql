@@ -147,4 +147,4 @@ LEFT JOIN system_settings existing ON existing.setting_key = 'mobile.app_config'
 WHERE master.role = 'MASTER'
 ORDER BY master.created_at LIMIT 1
 ON DUPLICATE KEY UPDATE
-  setting_value = JSON_SET(setting_value, '$.latestVersion', '2.2.0');
+  setting_value = VALUES(setting_value);
