@@ -2,18 +2,41 @@
 -- RTC media still flows directly through ZEGOCLOUD; these tables persist the
 -- authorization/audit state used by mobile and the Control Platform.
 
-ALTER TABLE live_rooms
-  ADD COLUMN password_hash VARCHAR(100) NULL AFTER privacy,
-  ADD COLUMN password_length TINYINT UNSIGNED NULL AFTER password_hash,
-  ADD COLUMN chat_locked BOOLEAN NOT NULL DEFAULT FALSE AFTER password_length,
-  ADD COLUMN interactions_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER chat_locked,
-  ADD COLUMN theme_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER interactions_enabled,
-  ADD COLUMN pk_requests_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER theme_enabled,
-  ADD COLUMN top_application_user_id CHAR(36) NULL AFTER pk_requests_enabled,
-  ADD CONSTRAINT chk_live_room_password_length CHECK (password_length IS NULL OR password_length IN (4, 6, 10)),
-  ADD CONSTRAINT fk_live_room_top_user FOREIGN KEY (top_application_user_id) REFERENCES application_users(id);
+-- DDL auto-commits in MySQL, so each addition is guarded independently. This
+-- lets deployment resume safely if an earlier build created only part of the
+-- room schema before the migration marker could be written.
+SET @nazraa_schema = DATABASE();
 
-CREATE TABLE live_room_messages (
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'password_hash') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN password_hash VARCHAR(100) NULL AFTER privacy', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'password_length') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN password_length TINYINT UNSIGNED NULL AFTER password_hash', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'chat_locked') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN chat_locked BOOLEAN NOT NULL DEFAULT FALSE AFTER password_length', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'interactions_enabled') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN interactions_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER chat_locked', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'theme_enabled') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN theme_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER interactions_enabled', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'pk_requests_enabled') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN pk_requests_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER theme_enabled', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND COLUMN_NAME = 'top_application_user_id') = 0,
+  'ALTER TABLE live_rooms ADD COLUMN top_application_user_id CHAR(36) NULL AFTER pk_requests_enabled', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND CONSTRAINT_NAME = 'chk_live_room_password_length') = 0,
+  'ALTER TABLE live_rooms ADD CONSTRAINT chk_live_room_password_length CHECK (password_length IS NULL OR password_length IN (4, 6, 10))', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @nazraa_schema AND TABLE_NAME = 'live_rooms' AND CONSTRAINT_NAME = 'fk_live_room_top_user') = 0,
+  'ALTER TABLE live_rooms ADD CONSTRAINT fk_live_room_top_user FOREIGN KEY (top_application_user_id) REFERENCES application_users(id)', 'SELECT 1');
+PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
+
+CREATE TABLE IF NOT EXISTS live_room_messages (
   id CHAR(36) PRIMARY KEY,
   room_id CHAR(36) NOT NULL,
   sender_application_user_id CHAR(36) NOT NULL,
@@ -28,7 +51,7 @@ CREATE TABLE live_room_messages (
   INDEX idx_live_room_message_feed (room_id, visible, created_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE room_interaction_events (
+CREATE TABLE IF NOT EXISTS room_interaction_events (
   id CHAR(36) PRIMARY KEY,
   room_id CHAR(36) NOT NULL,
   sender_application_user_id CHAR(36) NOT NULL,
@@ -42,7 +65,7 @@ CREATE TABLE room_interaction_events (
   INDEX idx_room_interaction_sender (sender_application_user_id, created_at)
 ) ENGINE=InnoDB;
 
-CREATE TABLE room_interaction_assets (
+CREATE TABLE IF NOT EXISTS room_interaction_assets (
   id CHAR(36) PRIMARY KEY,
   mime_type VARCHAR(80) NOT NULL,
   image_data MEDIUMBLOB NOT NULL,
@@ -54,7 +77,7 @@ CREATE TABLE room_interaction_assets (
   CHECK (byte_size BETWEEN 1000 AND 1048576)
 ) ENGINE=InnoDB;
 
-CREATE TABLE live_pk_sessions (
+CREATE TABLE IF NOT EXISTS live_pk_sessions (
   id CHAR(36) PRIMARY KEY,
   source_room_id CHAR(36) NOT NULL,
   target_room_id CHAR(36) NOT NULL,
@@ -74,7 +97,7 @@ CREATE TABLE live_pk_sessions (
   CHECK (duration_minutes IN (2, 5, 10))
 ) ENGINE=InnoDB;
 
-CREATE TABLE face_live_presence_incidents (
+CREATE TABLE IF NOT EXISTS face_live_presence_incidents (
   id CHAR(36) PRIMARY KEY,
   room_id CHAR(36) NOT NULL,
   host_application_user_id CHAR(36) NOT NULL,
