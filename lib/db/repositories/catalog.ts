@@ -5,6 +5,7 @@ import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
+import type { PreparedPublicImage } from "@/lib/security/public-images";
 
 async function auditedMutation(input: { scope: Scope; action: string; module: string; targetType: string; targetId: string; reason: string; run: Parameters<typeof withTransaction>[0] }) {
   await withTransaction(async (connection) => {
@@ -24,10 +25,15 @@ export async function listGifts() {
   return rows.map((row) => ({ id: row.id, key: row.gift_key, name: row.name, category: row.category, coinPrice: Number(row.coin_price), visualUrl: row.visual_url, animationKey: row.animation_key, active: Boolean(row.active), updatedAt: row.updated_at }));
 }
 
-export async function createGift(input: { scope: Scope; key: string; name: string; category: string; coinPrice: number; visualUrl?: string; animationKey?: string }) {
+export async function createGift(input: { scope: Scope; key: string; name: string; category: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string }) {
   const id = randomUUID();
+  const assetId = input.image ? randomUUID() : null;
+  const visualUrl = assetId ? `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}` : null;
   await auditedMutation({ scope: input.scope, action: "gift.create", module: "gifts", targetType: "gift", targetId: id, reason: "Created gift catalogue entry", run: async (connection) => {
-    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, coin_price, visual_url, animation_key, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.coinPrice, input.visualUrl || null, input.animationKey || null, input.scope.account.id]);
+    if (input.image && assetId) {
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
+    }
+    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, coin_price, visual_url, animation_key, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.coinPrice, visualUrl, input.animationKey || null, input.scope.account.id]);
   } });
 }
 
@@ -44,10 +50,13 @@ export async function listBanners() {
   return rows.map((row) => ({ id: row.id, placement: row.placement, title: row.title, subtitle: row.subtitle, imageUrl: row.image_url, actionType: row.action_type, actionTarget: row.action_target, startsAt: row.starts_at, endsAt: row.ends_at, priority: row.priority, active: Boolean(row.active) }));
 }
 
-export async function createBanner(input: { scope: Scope; placement: string; title: string; subtitle?: string; imageUrl: string; actionType: string; actionTarget?: string; startsAt?: string; endsAt?: string; priority: number }) {
+export async function createBanner(input: { scope: Scope; placement: string; title: string; subtitle?: string; image: PreparedPublicImage; actionType: string; actionTarget?: string; startsAt?: string; endsAt?: string; priority: number }) {
   const id = randomUUID();
+  const assetId = randomUUID();
+  const imageUrl = `https://nazraa.vercel.app/api/v1/assets/banners/${assetId}`;
   await auditedMutation({ scope: input.scope, action: "banner.create", module: "banners", targetType: "banner", targetId: id, reason: "Created scheduled banner", run: async (connection) => {
-    await connection.execute("INSERT INTO banners (id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.placement, input.title, input.subtitle || null, input.imageUrl, input.actionType, input.actionTarget || null, input.startsAt || null, input.endsAt || null, input.priority, input.scope.account.id]);
+    await connection.execute("INSERT INTO banner_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
+    await connection.execute("INSERT INTO banners (id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.placement, input.title, input.subtitle || null, imageUrl, input.actionType, input.actionTarget || null, input.startsAt || null, input.endsAt || null, input.priority, input.scope.account.id]);
   } });
 }
 
@@ -126,6 +135,16 @@ export async function saveMobileAppSettings(input: { scope: Scope; minimumVersio
       `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.app_config', ?, ?)
        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
       [JSON.stringify({ minimumVersion: input.minimumVersion, latestVersion: input.latestVersion, maintenance: input.maintenance, maintenanceMessage: input.maintenanceMessage || "", updateUrl: input.updateUrl || "", supportUrl: input.supportUrl || "", withdrawalUrl: input.withdrawalUrl || "" }), input.scope.account.id],
+    );
+  } });
+}
+
+export async function saveMobileSocialSettings(input: { scope: Scope; privateMessageCoinCost: number }) {
+  await auditedMutation({ scope: input.scope, action: "settings.mobile_social_update", module: "settings", targetType: "system_setting", targetId: "mobile.social", reason: "Updated mobile social pricing", run: async (connection) => {
+    await connection.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.social', ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+      [JSON.stringify({ private_message_coin_cost: input.privateMessageCoinCost }), input.scope.account.id],
     );
   } });
 }

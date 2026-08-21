@@ -6,6 +6,7 @@ import {
   submitEconomySettings,
   submitHostRewardRules,
   submitMobileAppSettings,
+  submitMobileSocialSettings,
 } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
@@ -20,6 +21,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
+  const social = settings.find((item) => item.key === "mobile.social")?.value as { private_message_coin_cost?: number } | undefined;
   const reward = (day: number, fallback: number) => completion.dailyRewards.find((item) => item.dayNumber === day)?.coins ?? fallback;
   const host = (roomType: string, fallback: number) => completion.hostRules.find((item) => item.roomType === roomType)?.coinsPerHour ?? fallback;
   const minimumEligible = completion.hostRules[0]?.minimumEligibleSeconds ?? 60;
@@ -44,7 +46,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <Card>
         <LockKeyhole className="report-icon" size={24} />
         <h2>Security baseline</h2>
-        <p>Google ID tokens are verified server-side. Face frames go only to the configured biometric provider. Database and biometric secrets never enter browser or Flutter bundles.</p>
+        <p>Google ID tokens are verified server-side. The current private-beta Face Verification stores one encrypted selfie and approves it automatically; no external biometric provider is called.</p>
         <span className="scope-lock">Server controlled</span>
       </Card>
     </div>
@@ -93,6 +95,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Support URL<input name="supportUrl" type="url" defaultValue={mobile?.supportUrl ?? ""} /></label>
         <label>Withdrawal URL<input name="withdrawalUrl" type="url" defaultValue={mobile?.withdrawalUrl ?? ""} /></label>
         <label>Confirm<button className="primary-button" type="submit">Save app config</button></label>
+      </form>
+    </Card>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>Private messaging</h2><p>Each sent private message debits this many user coins in the same atomic transaction that creates the message.</p></div></div>
+      <form action={submitMobileSocialSettings} className="form-grid">
+        <label>Coins per message<input name="privateMessageCoinCost" type="number" min="0" max="100000" required defaultValue={social?.private_message_coin_cost ?? 50} /></label>
+        <label>Confirm<button className="primary-button" type="submit">Save message price</button></label>
       </form>
     </Card>
 

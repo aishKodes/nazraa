@@ -16,6 +16,7 @@ import {
   exchangeDiamonds,
   finalizeLiveSession,
   joinLiveRoom,
+  kickRoomMember,
   leaveLiveRoom,
   roomPublishingDecision,
   setRoomAdmin,
@@ -23,6 +24,7 @@ import {
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
+import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, reportDiscoveryPost, reportPrivateMessage, searchAgency, sendPrivateMessage, setPrivateMessageBlock } from "@/lib/db/repositories/mobile-social";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +37,7 @@ function selectResource(resource: string, bootstrap: Awaited<ReturnType<typeof m
   const keys: Record<string, string[]> = {
     auth: ["profile", "role", "permissions", "accessPolicy"], profile: ["profile", "accessPolicy"], wallet: ["wallet", "transactions", "minimumWithdrawal", "diamondConversionRule", "diamondExchangeHistory"],
     rooms: ["rooms"], live: ["rooms"], party: ["rooms"], face: ["faceVerificationStatus"],
-    agency: ["agency"], host: ["hostProfile"], banners: ["banners", "announcements"],
+    agency: ["agency", "agencyApplications"], host: ["hostProfile"], banners: ["banners", "announcements"],
     withdrawals: ["withdrawalRequests", "payoutMethods", "minimumWithdrawal"], notifications: ["announcements"],
     levels: ["consumptionLevel", "anchorIncomeLevel"], gifts: ["gifts"],
     "coin-packages": ["coinPackages"], "coin-sellers": ["coinSellers"], "coin-orders": ["coinPurchaseRequests"],
@@ -109,8 +111,64 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({ diamonds: z.number().int().positive() }).parse(body);
       return NextResponse.json(await exchangeDiamonds(identity, parsed.diamonds), { status: 201 });
     }
+    if (resource === "agency-search") {
+      const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
+      return NextResponse.json(await searchAgency(parsed.publicId));
+    }
+    if (resource === "agency-join") {
+      const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
+      return NextResponse.json(await applyToJoinAgency(identity, parsed.publicId), { status: 201 });
+    }
+    if (resource === "agency-apply") {
+      const parsed = z.object({
+        name: z.string().trim().min(3).max(120),
+        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+        whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
+        logoDataUrl: z.string().max(1_500_000).optional(),
+      }).parse(body);
+      return NextResponse.json(await applyToCreateAgency(identity, parsed), { status: 201 });
+    }
+    if (resource === "discovery-posts") {
+      const parsed = z.object({ caption: z.string().trim().max(500), photoDataUrl: z.string().max(2_100_000) }).parse(body);
+      return NextResponse.json(await createDiscoveryPost(identity, parsed), { status: 201 });
+    }
+    if (resource === "discovery-delete") {
+      const parsed = z.object({ postId: z.string().uuid() }).parse(body);
+      return NextResponse.json(await deleteDiscoveryPost(identity, parsed.postId));
+    }
+    if (resource === "discovery-report") {
+      const parsed = z.object({ postId: z.string().uuid(), reason: z.string().trim().min(3).max(500) }).parse(body);
+      return NextResponse.json(await reportDiscoveryPost(identity, parsed));
+    }
+    if (resource === "private-messages") {
+      const parsed = z.object({ recipientPublicId: z.string().regex(/^\d+$/), body: z.string().trim().min(1).max(1000), clientMessageId: z.string().uuid() }).parse(body);
+      return NextResponse.json(await sendPrivateMessage(identity, parsed), { status: 201 });
+    }
+    if (resource === "private-message-block") {
+      const parsed = z.object({ targetPublicId: z.string().regex(/^\d+$/), blocked: z.boolean() }).parse(body);
+      return NextResponse.json(await setPrivateMessageBlock(identity, parsed));
+    }
+    if (resource === "private-message-read") {
+      const parsed = z.object({ targetPublicId: z.string().regex(/^\d+$/) }).parse(body);
+      return NextResponse.json(await markPrivateConversationRead(identity, parsed.targetPublicId));
+    }
+    if (resource === "private-message-report") {
+      const parsed = z.object({ messageId: z.string().uuid(), reason: z.string().trim().min(3).max(500) }).parse(body);
+      return NextResponse.json(await reportPrivateMessage(identity, parsed));
+    }
     if (resource === "rooms") {
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), kind: z.enum(["live", "party", "face"]) }).parse(body);
+      const parsed = z.object({
+        roomCode: z.string().trim().min(3).max(80),
+        kind: z.enum(["live", "party", "face"]),
+        title: z.string().trim().min(3).max(80),
+        category: z.string().trim().min(2).max(40),
+        language: z.string().trim().min(2).max(32),
+        privacy: z.enum(["public", "followers", "locked"]),
+        seatCount: z.number().int().min(0).max(20),
+        themeIndex: z.number().int().min(0).max(20),
+        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()).optional(),
+        photoDataUrl: z.string().max(2_100_000).optional(),
+      }).parse(body);
       const permission = parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
       if (!mobileCan(identity, permission)) return errorResponse(new Error("Your role cannot start this room type."), 403);
       if (parsed.kind === "face" && identity.faceVerificationStatus !== "VERIFIED") return errorResponse(new Error("Verified Face Live access is required."), 403);
@@ -128,6 +186,10 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       if (!mobileCan(identity, "rooms.manage.own")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), makeAdmin: z.boolean() }).parse(body);
       return NextResponse.json(await setRoomAdmin(identity, parsed));
+    }
+    if (resource === "room-kick") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/) }).parse(body);
+      return NextResponse.json(await kickRoomMember(identity, parsed));
     }
     if (resource === "live-end") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);

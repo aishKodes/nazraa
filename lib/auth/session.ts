@@ -33,9 +33,9 @@ export async function getSession(): Promise<SessionAccount | null> {
     const token = (await cookies()).get(cookieName)?.value;
     if (!token) return null;
     const verified = await jwtVerify(token, sessionKey());
-    const { id, role, roleCode, fullName } = verified.payload;
-    if (typeof id !== "string" || typeof role !== "string" || typeof roleCode !== "string" || typeof fullName !== "string") return null;
-    return { id, role: role as SessionAccount["role"], roleCode, fullName };
+    const { id, publicId, role, fullName } = verified.payload;
+    if (typeof id !== "string" || typeof publicId !== "string" || typeof role !== "string" || typeof fullName !== "string") return null;
+    return { id, publicId, role: role as SessionAccount["role"], fullName };
   } catch {
     return null;
   }

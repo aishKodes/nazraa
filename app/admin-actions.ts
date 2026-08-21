@@ -7,11 +7,13 @@ import { z } from "zod";
 import { requirePermission } from "@/lib/auth/guard";
 import { createPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
-import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, setBannerActive, setGiftActive, updateSupportTicket } from "@/lib/db/repositories/catalog";
+import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, setBannerActive, setGiftActive, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
+import { preparePublicImage } from "@/lib/security/public-images";
+import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
 import { roles } from "@/types/platform";
 
 function destination(path: string, kind: "error" | "success", message: string) {
@@ -43,7 +45,7 @@ export async function submitCreateAccount(formData: FormData) {
   }
   revalidatePath("/dashboard/accounts");
   revalidatePath("/dashboard/hierarchy");
-  redirect(destination("/dashboard/accounts", "success", `${result.roleCode} created. Share the role code and password securely.`));
+  redirect(destination("/dashboard/accounts", "success", `Management ID ${result.publicId} created. Share the six-digit ID and password securely.`));
 }
 
 export async function submitAccountStatus(formData: FormData) {
@@ -122,9 +124,13 @@ export async function submitHostStatus(formData: FormData) {
 
 export async function submitCreateGift(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), coinPrice: z.coerce.number().int().positive(), visualUrl: z.string().trim().url().optional().or(z.literal("")), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift key, name, category, price, and optional URL."));
-  try { await createGift({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be created.")); }
+  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift key, name, category, price, and animation key."));
+  try {
+    const imageFile = formData.get("image");
+    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork") : undefined;
+    await createGift({ scope, ...parsed.data, image });
+  } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be created.")); }
   revalidatePath("/dashboard/gifts"); redirect(destination("/dashboard/gifts", "success", "Gift created."));
 }
 
@@ -135,16 +141,34 @@ export async function submitGiftStatus(formData: FormData) {
 
 export async function submitCreateBanner(formData: FormData) {
   const scope = await requirePermission("banners.manage");
-  const parsed = z.object({ placement: z.string().trim().min(2).max(60), title: z.string().trim().min(2).max(120), subtitle: z.string().trim().max(240).optional(), imageUrl: z.string().trim().url(), actionType: z.string().trim().max(40), actionTarget: z.string().trim().max(500).optional(), startsAt: z.string().optional(), endsAt: z.string().optional(), priority: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/banners", "error", "Check the banner title, HTTPS image URL, placement, and schedule."));
+  const parsed = z.object({ placement: z.enum(["HOME", "ROOM", "WALLET", "PROFILE"]), title: z.string().trim().min(2).max(120), subtitle: z.string().trim().max(240).optional(), actionType: z.enum(["NONE", "LIVE", "PARTY", "PROFILE", "AGENCY", "WALLET", "DAILY_REWARD", "RANKING"]), actionTarget: z.string().trim().max(80).optional(), startsAt: z.string().optional(), endsAt: z.string().optional(), priority: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
+  const imageFile = formData.get("image");
+  if (!parsed.success || !(imageFile instanceof File) || !imageFile.size) redirect(destination("/dashboard/banners", "error", "Check the banner image, title, internal action, placement, and schedule."));
   if (parsed.data.startsAt && parsed.data.endsAt && new Date(parsed.data.endsAt) <= new Date(parsed.data.startsAt)) redirect(destination("/dashboard/banners", "error", "Banner end time must be after its start time."));
-  try { await createBanner({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/banners", "error", error instanceof Error ? error.message : "Banner could not be created.")); }
+  try {
+    const image = await preparePublicImage(imageFile, 2 * 1024 * 1024, "Banner");
+    await createBanner({ scope, ...parsed.data, image });
+  } catch (error) { redirect(destination("/dashboard/banners", "error", error instanceof Error ? error.message : "Banner could not be created.")); }
   revalidatePath("/dashboard/banners"); redirect(destination("/dashboard/banners", "success", "Banner created."));
 }
 
 export async function submitBannerStatus(formData: FormData) {
   const scope = await requirePermission("banners.manage"); const id = z.string().uuid().parse(formData.get("id")); const active = formData.get("active") === "true";
   await setBannerActive({ scope, id, active }); revalidatePath("/dashboard/banners"); redirect(destination("/dashboard/banners", "success", active ? "Banner enabled." : "Banner disabled."));
+}
+
+export async function submitAgencyApplicationReview(formData: FormData) {
+  const scope = await requirePermission("agencies.read");
+  const parsed = z.object({ applicationId: z.string().uuid(), type: z.enum(["JOIN", "CREATE"]), decision: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().min(5).max(500), parentAccountId: z.string().uuid().optional().or(z.literal("")) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/agencies", "error", "Choose a decision and enter a clear review reason."));
+  try {
+    if (parsed.data.type === "JOIN") await reviewAgencyJoin({ scope, ...parsed.data });
+    else await reviewAgencyCreation({ scope, ...parsed.data });
+  } catch (error) {
+    redirect(destination("/dashboard/agencies", "error", error instanceof Error ? error.message : "Agency application review failed."));
+  }
+  revalidatePath("/dashboard/agencies"); revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/users"); revalidatePath("/dashboard/hosts");
+  redirect(destination("/dashboard/agencies", "success", `Agency application ${parsed.data.decision.toLowerCase()}.`));
 }
 
 export async function submitNotification(formData: FormData) {
@@ -180,6 +204,15 @@ export async function submitMobileAppSettings(formData: FormData) {
   if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the app versions and optional HTTPS URLs."));
   await saveMobileAppSettings({ scope, ...parsed.data, maintenance: formData.get("maintenance") === "true" });
   revalidatePath("/dashboard/settings"); redirect(destination("/dashboard/settings", "success", "Mobile app configuration saved."));
+}
+
+export async function submitMobileSocialSettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({ privateMessageCoinCost: z.coerce.number().int().min(0).max(100000) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Enter a valid private-message coin cost."));
+  await saveMobileSocialSettings({ scope, ...parsed.data });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Private-message pricing saved."));
 }
 
 export async function submitRiskStatus(formData: FormData) {

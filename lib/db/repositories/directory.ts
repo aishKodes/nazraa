@@ -54,14 +54,14 @@ export async function listHosts(scope: Scope) {
 
 export async function listAgencies(scope: Scope) {
   const agencyClause = scope.isGlobal ? "1=1" : `a.id IN (${scope.accountIds.map(() => "?").join(",")})`;
-  const [rows] = await db().query<(RowDataPacket & { id: string; role_code: string; full_name: string; country_code: string | null; status: string; owner_name: string | null; host_count: number })[]>(
-    `SELECT a.id, a.role_code, a.full_name, a.country_code, a.status, owner.full_name owner_name, COUNT(h.id) host_count
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; country_code: string | null; status: string; owner_name: string | null; host_count: number })[]>(
+    `SELECT a.id, a.public_id, a.full_name, a.country_code, a.status, owner.full_name owner_name, COUNT(h.id) host_count
      FROM platform_accounts a LEFT JOIN platform_accounts owner ON owner.id = a.parent_account_id
      LEFT JOIN host_profiles h ON h.agency_account_id = a.id
      WHERE a.role = 'AGENCY' AND ${agencyClause}
      GROUP BY a.id ORDER BY a.created_at DESC LIMIT 100`, scope.isGlobal ? [] : scope.accountIds,
   );
-  return rows.map((row) => ({ id: row.id, code: row.role_code, name: row.full_name, country: row.country_code, status: row.status, owner: row.owner_name, hostCount: Number(row.host_count) }));
+  return rows.map((row) => ({ id: row.id, code: String(row.public_id), name: row.full_name, country: row.country_code, status: row.status, owner: row.owner_name, hostCount: Number(row.host_count) }));
 }
 
 export async function hierarchy(scope: Scope) {

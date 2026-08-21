@@ -12,35 +12,11 @@ The server verifies the token signature, issuer, audience, expiry, subject, and 
 ## Face verification
 
 The private-beta flow captures one fresh selfie and approves it automatically
-on the server. The raw capture is not retained. The existing provider contract
-below remains available if production later re-enables enhanced biometric
-checks.
-
-### Optional biometric provider contract
-
-Configure three server-only values:
-
-- `FACE_BIOMETRIC_PROVIDER_URL`: an HTTPS endpoint.
-- `FACE_BIOMETRIC_PROVIDER_SECRET`: a bearer secret of at least 24 characters.
-- `FACE_BIOMETRIC_PROVIDER_NAME`: the label written to verification history.
-
-Nazraa sends a JSON `POST` containing `subjectId`, `consentVersion`, two to four base64 JPEG `frames`, and `checks` with `liveness`, `duplicateSearch`, and `singleFace` set to `true`.
-
-The endpoint must return:
-
-```json
-{
-  "livenessPassed": true,
-  "livenessScore": 0.99,
-  "duplicateSubjectId": null,
-  "matchScore": null,
-  "providerFaceId": "provider-reference",
-  "embeddingReference": "provider-encrypted-reference",
-  "retainReferenceImage": false
-}
-```
-
-`providerFaceId` and `embeddingReference` are required opaque references; Nazraa does not store the submitted frames. A failed liveness result becomes `RETRY`; a match to another subject becomes `DUPLICATE`; unconfigured, timed-out, non-HTTPS, or invalid provider responses fail closed. The provider must encrypt biometric templates, restrict operator access, enforce deletion/retention policy, and return a different subject only when its production duplicate-search threshold is met.
+on the server. The compressed reference selfie is encrypted with the existing
+private-document storage and is not exposed by a public asset URL. No external
+biometric, liveness, government-ID, or duplicate-face service is called in this
+release. The encrypted reference and capture hash preserve a migration path for
+proper duplicate-face checks later.
 
 ## Android release key
 
@@ -61,7 +37,7 @@ The equivalent CI variables remain `NAZRAA_KEYSTORE_FILE`,
 Release tasks stop with an error if neither the local Keychain identity nor
 these CI values are available; they never fall back to the debug certificate.
 
-Build only after Google, biometric, API, database, ZEGOCLOUD Token04, and signing settings are deployed:
+Build only after Google, API, database, ZEGOCLOUD Token04, and signing settings are deployed:
 
 ```sh
 ./scripts/build_android.sh release --dart-define=GOOGLE_WEB_CLIENT_ID=YOUR_WEB_CLIENT_ID

@@ -18,15 +18,15 @@ SESSION_SECRET=a random value at least 32 characters long
 DOCUMENT_ENCRYPTION_KEY=another random value at least 32 characters long
 MOBILE_API_KEY=another long random value for the future mobile backend connection
 INITIAL_MASTER_NAME=your name (optional)
-INITIAL_MASTER_CODE=MST-NAZRAA (optional; this is the default)
+INITIAL_MASTER_PUBLIC_ID=a unique six-digit ID
 INITIAL_MASTER_PASSWORD=a long unique first password
 ```
 
-Deploy, open the Vercel URL, and sign in using `INITIAL_MASTER_CODE` and `INITIAL_MASTER_PASSWORD`. The first successful login creates the Master account with a bcrypt hash. Then remove these three variables from Vercel and redeploy:
+Deploy, open the Vercel URL, and sign in using `INITIAL_MASTER_PUBLIC_ID` and `INITIAL_MASTER_PASSWORD`. The first successful login creates the Master account with a bcrypt hash. Then remove these three variables from Vercel and redeploy:
 
 ```text
 INITIAL_MASTER_NAME
-INITIAL_MASTER_CODE
+INITIAL_MASTER_PUBLIC_ID
 INITIAL_MASTER_PASSWORD
 ```
 

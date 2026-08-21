@@ -13,6 +13,7 @@ export type AccountStatus = "ACTIVE" | "SUSPENDED" | "DISABLED";
 
 export type PlatformAccount = {
   id: string;
+  publicId: string;
   role: Role;
   roleCode: string;
   fullName: string;
@@ -22,7 +23,7 @@ export type PlatformAccount = {
   parentAccountId: string | null;
 };
 
-export type SessionAccount = Pick<PlatformAccount, "id" | "role" | "roleCode" | "fullName">;
+export type SessionAccount = Pick<PlatformAccount, "id" | "publicId" | "role" | "fullName">;
 
 export type Scope = {
   account: SessionAccount;

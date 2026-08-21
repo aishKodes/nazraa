@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { randomUUID } from "crypto";
+import { randomInt, randomUUID } from "crypto";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import bcrypt from "bcryptjs";
@@ -12,12 +12,11 @@ async function main() {
 
   const prompt = createInterface({ input, output });
   const fullName = (await prompt.question("Master full name: ")).trim();
-  const roleCode = (await prompt.question("Master role code (e.g. MST-NAZRAA): ")).trim().toUpperCase();
   const password = process.env.MASTER_PASSWORD ?? await prompt.question("Master password (input visible; use MASTER_PASSWORD to avoid this): ");
   prompt.close();
 
-  if (!fullName || !roleCode || password.length < 12) {
-    throw new Error("Name and role code are required; password must have at least 12 characters.");
+  if (!fullName || password.length < 12) {
+    throw new Error("Name is required; password must have at least 12 characters.");
   }
 
   const connection = await mysql.createConnection({
@@ -30,12 +29,20 @@ async function main() {
   });
   try {
     const hash = await bcrypt.hash(password, 12);
+    let publicId = 0;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const candidate = randomInt(100000, 1000000);
+      const [rows] = await connection.query<mysql.RowDataPacket[]>("SELECT id FROM platform_accounts WHERE public_id = ? LIMIT 1", [candidate]);
+      if (!rows.length) { publicId = candidate; break; }
+    }
+    if (!publicId) throw new Error("A unique six-digit management ID could not be allocated.");
+    const roleCode = `MST-${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
     await connection.execute(
-      `INSERT INTO platform_accounts (id, role, role_code, full_name, password_hash, status)
-       VALUES (?, 'MASTER', ?, ?, ?, 'ACTIVE')`,
-      [randomUUID(), roleCode, fullName, hash],
+      `INSERT INTO platform_accounts (id, public_id, role, role_code, full_name, password_hash, status)
+       VALUES (?, ?, 'MASTER', ?, ?, ?, 'ACTIVE')`,
+      [randomUUID(), publicId, roleCode, fullName, hash],
     );
-    console.log("Master account created.");
+    console.log(`Master account created. Management ID: ${publicId}`);
   } finally {
     await connection.end();
   }

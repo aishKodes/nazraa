@@ -8,29 +8,29 @@ import { z } from "zod";
 import { can } from "@/lib/auth/permissions";
 import { clearSession, createSession } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/auth/guard";
-import { accountByRoleCode, createInitialMaster } from "@/lib/db/repositories/accounts";
+import { accountByManagementId, createInitialMaster } from "@/lib/db/repositories/accounts";
 import { adjustPlatformCoinInventory, createTemporaryLiveRestriction, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
 import { db } from "@/lib/db/pool";
 
-const loginInput = z.object({ roleCode: z.string().trim().min(3).max(32), password: z.string().min(1).max(200) });
+const loginInput = z.object({ managementId: z.string().trim().regex(/^\d{6}$/), password: z.string().min(1).max(200) });
 
 export async function signIn(formData: FormData) {
-  const parsed = loginInput.safeParse({ roleCode: formData.get("roleCode"), password: formData.get("password") });
-  if (!parsed.success) redirect("/login?error=Enter+your+role+code+and+password.");
+  const parsed = loginInput.safeParse({ managementId: formData.get("managementId"), password: formData.get("password") });
+  if (!parsed.success) redirect("/login?error=Enter+your+six-digit+management+ID+and+password.");
 
-  let account = await accountByRoleCode(parsed.data.roleCode);
-  const initialCode = process.env.INITIAL_MASTER_CODE?.trim().toUpperCase() || "MST-NAZRAA";
+  let account = await accountByManagementId(parsed.data.managementId);
+  const initialPublicId = process.env.INITIAL_MASTER_PUBLIC_ID?.trim();
   const initialPassword = process.env.INITIAL_MASTER_PASSWORD;
   const initialName = process.env.INITIAL_MASTER_NAME?.trim() || "Nazraa Master";
-  if (!account && parsed.data.roleCode.toUpperCase() === initialCode && !initialPassword) {
+  if (!account && initialPublicId && parsed.data.managementId === initialPublicId && !initialPassword) {
     redirect("/login?error=First-time+login+is+not+configured.+Add+INITIAL_MASTER_PASSWORD+in+Vercel+and+redeploy.");
   }
-  if (!account && initialPassword && parsed.data.roleCode.toUpperCase() === initialCode && parsed.data.password === initialPassword) {
-    await createInitialMaster({ roleCode: initialCode, fullName: initialName, password: initialPassword });
-    account = await accountByRoleCode(initialCode);
+  if (!account && initialPublicId && initialPassword && parsed.data.managementId === initialPublicId && parsed.data.password === initialPassword) {
+    await createInitialMaster({ publicId: Number(initialPublicId), fullName: initialName, password: initialPassword });
+    account = await accountByManagementId(initialPublicId);
   }
   if (!account || account.status !== "ACTIVE" || !(await bcrypt.compare(parsed.data.password, account.passwordHash))) {
-    redirect("/login?error=Invalid+role+code+or+password.");
+    redirect("/login?error=Invalid+management+ID+or+password.");
   }
   await db().execute("UPDATE platform_accounts SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [account.id]);
   const requestHeaders = await headers();
@@ -39,7 +39,7 @@ export async function signIn(formData: FormData) {
      VALUES (UUID(), ?, ?, 'auth.login', 'authentication', 'platform_account', ?, ?, ?)`,
     [account.id, account.role, account.id, requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, requestHeaders.get("user-agent")?.slice(0, 500) ?? null],
   );
-  await createSession({ id: account.id, role: account.role, roleCode: account.roleCode, fullName: account.fullName });
+  await createSession({ id: account.id, publicId: account.publicId, role: account.role, fullName: account.fullName });
   redirect("/dashboard");
 }
 

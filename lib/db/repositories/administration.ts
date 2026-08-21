@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
+import { generateManagementPublicId } from "@/lib/db/public-id";
 import { generatedRoleCode, scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PreparedDocument } from "@/lib/security/documents";
 import type { Role, Scope } from "@/types/platform";
@@ -19,34 +20,34 @@ export function rolesCreatableBy(role: Role) { return creatableRoles[role]; }
 
 export async function listPlatformAccounts(scope: Scope, role?: Role) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; role_code: string; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_account_id: string | null; parent_name: string | null; created_at: string; last_login_at: string | null; document_count: number })[]>(
-    `SELECT a.id, a.role, a.role_code, a.full_name, a.email, a.mobile, a.country_code, a.status, a.parent_account_id,
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_account_id: string | null; parent_name: string | null; created_at: string; last_login_at: string | null; document_count: number })[]>(
+    `SELECT a.id, a.public_id, a.role, a.full_name, a.email, a.mobile, a.country_code, a.status, a.parent_account_id,
             parent.full_name parent_name, a.created_at, a.last_login_at, COUNT(d.id) document_count
      FROM platform_accounts a LEFT JOIN platform_accounts parent ON parent.id = a.parent_account_id
      LEFT JOIN private_documents d ON d.owner_type = 'PLATFORM_ACCOUNT' AND d.owner_id = a.id
      WHERE ${scoped.clause}${role ? " AND a.role = ?" : ""}
      GROUP BY a.id ORDER BY a.created_at DESC LIMIT 200`, [...scoped.values, ...(role ? [role] : [])],
   );
-  return rows.map((row) => ({ id: row.id, role: row.role, code: row.role_code, name: row.full_name, email: row.email, mobile: row.mobile, country: row.country_code, status: row.status, parentId: row.parent_account_id, parentName: row.parent_name, createdAt: row.created_at, lastLoginAt: row.last_login_at, documentCount: Number(row.document_count) }));
+  return rows.map((row) => ({ id: row.id, role: row.role, code: String(row.public_id), name: row.full_name, email: row.email, mobile: row.mobile, country: row.country_code, status: row.status, parentId: row.parent_account_id, parentName: row.parent_name, createdAt: row.created_at, lastLoginAt: row.last_login_at, documentCount: Number(row.document_count) }));
 }
 
 export async function listParentOptions(scope: Scope) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; role_code: string })[]>(
-    `SELECT id, role, full_name, role_code FROM platform_accounts
+  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; public_id: number })[]>(
+    `SELECT id, role, full_name, public_id FROM platform_accounts
      WHERE ${scoped.clause} AND role IN ('SUPER_ADMIN','ADMIN') AND status = 'ACTIVE' ORDER BY role, full_name`, scoped.values,
   );
-  return rows.map((row) => ({ id: row.id, role: row.role, name: row.full_name, code: row.role_code }));
+  return rows.map((row) => ({ id: row.id, role: row.role, name: row.full_name, code: String(row.public_id) }));
 }
 
 export async function getPlatformAccountDetail(scope: Scope, accountId: string) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; role_code: string; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_name: string | null; created_at: string; last_login_at: string | null })[]>(
-    `SELECT a.id, a.role, a.role_code, a.full_name, a.email, a.mobile, a.country_code, a.status, p.full_name parent_name, a.created_at, a.last_login_at
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; role: Role; full_name: string; email: string | null; mobile: string | null; country_code: string | null; status: string; parent_name: string | null; created_at: string; last_login_at: string | null })[]>(
+    `SELECT a.id, a.public_id, a.role, a.full_name, a.email, a.mobile, a.country_code, a.status, p.full_name parent_name, a.created_at, a.last_login_at
      FROM platform_accounts a LEFT JOIN platform_accounts p ON p.id = a.parent_account_id WHERE a.id = ? AND ${scoped.clause} LIMIT 1`,
     [accountId, ...scoped.values],
   );
-  return rows[0] ? { id: rows[0].id, role: rows[0].role, code: rows[0].role_code, name: rows[0].full_name, email: rows[0].email, mobile: rows[0].mobile, country: rows[0].country_code, status: rows[0].status, parentName: rows[0].parent_name, createdAt: rows[0].created_at, lastLoginAt: rows[0].last_login_at } : null;
+  return rows[0] ? { id: rows[0].id, role: rows[0].role, code: String(rows[0].public_id), name: rows[0].full_name, email: rows[0].email, mobile: rows[0].mobile, country: rows[0].country_code, status: rows[0].status, parentName: rows[0].parent_name, createdAt: rows[0].created_at, lastLoginAt: rows[0].last_login_at } : null;
 }
 
 export async function listAccountDocuments(scope: Scope, accountId: string) {
@@ -101,11 +102,13 @@ export async function createPlatformAccount(input: { scope: Scope; role: Role; f
   const accountId = randomUUID();
   const roleCode = await generatedRoleCode(input.role);
   const passwordHash = await bcrypt.hash(input.password, 12);
+  let publicId = 0;
   await withTransaction(async (connection) => {
+    publicId = await generateManagementPublicId(connection);
     await connection.execute(
-      `INSERT INTO platform_accounts (id, role, role_code, full_name, application_user_id, email, mobile, password_hash, status, parent_account_id, country_code, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
-      [accountId, input.role, roleCode, input.fullName, input.applicationUserId || null, input.email || null, input.mobile || null, passwordHash, parentId, input.countryCode, input.scope.account.id],
+      `INSERT INTO platform_accounts (id, public_id, role, role_code, full_name, application_user_id, email, mobile, password_hash, status, parent_account_id, country_code, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
+      [accountId, publicId, input.role, roleCode, input.fullName, input.applicationUserId || null, input.email || null, input.mobile || null, passwordHash, parentId, input.countryCode, input.scope.account.id],
     );
     if (input.role === "COIN_SELLER") await connection.execute("INSERT INTO seller_profiles (account_id) VALUES (?)", [accountId]);
     for (const document of input.documents) {
@@ -118,10 +121,10 @@ export async function createPlatformAccount(input: { scope: Scope; role: Role; f
     await connection.execute(
       `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, new_data, reason)
        VALUES (?, ?, ?, 'account.create', 'accounts', 'platform_account', ?, ?, 'Created through role-controlled account form')`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, accountId, JSON.stringify({ role: input.role, roleCode, parentId })],
+      [randomUUID(), input.scope.account.id, input.scope.account.role, accountId, JSON.stringify({ role: input.role, publicId, parentId })],
     );
   });
-  return { accountId, roleCode };
+  return { accountId, publicId };
 }
 
 export async function updateAccountStatus(input: { scope: Scope; accountId: string; nextStatus: "ACTIVE" | "SUSPENDED" | "DISABLED"; reason: string }) {

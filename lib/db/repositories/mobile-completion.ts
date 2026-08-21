@@ -8,6 +8,7 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { FaceBiometricService } from "@/lib/services/face-biometric-service";
 import { preparePrivateDocument } from "@/lib/security/documents";
+import { agencyApplicationsForUser, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -299,6 +300,43 @@ export async function setRoomAdmin(identity: MobileIdentity, input: { roomCode: 
   });
 }
 
+export async function kickRoomMember(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string }) {
+  return withTransaction(async (connection) => {
+    const [actors] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; target_id: string; target_role: string })[]>(
+      `SELECT room.id room_id, actor.room_role actor_role, target.application_user_id target_id, target.room_role target_role
+       FROM live_rooms room
+       INNER JOIN live_room_members actor ON actor.room_id = room.id
+         AND actor.application_user_id = ? AND actor.left_at IS NULL
+       INNER JOIN live_room_members target ON target.room_id = room.id AND target.left_at IS NULL
+       INNER JOIN application_users target_user ON target_user.id = target.application_user_id
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED')
+         AND target_user.public_id = ? LIMIT 1 FOR UPDATE`,
+      [identity.userId, input.roomCode, input.targetPublicId],
+    );
+    const member = actors[0];
+    if (!member || !["OWNER", "ADMIN"].includes(member.actor_role)) {
+      throw new Error("Only the Room Owner or a Room Admin can kick users.");
+    }
+    if (member.target_id === identity.userId || member.target_role === "OWNER") {
+      throw new Error("The Room Owner cannot be kicked.");
+    }
+    if (member.actor_role === "ADMIN" && member.target_role === "ADMIN") {
+      throw new Error("Only the Room Owner can remove another Room Admin.");
+    }
+    await connection.execute(
+      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE WHERE room_id = ? AND application_user_id = ?",
+      [member.room_id, member.target_id],
+    );
+    await connection.execute(
+      `INSERT INTO audit_logs
+        (id, actor_role, action, module, target_type, target_id, new_data, reason)
+       VALUES (?, ?, 'ROOM_MEMBER_KICKED', 'PARTY_ROOM', 'APPLICATION_USER', ?, JSON_OBJECT('roomCode', ?), 'Authorized in-room moderation action.')`,
+      [randomUUID(), member.actor_role, member.target_id, input.roomCode],
+    );
+    return { kicked: true, targetPublicId: input.targetPublicId };
+  });
+}
+
 export async function finalizeLiveSession(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
@@ -431,7 +469,7 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
 }
 
 export async function mobileCompletionSnapshot(identity: MobileIdentity) {
-  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards] = await Promise.all([
+  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards, agencyApplications, posts, privateMessaging] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT day_number, reward_coins, label FROM daily_reward_rules WHERE enabled = TRUE ORDER BY day_number"),
     db().query<RowDataPacket[]>("SELECT claim_date, streak_day, reward_coins, claim_code, claimed_at FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 31", [identity.userId]),
     db().query<RowDataPacket[]>("SELECT id, diamonds, coins, minimum_diamonds, maximum_diamonds, effective_from FROM diamond_conversion_rules WHERE enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3) ORDER BY effective_from DESC LIMIT 1"),
@@ -441,6 +479,9 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     db().query<(RowDataPacket & { setting_value: unknown })[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.discovery' LIMIT 1"),
     db().query<RowDataPacket[]>("SELECT updated_at FROM application_user_avatars WHERE application_user_id = ? LIMIT 1", [identity.userId]),
     Promise.all([leaderboardFor("daily"), leaderboardFor("weekly"), leaderboardFor("monthly")]),
+    agencyApplicationsForUser(identity),
+    discoveryPosts(),
+    privateMessagingForUser(identity),
   ]);
   const claims = claimRows[0];
   const lastClaimDate = claims[0]?.claim_date ? String(claims[0].claim_date).slice(0, 10) : null;
@@ -467,5 +508,8 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     discovery,
     profileAvatarVersion: avatarRows[0][0]?.updated_at ? new Date(avatarRows[0][0].updated_at).getTime() : null,
     leaderboards: { daily: leaderboards[0], weekly: leaderboards[1], monthly: leaderboards[2] },
+    agencyApplications,
+    posts,
+    privateMessaging,
   };
 }

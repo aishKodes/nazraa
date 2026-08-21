@@ -9,7 +9,7 @@ A focused, server-backed operations panel for Nazraa Live. It is intentionally o
 - Mobile-friendly navigation plus real global user search
 - Master-created panel accounts, subordinate account management, password reset, and encrypted ID document review
 - Google-authenticated mobile onboarding with editable profiles and automatic host enablement
-- Automatic face liveness/duplicate verification with separate Agency and Super Admin Face Live authorization
+- Single-capture automatic Face Verification with an encrypted reference selfie and separate Agency/Super Admin Live authorization
 - Global/scoped dashboards, users, hosts, agencies, and hierarchy
 - Idempotent atomic coin transfers with wallet locks, paired ledger entries, transfer record, and audit event
 - Withdrawal review state transitions with status history
@@ -37,4 +37,4 @@ npm run build
 
 ## Mobile integration boundary
 
-The production Flutter client uses the authenticated contract in [docs/mobile_api_contract.md](docs/mobile_api_contract.md). Google and biometric setup requirements are in [docs/production_identity_setup.md](docs/production_identity_setup.md). Never embed `MOBILE_API_KEY`, a biometric provider secret, or `ZEGO_SERVER_SECRET` in a distributable mobile binary.
+The production Flutter client uses the authenticated contract in [docs/mobile_api_contract.md](docs/mobile_api_contract.md). Google and identity setup requirements are in [docs/production_identity_setup.md](docs/production_identity_setup.md). Never embed `MOBILE_API_KEY` or `ZEGO_SERVER_SECRET` in a distributable mobile binary.

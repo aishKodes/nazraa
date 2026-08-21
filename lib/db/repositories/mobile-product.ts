@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
+import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { permissionsForMobileRole } from "@/lib/auth/mobile-session";
 import { encryptPrivateText } from "@/lib/security/documents";
@@ -36,6 +37,18 @@ function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome
 
 function productRole(platformRole: unknown, isHost: unknown) {
   return switchRole(String(platformRole ?? ""), Boolean(isHost));
+}
+
+function giftSymbol(key: string, name: string) {
+  const value = `${key} ${name}`.toLowerCase();
+  if (value.includes("rose")) return "🌹";
+  if (value.includes("heart") || value.includes("love")) return "💖";
+  if (value.includes("coffee") || value.includes("tea")) return "☕";
+  if (value.includes("crown")) return "👑";
+  if (value.includes("rocket")) return "🚀";
+  if (value.includes("star")) return "🌟";
+  if (value.includes("diamond")) return "💎";
+  return "🎁";
 }
 
 function switchRole(role: string, isHost: boolean) {
@@ -94,7 +107,9 @@ export async function mobileBootstrap(identity: MobileIdentity) {
       [identity.userId, identity.userId],
     ),
     db().query<RowDataPacket[]>(
-      `SELECT room.id, room.room_code, room.room_type, room.status, room.audience_count,
+      `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
+              room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.country_code,
+              room.status, room.audience_count,
               user.public_id host_public_id, user.full_name host_name, user.level_number host_level,
               user.vip_tier host_vip, account.public_id agency_public_id, account.full_name agency_name
        FROM live_rooms room INNER JOIN application_users user ON user.id = room.host_application_user_id
@@ -219,9 +234,11 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     roomManagers.set(roomCode, [...(roomManagers.get(roomCode) ?? []), member]);
   }
   const rooms = roomRows[0].map((row, index) => ({
-    id: String(row.room_code), title: String(row.room_code), category: row.room_type === "PARTY" ? "Party" : row.room_type === "FACE" ? "Face" : "Live",
-    language: "Hindi", listeners: Number(row.audience_count), themeIndex: index % 6, privacy: row.status === "LOCKED" ? "locked" : "public",
-    seatCount: row.room_type === "PARTY" ? 8 : 0, kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
+    id: String(row.room_code), title: String(row.title), category: String(row.category),
+    language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? index % 6), privacy: String(row.privacy).toLowerCase(),
+    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
+    photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
+    countryCode: row.country_code,
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
     host: { id: String(row.host_public_id), name: String(row.host_name), level: Number(row.host_level), vip: Number(row.host_vip), role: "host" },
     managers: (roomManagers.get(String(row.room_code)) ?? []).map((member) => ({ id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, roomRole: String(member.room_role).toLowerCase() })),
@@ -256,7 +273,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     })),
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), country: row.country_code ?? "", level: Number(row.level_number), vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
-    gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: "🎁", cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
+    gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({ id: String(row.id), message: String(row.message), title: row.title, kind: row.notification_type ? "system" : "event", actionTarget: row.action_target, priority: 100 - index, startAt: row.created_at, endAt: "2999-12-31T23:59:59.000Z", isActive: true })),
     coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),
@@ -370,12 +387,14 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
   return { followed };
 }
 
-export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string }) {
+export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; countryCode?: string; photoDataUrl?: string }) {
   const roomType = input.kind === "party" ? "PARTY" : input.kind === "face" ? "FACE" : "LIVE";
   const policy = LiveAccessPolicyService.for(identity);
   const access = roomType === "PARTY" ? policy.party : roomType === "FACE" ? policy.face : policy.video;
   if (!access.allowed) throw new Error(access.reason);
   const roomId = randomUUID();
+  const photo = input.photoDataUrl ? publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Room photo") : null;
+  const photoAssetId = photo ? randomUUID() : null;
   await withTransaction(async (connection) => {
     const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     const [rewardRuleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
@@ -385,9 +404,12 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       [roomType],
     );
     if (!rewardRuleRows[0]) throw new Error("The host reward rule is unavailable.");
+    if (photo && photoAssetId) {
+      await connection.execute("INSERT INTO room_photo_assets (id, owner_application_user_id, mime_type, image_data, byte_size) VALUES (?, ?, ?, ?, ?)", [photoAssetId, identity.userId, photo.mimeType, photo.data, photo.byteSize]);
+    }
     await connection.execute(
-      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type) VALUES (?, ?, ?, ?, ?)",
-      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType],
+      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, seat_count, theme_index, room_photo_asset_id, country_code, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, photoAssetId, input.countryCode ?? null, input.privacy === "locked" ? "LOCKED" : "ACTIVE"],
     );
     await connection.execute(
       "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?)",

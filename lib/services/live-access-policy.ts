@@ -13,15 +13,15 @@ export class LiveAccessPolicyService {
     const faceVerified = identity.faceVerificationStatus === "VERIFIED";
     const agencyApproved = Boolean(identity.agencyAccountId);
     const party = decision(faceVerified, faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");
-    const video = decision(faceVerified, faceVerified ? "Face verified." : "Complete automatic Face Verification before hosting.");
-    const face = decision(
-      faceVerified && agencyApproved && identity.agencyFaceLiveAuthorized && identity.superAdminFaceLiveAuthorized,
+    const managedLiveAllowed = faceVerified && agencyApproved && identity.agencyFaceLiveAuthorized && identity.superAdminFaceLiveAuthorized;
+    const managedLiveReason =
       !faceVerified ? "Complete automatic Face Verification first."
-        : !agencyApproved ? "Join an approved Agency to unlock Face Live."
-          : !identity.agencyFaceLiveAuthorized ? "Your Agency must authorize Face Live access."
+        : !agencyApproved ? "Join an approved Agency to unlock Video or Face Live."
+          : !identity.agencyFaceLiveAuthorized ? "Your Agency must authorize Video and Face Live access."
             : !identity.superAdminFaceLiveAuthorized ? "Super Admin authorization is still required."
-              : "Face Live access active.",
-    );
+              : "Video and Face Live access active.";
+    const video = decision(managedLiveAllowed, managedLiveReason);
+    const face = decision(managedLiveAllowed, managedLiveReason);
     return {
       browse: decision(true, "Browsing is available."),
       join: decision(true, "Joining other rooms is available."),

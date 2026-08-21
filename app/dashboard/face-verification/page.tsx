@@ -20,16 +20,16 @@ export default async function FaceVerificationPage({ searchParams }: { searchPar
       : ["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"] as const;
 
   return <>
-    <SectionHeading title="Face verification & Face Live access" description="Liveness and duplicate-face decisions are automatic. Agency and Super Admin Face Live authorizations remain separate, explicit, and audited." />
+    <SectionHeading title="Face verification & Live access" description="The private-beta flow automatically approves one encrypted selfie capture. Agency and Super Admin Live authorizations remain separate, explicit, and audited." />
     {success ? <Notice type="success">{success}</Notice> : null}
     {error ? <Notice type="error">{error}</Notice> : null}
     <Card>{requests.length ? <div className="table-scroll"><table><thead><tr>
-      <th>Request</th><th>User</th><th>Automatic check</th><th>Evidence</th><th>Submitted</th><th>Status</th><th>Face Live authorization</th>{manageLegacy ? <th>Legacy exception</th> : null}
+      <th>Request</th><th>User</th><th>Capture mode</th><th>Evidence</th><th>Submitted</th><th>Status</th><th>Live authorization</th>{manageLegacy ? <th>Legacy exception</th> : null}
     </tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
       <td className="mono">{request.publicId}</td>
       <td><b>{request.fullName}</b><small className="mono block">{request.userPublicId} · {request.country ?? "—"}</small></td>
-      <td>{request.provider ?? "Legacy"}<small className="block">Liveness {request.livenessScore == null ? "—" : request.livenessScore.toFixed(3)} · Match {request.matchScore == null ? "—" : request.matchScore.toFixed(3)}</small></td>
-      <td>{request.documentId ? <a className="table-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer">Restricted view <ExternalLink size={13} /></a> : <span className="muted">No raw frame retained</span>}</td>
+      <td>{request.provider ?? "Legacy"}<small className="block">Single capture · no biometric matching</small></td>
+      <td>{request.documentId ? <a className="table-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer">Restricted view <ExternalLink size={13} /></a> : <span className="muted">No encrypted capture available</span>}</td>
       <td>{formatDate(request.createdAt)}</td>
       <td><StatusBadge value={request.status} />{request.reviewReason ? <small className="block">{request.reviewReason}</small> : null}</td>
       <td>
@@ -45,6 +45,6 @@ export default async function FaceVerificationPage({ searchParams }: { searchPar
       </td>
       {manageLegacy ? <td>{request.status === "PENDING" ? <form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue="" required><option value="" disabled>Decision…</option><option value="VERIFIED">Verify</option><option value="REJECTED">Reject</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Recovery reason" /><button className="table-button" type="submit">Save</button></form> : <span className="muted">Automatic flow</span>}</td> : null}
     </tr>)}</tbody></table></div> : <EmptyState title="No Face Verification activity" detail="Automatic mobile verification results will appear here without creating fake queue data." />}</Card>
-    <p className="footnote"><ScanFace size={14} />Government ID is not part of normal Face Verification. Face Live needs verified + approved Agency + Agency authorization + Super Admin authorization.</p>
+    <p className="footnote"><ScanFace size={14} />Government ID is not part of normal Face Verification. Video/Face Live needs verified + approved Agency + Agency authorization + Super Admin authorization.</p>
   </>;
 }
