@@ -40,7 +40,9 @@ export function AccountRoleForm({ actorRole, account, parents, descendants }: {
     setRole(value); setParentChoice(null); setChildChoices({}); setConfirmed(false);
   }
 
-  return <form action={action} className="stack-form role-change-form">
+  // React also resets forms when an action returns a validation error. Keep the
+  // selections intact; a successful save redirects to fresh account details.
+  return <form action={action} onReset={(event) => event.preventDefault()} className="stack-form role-change-form">
     <input type="hidden" name="accountId" value={account.id} />
     <input type="hidden" name="expectedRole" value={account.role} />
     <label>New role<select name="role" value={role} onChange={(event) => changeRole(event.target.value as Role)}>{roles.map((value) => <option key={value} value={value}>{roleLabel(value)}</option>)}</select></label>
