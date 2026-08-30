@@ -8,14 +8,16 @@ import { requirePermission } from "@/lib/auth/guard";
 import { canManageRole, roleLabel } from "@/lib/auth/role-hierarchy";
 import { listParentOptions, listPlatformAccountsPage, rolesCreatableBy } from "@/lib/db/repositories/administration";
 import { formatDate } from "@/lib/utils/format";
+import { CountrySelect } from "@/components/country-select";
+import { countryName } from "@/lib/countries";
 
 export const dynamic = "force-dynamic";
 
 export default async function AccountsPage({ searchParams }: {
-  searchParams: Promise<{ error?: string; success?: string; q?: string; page?: string }>;
+  searchParams: Promise<{ error?: string; success?: string; q?: string; page?: string; create?: string }>;
 }) {
   const scope = await requirePermission("accounts.read");
-  const { error, success, q, page: rawPage } = await searchParams;
+  const { error, success, q, page: rawPage, create } = await searchParams;
   const page = Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1);
   const [result, parents] = await Promise.all([
     listPlatformAccountsPage(scope, { page, search: q }),
@@ -35,13 +37,13 @@ export default async function AccountsPage({ searchParams }: {
     {error ? <Notice type="error">{error}</Notice> : null}
 
     {canCreate ? <Card className="create-panel">
-      <details id="create-account">
+      <details id="create-account" open={create === "1"}>
         <summary><span><UserCog size={18} /><b>Create a panel account</b></span><small>Only roles allowed under your branch are shown</small></summary>
         <form action={submitCreateAccount} className="admin-form">
           <div className="form-grid">
             <label>Account type<select name="accountType" required defaultValue=""><option value="" disabled>Select role</option>{creatable.map((role) => <option value={role} key={role}>{roleLabel(role)}</option>)}</select></label>
             <label>Full name<input name="fullName" required maxLength={120} /></label>
-            <label>Country code<input name="countryCode" required minLength={2} maxLength={2} placeholder="IN" /></label>
+            <label>Country<CountrySelect defaultValue={parents.find((parent) => parent.id === scope.account.id)?.country ?? "IN"} /></label>
             <label>Mobile<input name="mobile" inputMode="tel" placeholder="+919876543210" /></label>
             <label>Email<input name="email" type="email" /></label>
             <label>Existing app user ID <span>(optional)</span><input name="applicationUserId" /></label>
@@ -63,7 +65,7 @@ export default async function AccountsPage({ searchParams }: {
       </form>
       {result.items.length ? <div className="table-scroll"><table><thead><tr><th>Account</th><th>Management ID</th><th>Role</th><th>Parent</th><th>Country</th><th>Documents</th><th>Last login</th><th>Status</th>{canManage ? <th>Manage</th> : null}</tr></thead><tbody>{result.items.map((account) => <tr key={account.id}>
         <td data-label="Account"><Link className="table-link" href={`/dashboard/accounts/${account.id}`}><b>{account.name}</b></Link><small className="block">{account.email ?? account.mobile ?? "No contact"}</small></td>
-        <td data-label="Management ID" className="mono">{account.code}</td><td data-label="Role">{account.displayRole}</td><td data-label="Parent">{account.parentName ?? "Platform root"}</td><td data-label="Country">{account.country ?? "—"}</td><td data-label="Documents">{account.documentCount}</td><td data-label="Last login">{formatDate(account.lastLoginAt)}</td><td data-label="Status"><StatusBadge value={account.status} /></td>
+        <td data-label="Management ID" className="mono">{account.code}</td><td data-label="Role">{account.displayRole}</td><td data-label="Parent">{account.parentName ?? "Platform root"}</td><td data-label="Country">{countryName(account.country)}</td><td data-label="Documents">{account.documentCount}</td><td data-label="Last login">{formatDate(account.lastLoginAt)}</td><td data-label="Status"><StatusBadge value={account.status} /></td>
         {canManage ? <td data-label="Manage">{canManageRole(scope.account.role, account.role) && account.id !== scope.account.id && account.status !== "DISABLED" ? <div className="account-actions">
           <Link className="table-link" href={`/dashboard/accounts/${account.id}`}>Edit account</Link>
           {can(scope.account.role, "accounts.roles") ? <Link className="table-link" href={`/dashboard/accounts/${account.id}#change-role`}>Change role</Link> : null}

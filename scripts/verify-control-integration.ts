@@ -93,6 +93,86 @@ async function main() {
     assert.equal((await accounts.accountById(childAgency.account.id))?.parentAccountId, bd.account.id);
     passed++;
 
+    // Legacy Admin accounts can contain BDs. Keep their Agencies in that same
+    // branch when promoting, rather than rejecting every descendant parent.
+    const retainedTarget = await create("ADMIN", sa, "Retained branch promotion");
+    const retainedBd = await create("BD", sa, "Retained BD");
+    const retainedAgency = await create("AGENCY", retainedTarget, "Retained Agency");
+    await root.execute("UPDATE platform_accounts SET parent_account_id = ? WHERE id = ?", [retainedTarget.account.id, retainedBd.account.id]);
+    const { roleChangeOptions } = await import("@/lib/auth/role-change-options");
+    const options = roleChangeOptions({ id: retainedTarget.account.id, parentId: sa.account.id, country: "IN" }, "SUPER_ADMIN", await admin.listParentOptions(master), await admin.listRoleChangeDescendants(master, retainedTarget.account.id));
+    assert.equal(options.suggestedParentId, cm.account.id);
+    assert.ok(options.childParents.AGENCY?.some((entry) => entry.id === retainedBd.account.id));
+    assert.ok(!options.validParents.some((entry) => entry.id === retainedBd.account.id));
+    await admin.changePlatformAccountRole({ scope: await refresh(cm), accountId: retainedTarget.account.id, role: "SUPER_ADMIN", expectedRole: "ADMIN", parentAccountId: cm.account.id, childParentIds: { AGENCY: retainedBd.account.id }, reason: "QA preserve retained BD branch" });
+    assert.equal((await accounts.accountById(retainedAgency.account.id))?.parentAccountId, retainedBd.account.id);
+    assert.equal((await accounts.accountById(retainedBd.account.id))?.parentAccountId, retainedTarget.account.id);
+    passed++;
+
+    // Reproduce older direct-under-Master accounts without a Country Manager.
+    // The explicitly requested supporting accounts and promotion are atomic.
+    const legacy = await create("ADMIN", sa, "Legacy promotion");
+    const legacyAgency = await create("AGENCY", legacy, "Legacy Agency");
+    const legacyHost = await user(legacyAgency.account.id, "QA Legacy host");
+    await root.execute("UPDATE platform_accounts SET parent_account_id = ? WHERE id = ?", [master.account.id, legacy.account.id]);
+    const before = await accounts.accountByManagementId(legacy.account.publicId);
+    const form = new FormData();
+    for (const [key, value] of Object.entries({ accountId: legacy.account.id, expectedRole: "ADMIN", role: "SUPER_ADMIN", parentAccountId: "NEW_COUNTRY_MANAGER", childParent_AGENCY: "NEW_ADMIN", newCountryManagerName: "QA Inline Country Manager", newCountryManagerPassword: password, newCountryManagerCountry: "IN", newAdminName: "QA Inline Admin", newAdminPassword: password, reason: "QA promote legacy Admin", confirmed: "yes" })) form.set(key, value);
+    const { parseRoleChange } = await import("@/lib/auth/role-change-validation");
+    const parsed = parseRoleChange(form);
+    assert.ok(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues));
+    const promotionResult = await admin.changePlatformAccountRole({ scope: master, ...parsed.data });
+    assert.equal(promotionResult.created.length, 2);
+    const newCm = await accounts.accountByManagementId(String(promotionResult.created.find((entry) => entry.role === "COUNTRY_MANAGER")!.publicId));
+    const newAdmin = await accounts.accountByManagementId(String(promotionResult.created.find((entry) => entry.role === "ADMIN")!.publicId));
+    assert.ok(newCm && newAdmin);
+    const after = await accounts.accountByManagementId(legacy.account.publicId);
+    assert.equal(after?.role, "SUPER_ADMIN");
+    assert.equal(after?.parentAccountId, newCm.id);
+    assert.equal(after?.passwordHash, before?.passwordHash);
+    assert.equal(after?.publicId, before?.publicId);
+    assert.equal(newCm.parentAccountId, master.account.id);
+    assert.equal(newAdmin.parentAccountId, legacy.account.id);
+    assert.equal((await accounts.accountById(legacyAgency.account.id))?.parentAccountId, newAdmin.id);
+    assert.ok((await directory.listUsersPage(await accounts.scopeFor(newCm))).items.some((entry) => entry.id === legacyHost.id));
+    await assert.rejects(admin.changePlatformAccountRole({ scope: master, ...parsed.data }), /already changed/);
+    await assert.rejects(admin.changePlatformAccountRole({ scope: await refresh(cm), ...parsed.data }), /Only Master/);
+    form.delete("confirmed");
+    assert.equal(parseRoleChange(form).success, false);
+    passed++;
+
+    const rollback = await create("ADMIN", sa, "Rollback promotion");
+    await create("AGENCY", rollback, "Rollback Agency");
+    const [countBefore] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM platform_accounts");
+    const [auditBefore] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM audit_logs");
+    await assert.rejects(admin.changePlatformAccountRole({ scope: master, accountId: rollback.account.id, role: "SUPER_ADMIN", parentAccountId: "NEW_COUNTRY_MANAGER", newCountryManager: { fullName: "QA Must roll back", password, countryCode: "IN" }, childParentIds: { AGENCY: cm.account.id }, reason: "QA rollback all partial changes" }), /compatible parent/);
+    const [countAfter] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM platform_accounts");
+    const [auditAfter] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM audit_logs");
+    assert.equal(countAfter[0].total, countBefore[0].total);
+    assert.equal(auditAfter[0].total, auditBefore[0].total);
+    assert.equal((await accounts.accountById(rollback.account.id))?.role, "ADMIN");
+    await assert.rejects(admin.changePlatformAccountRole({ scope: await refresh(cm), accountId: rollback.account.id, role: "SUPER_ADMIN", parentAccountId: cm.account.id, childParentIds: { AGENCY: adminOther.account.id }, reason: "QA reject cross branch child move" }));
+    passed++;
+
+    // Independent destinations resolve mixed legacy children; no single parent
+    // could previously accept both Super Admin and Agency children.
+    const mixed = await create("ADMIN", sa, "Mixed legacy target");
+    const mixedAgency = await create("AGENCY", mixed, "Mixed Agency");
+    const mixedSa = await create("SUPER_ADMIN", cm, "Mixed legacy Super Admin");
+    await root.execute("UPDATE platform_accounts SET parent_account_id = ? WHERE id = ?", [mixed.account.id, mixedSa.account.id]);
+    await admin.changePlatformAccountRole({ scope: master, accountId: mixed.account.id, role: "COIN_SELLER", parentAccountId: cm.account.id, childParentIds: { SUPER_ADMIN: cm.account.id, AGENCY: branchAdmin.account.id }, reason: "QA independent downstream assignments" });
+    assert.equal((await accounts.accountById(mixedSa.account.id))?.parentAccountId, cm.account.id);
+    assert.equal((await accounts.accountById(mixedAgency.account.id))?.parentAccountId, branchAdmin.account.id);
+    passed++;
+
+    const { countryName, isPanelCountry, panelCountries } = await import("@/lib/countries");
+    assert.equal(panelCountries[0].code, "IN");
+    assert.equal(countryName("NP"), "Nepal");
+    assert.equal(countryName("IN"), "India");
+    assert.equal(isPanelCountry("ZZ"), false);
+    await assert.rejects(admin.createPlatformAccount({ scope: master, role: "COUNTRY_MANAGER", fullName: "QA Bad country", countryCode: "ZZ", password, documents: [] }), /country/);
+    passed++;
+
     const applicant = await user(null, "QA Agency applicant");
     const creationId = randomUUID();
     await root.execute("INSERT INTO agency_creation_applications (id, application_user_id, agency_name, country_code, business_whatsapp_e164, parent_account_id) VALUES (?, ?, 'QA Approved Agency', 'IN', '+919999000001', ?)", [creationId, applicant.id, branchAdmin.account.id]);

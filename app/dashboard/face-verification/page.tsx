@@ -1,3 +1,4 @@
+import { countryName } from "@/lib/countries";
 import { ExternalLink, ScanFace } from "lucide-react";
 import { submitFaceLiveAuthorization, submitFaceVerificationReview } from "@/app/admin-actions";
 import { Pagination } from "@/components/pagination";
@@ -31,7 +32,7 @@ export default async function FaceVerificationPage({ searchParams }: { searchPar
       <th>Request</th><th>User</th><th>Capture mode</th><th>Evidence</th><th>Submitted</th><th>Status</th><th>Live authorization</th>{manageLegacy ? <th>Legacy exception</th> : null}
     </tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
       <td className="mono">{request.publicId}</td>
-      <td><b>{request.fullName}</b><small className="mono block">{request.userPublicId} · {request.country ?? "—"}</small></td>
+      <td><b>{request.fullName}</b><small className="mono block">{request.userPublicId} · {countryName(request.country)}</small></td>
       <td>{request.provider ?? "Legacy"}<small className="block">Single capture · no biometric matching</small></td>
       <td>{request.documentId ? <a className="table-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer">Restricted view <ExternalLink size={13} /></a> : <span className="muted">No encrypted capture available</span>}</td>
       <td>{formatDate(request.createdAt)}</td>

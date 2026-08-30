@@ -35,6 +35,10 @@ h1, h2, p { margin-top: 0; }
 .login-intro h1 { margin: 9px 0 8px; font-size: 30px; letter-spacing: -1px; }
 .login-intro p { color: var(--muted); font-size: 14px; }
 .login-form, .stack-form { display: grid; gap: 16px; }
+.role-support-fields { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--canvas); }
+.role-support-fields legend { font-weight: 750; padding: 0 5px; }
+.role-support-fields p, .role-change-form .notice { margin: 0; }
+.role-change-form button:disabled { opacity: .6; cursor: not-allowed; transform: none; }
 label { display: grid; gap: 7px; color: #4e475d; font-weight: 650; font-size: 12px; }
 input, select, textarea { min-width: 0; width: 100%; border: 1px solid #dcd6e4; border-radius: 8px; outline: none; color: var(--ink); background: #fff; padding: 10px 11px; transition: border .15s, box-shadow .15s; }
 input:focus, select:focus, textarea:focus { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(97, 65, 200, .11); }

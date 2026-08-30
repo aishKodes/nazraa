@@ -10,6 +10,7 @@ import { generatedRoleCode, scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { PreparedDocument } from "@/lib/security/documents";
 import type { PageRequest, PageResult, Role, Scope } from "@/types/platform";
+import { isPanelCountry } from "@/lib/countries";
 
 export { rolesCreatableBy } from "@/lib/auth/role-hierarchy";
 
@@ -115,13 +116,13 @@ export async function listParentOptions(scope: Scope, childRole?: Role) {
   const allowedRoles = childRole ? validParentRoles(childRole) : ["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"] satisfies Role[];
   if (!allowedRoles.length) return [];
   const placeholders = allowedRoles.map(() => "?").join(",");
-  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; public_id: number; country_code: string | null })[]>(
-    `SELECT id, role, full_name, public_id, country_code FROM platform_accounts
+  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; public_id: number; country_code: string | null; parent_account_id: string | null })[]>(
+    `SELECT id, role, full_name, public_id, country_code, parent_account_id FROM platform_accounts
      WHERE ${scoped.clause} AND role IN (${placeholders}) AND status = 'ACTIVE'
      ORDER BY FIELD(role, 'MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD'), full_name LIMIT 500`,
     [...scoped.values, ...allowedRoles],
   );
-  return rows.map((row) => ({ id: row.id, role: row.role, displayRole: roleLabel(row.role), name: row.full_name, code: String(row.public_id), country: row.country_code }));
+  return rows.map((row) => ({ id: row.id, role: row.role, displayRole: roleLabel(row.role), name: row.full_name, code: String(row.public_id), country: row.country_code, parentId: row.parent_account_id }));
 }
 
 export async function getPlatformAccountDetail(scope: Scope, accountId: string) {
@@ -197,6 +198,7 @@ export async function createPlatformAccount(input: {
 }) {
   if (!rolesCreatableBy(input.scope.account.role).includes(input.role)) throw new Error("Your role cannot create that account type.");
   if (input.password.length < 8) throw new Error("Password must contain at least 8 characters.");
+  if (!isPanelCountry(input.countryCode)) throw new Error("Select India or a neighboring country from the country list.");
   const parent = await resolveParent(input.scope, input.role, input.requestedParentId);
   if (parent.country_code && parent.role !== "MASTER" && parent.country_code !== input.countryCode) {
     throw new Error("The account country must match its parent branch.");
@@ -302,8 +304,10 @@ export async function updateAccountStatus(input: { scope: Scope; accountId: stri
 
 export async function updatePlatformAccount(input: { scope: Scope; accountId: string; fullName: string; email?: string; mobile?: string; countryCode: string; reason: string }) {
   const target = await manageableAccount(input.scope, input.accountId);
-  const [countries] = await db().query<(RowDataPacket & { country_code: string | null })[]>("SELECT country_code FROM platform_accounts WHERE id = ?", [target.id]);
-  if (countries[0]?.country_code && countries[0].country_code !== input.countryCode) throw new Error("Country cannot be changed through contact editing. Keep the assigned country and hierarchy consistent.");
+  const [countries] = await db().query<(RowDataPacket & { country_code: string | null; parent_country: string | null; parent_role: Role | null })[]>("SELECT a.country_code, p.country_code parent_country, p.role parent_role FROM platform_accounts a LEFT JOIN platform_accounts p ON p.id = a.parent_account_id WHERE a.id = ?", [target.id]);
+  const country = countries[0];
+  if (country?.country_code && country.country_code.toUpperCase() !== input.countryCode) throw new Error("Country cannot be changed through contact editing. Keep the assigned country and hierarchy consistent.");
+  if (!country?.country_code && (!isPanelCountry(input.countryCode) || (country?.parent_country && country.parent_role !== "MASTER" && country.parent_country.toUpperCase() !== input.countryCode))) throw new Error("Select the same country as this account's parent branch.");
   await withTransaction(async (connection) => {
     await connection.execute("UPDATE platform_accounts SET full_name = ?, email = ?, mobile = ?, country_code = ? WHERE id = ?", [input.fullName, input.email || null, input.mobile || null, input.countryCode, target.id]);
     await connection.execute(
@@ -315,25 +319,55 @@ export async function updatePlatformAccount(input: { scope: Scope; accountId: st
   });
 }
 
-export async function listDirectChildRoles(scope: Scope, accountId: string) {
+export async function listRoleChangeDescendants(scope: Scope, accountId: string) {
   if (!(await getPlatformAccountDetail(scope, accountId))) return [];
-  const [rows] = await db().query<(RowDataPacket & { role: Role })[]>("SELECT DISTINCT role FROM platform_accounts WHERE parent_account_id = ? AND removed_at IS NULL", [accountId]);
-  return rows.map((row) => row.role);
+  const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; branchRole: Role; depth: number })[]>(
+    `WITH RECURSIVE subtree AS (
+       SELECT id, role, role branchRole, 1 depth FROM platform_accounts WHERE parent_account_id = ? AND removed_at IS NULL
+       UNION ALL SELECT a.id, a.role, s.branchRole, s.depth + 1 FROM platform_accounts a INNER JOIN subtree s ON a.parent_account_id = s.id WHERE a.removed_at IS NULL
+     ) SELECT id, role, branchRole, depth FROM subtree`, [accountId]);
+  return rows.map((row) => ({ id: row.id, role: row.role, branchRole: row.branchRole, depth: Number(row.depth) }));
 }
 
-export async function changePlatformAccountRole(input: { scope: Scope; accountId: string; role: Role; parentAccountId: string; childParentId?: string; reason: string }) {
+export async function changePlatformAccountRole(input: {
+  scope: Scope; accountId: string; role: Role; expectedRole?: Role; parentAccountId: string;
+  childParentId?: string; childParentIds?: Partial<Record<Role, string>>; reason: string;
+  newCountryManager?: { fullName: string; password: string; countryCode: string };
+  newAdmin?: { fullName: string; password: string };
+}) {
   if (!rolesAssignableBy(input.scope.account.role).includes(input.role)) throw new Error("That role cannot be assigned by your account.");
   if (input.accountId === input.scope.account.id || input.accountId === input.parentAccountId) throw new Error("An account cannot change its own role or be its own parent.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear reason for the role change.");
+  for (const entry of [input.newCountryManager, input.newAdmin]) {
+    if (entry && (entry.fullName.trim().length < 2 || entry.fullName.trim().length > 120 || entry.password.length < 8 || entry.password.length > 200)) throw new Error("Enter the new account's name and a password of at least 8 characters.");
+  }
+  if (input.newCountryManager && (input.scope.account.role !== "MASTER" || input.role !== "SUPER_ADMIN" || input.parentAccountId !== "NEW_COUNTRY_MANAGER" || !isPanelCountry(input.newCountryManager.countryCode))) throw new Error("Only Master can create a Country Manager for this promotion. Select a valid country.");
+  if (input.newAdmin && (input.role !== "SUPER_ADMIN" || !Object.values(input.childParentIds ?? {}).includes("NEW_ADMIN"))) throw new Error("A replacement Admin is only available for a Super Admin promotion with downstream accounts.");
+  const [cmHash, adminHash] = await Promise.all([input.newCountryManager ? bcrypt.hash(input.newCountryManager.password, 12) : null, input.newAdmin ? bcrypt.hash(input.newAdmin.password, 12) : null]);
   const scoped = scopeWhere(input.scope, "id");
-  await withTransaction(async (connection) => {
+  return withTransaction(async (connection) => {
+    const created: { role: Role; publicId: number }[] = [];
+    async function createSupportAccount(role: "COUNTRY_MANAGER" | "ADMIN", name: string, passwordHash: string, parentId: string, country: string | null) {
+      if (!rolesCreatableBy(input.scope.account.role).includes(role)) throw new Error("You cannot create this supporting account.");
+      const id = randomUUID();
+      const publicId = await generateManagementPublicId(connection);
+      await connection.execute("INSERT INTO platform_accounts (id, public_id, role, role_code, full_name, password_hash, status, parent_account_id, country_code, created_by) VALUES (?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)", [id, publicId, role, await generatedRoleCode(role), name.trim(), passwordHash, parentId, country, input.scope.account.id]);
+      await connection.execute("INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, new_data, reason) VALUES (?, ?, ?, 'account.create', 'accounts', 'platform_account', ?, ?, ?)", [randomUUID(), input.scope.account.id, input.scope.account.role, id, JSON.stringify({ role, publicId, parentId, countryCode: country, roleChangeAccountId: input.accountId }), input.reason]);
+      created.push({ role, publicId });
+      return { id, role, country_code: country };
+    }
     const [targets] = await connection.query<(RowDataPacket & { id: string; role: Role; parent_account_id: string | null; country_code: string | null })[]>(`SELECT id, role, parent_account_id, country_code FROM platform_accounts WHERE id = ? AND removed_at IS NULL AND ${scoped.clause} LIMIT 1 FOR UPDATE`, [input.accountId, ...scoped.values]);
     const target = targets[0];
     if (!target || !canManageRole(input.scope.account.role, target.role)) throw new Error("Account was not found in your permitted branch.");
+    if (input.expectedRole && input.expectedRole !== target.role) throw new Error("This account's role has already changed. Reload the page before making another change.");
     const [parents] = await connection.query<(RowDataPacket & { id: string; role: Role; country_code: string | null })[]>(`SELECT id, role, country_code FROM platform_accounts WHERE id = ? AND status = 'ACTIVE' AND ${scoped.clause} LIMIT 1 FOR UPDATE`, [input.parentAccountId, ...scoped.values]);
-    const parent = parents[0];
+    let parent = parents[0];
+    if (input.newCountryManager && cmHash) {
+      if (target.country_code && target.country_code.toUpperCase() !== input.newCountryManager.countryCode) throw new Error("The new Country Manager must be in this account's country.");
+      parent = await createSupportAccount("COUNTRY_MANAGER", input.newCountryManager.fullName, cmHash, input.scope.account.id, input.newCountryManager.countryCode) as typeof parent;
+    }
     if (!parent || !isParentRoleValid(input.role, parent.role)) throw new Error(`Choose a valid ${validParentRoles(input.role).map(roleLabel).join(" or ")} parent.`);
-    if (parent.role !== "MASTER" && parent.country_code && target.country_code && parent.country_code !== target.country_code) throw new Error("The account and parent must be in the same country.");
+    if (parent.role !== "MASTER" && parent.country_code && target.country_code && parent.country_code.toUpperCase() !== target.country_code.toUpperCase()) throw new Error("The account and parent must be in the same country.");
     const [cycles] = await connection.query<RowDataPacket[]>(
       `WITH RECURSIVE descendants AS (
          SELECT id FROM platform_accounts WHERE parent_account_id = ?
@@ -348,29 +382,40 @@ export async function changePlatformAccountRole(input: { scope: Scope; accountId
     );
     const invalidChildren = children.filter((child) => !isParentRoleValid(child.role, input.role));
     if (invalidChildren.length) {
-      if (!input.childParentId || input.childParentId === target.id) throw new Error("Choose where to move the existing downstream accounts for this role change.");
-      const [destinations] = await connection.query<(RowDataPacket & { id: string; role: Role; country_code: string | null })[]>(`SELECT id, role, country_code FROM platform_accounts WHERE id = ? AND status = 'ACTIVE' AND ${scoped.clause} LIMIT 1 FOR UPDATE`, [input.childParentId, ...scoped.values]);
-      const destination = destinations[0];
-      if (!destination || invalidChildren.some((child) => !isParentRoleValid(child.role, destination.role) || (child.country_code && destination.country_code && child.country_code !== destination.country_code))) throw new Error("Choose a compatible downstream parent in the same country and branch.");
-      const [descendants] = await connection.query<(RowDataPacket & { id: string })[]>(`WITH RECURSIVE subtree AS (SELECT id FROM platform_accounts WHERE parent_account_id = ? UNION ALL SELECT a.id FROM platform_accounts a INNER JOIN subtree s ON a.parent_account_id = s.id) SELECT id FROM subtree WHERE id = ? LIMIT 1`, [target.id, destination.id]);
-      if (descendants.length) throw new Error("The downstream destination must be outside the account being changed.");
+      // A retained Admin/BD inside this branch is a safe destination. Exclude only
+      // the subtrees being moved, not the entire promoted account's team.
+      const [movingSubtree] = await connection.query<(RowDataPacket & { id: string })[]>(`WITH RECURSIVE subtree AS (SELECT id FROM platform_accounts WHERE id IN (${invalidChildren.map(() => "?").join(",")}) UNION ALL SELECT a.id FROM platform_accounts a INNER JOIN subtree s ON a.parent_account_id = s.id) SELECT id FROM subtree`, invalidChildren.map((child) => child.id));
+      const excluded = new Set(movingSubtree.map((row) => row.id));
+      const destinationIds = [...new Set(invalidChildren.map((child) => input.childParentIds?.[child.role] || input.childParentId))];
+      if (destinationIds.some((id) => !id || id === target.id || excluded.has(id))) throw new Error("Choose a safe parent for each group of existing downstream accounts.");
+      if (input.newAdmin && !destinationIds.includes("NEW_ADMIN")) throw new Error("Select which existing accounts will report to the new Admin.");
+      const newAdmin = input.newAdmin && adminHash ? await createSupportAccount("ADMIN", input.newAdmin.fullName, adminHash, target.id, target.country_code ?? parent.country_code) : null;
+      const existingIds = destinationIds.filter((id): id is string => Boolean(id) && id !== "NEW_ADMIN");
+      const [destinations] = existingIds.length ? await connection.query<(RowDataPacket & { id: string; role: Role; country_code: string | null })[]>(`SELECT id, role, country_code FROM platform_accounts WHERE id IN (${existingIds.map(() => "?").join(",")}) AND status = 'ACTIVE' AND ${scoped.clause} FOR UPDATE`, [...existingIds, ...scoped.values]) : [[]];
+      const byId = new Map<string, { id: string; role: Role; country_code: string | null }>(destinations.map((row) => [row.id, row]));
+      if (newAdmin) byId.set("NEW_ADMIN", newAdmin);
       for (const child of invalidChildren) {
+        const destinationId = input.childParentIds?.[child.role] || input.childParentId;
+        const destination = byId.get(destinationId!);
+        if (!destination || !isParentRoleValid(child.role, destination.role) || (child.country_code && destination.country_code && child.country_code.toUpperCase() !== destination.country_code.toUpperCase())) throw new Error(`Choose a compatible parent in the same country and branch for ${roleLabel(child.role)} accounts.`);
         await connection.execute("UPDATE platform_accounts SET parent_account_id = ? WHERE id = ?", [destination.id, child.id]);
         await connection.execute("INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason) VALUES (?, ?, ?, 'hierarchy.role_change_reassign', 'hierarchy', 'platform_account', ?, ?, ?, ?)", [randomUUID(), input.scope.account.id, input.scope.account.role, child.id, JSON.stringify({ parentAccountId: target.id }), JSON.stringify({ parentAccountId: destination.id }), input.reason]);
       }
     }
     if (target.role === "AGENCY" && input.role !== "AGENCY") {
-      const [hosts] = await connection.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE agency_account_id = ? LIMIT 1", [target.id]);
+      const [hosts] = await connection.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE agency_account_id = ? UNION ALL SELECT id FROM application_users WHERE agency_account_id = ? LIMIT 1", [target.id, target.id]);
       if (hosts[0]) throw new Error("Move this Agency's hosts before changing its role.");
     }
-    await connection.execute("UPDATE platform_accounts SET role = ?, admin_kind = NULL, parent_account_id = ? WHERE id = ?", [input.role, parent.id, target.id]);
+    const country = target.country_code ?? (parent.role === "MASTER" ? null : parent.country_code);
+    await connection.execute("UPDATE platform_accounts SET role = ?, admin_kind = NULL, parent_account_id = ?, country_code = ? WHERE id = ?", [input.role, parent.id, country, target.id]);
     if (input.role === "COIN_SELLER") await connection.execute("INSERT IGNORE INTO seller_profiles (account_id) VALUES (?)", [target.id]);
     await connection.execute(
       `INSERT INTO audit_logs
         (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
        VALUES (?, ?, ?, 'account.role_change', 'accounts', 'platform_account', ?, ?, ?, ?)`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, target.id, JSON.stringify({ role: target.role, parentAccountId: target.parent_account_id }), JSON.stringify({ role: input.role, parentAccountId: parent.id }), input.reason],
+      [randomUUID(), input.scope.account.id, input.scope.account.role, target.id, JSON.stringify({ role: target.role, parentAccountId: target.parent_account_id, countryCode: target.country_code }), JSON.stringify({ role: input.role, parentAccountId: parent.id, countryCode: country }), input.reason],
     );
+    return { created };
   });
 }
 

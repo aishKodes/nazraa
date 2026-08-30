@@ -25,6 +25,9 @@ import { preparePublicImage } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
 import { roles } from "@/types/platform";
 import { deleteBanner } from "@/lib/db/repositories/catalog";
+import { parseRoleChange } from "@/lib/auth/role-change-validation";
+import { roleLabel } from "@/lib/auth/role-hierarchy";
+import { isPanelCountry } from "@/lib/countries";
 
 function destination(path: string, kind: "error" | "success", message: string) {
   return `${path}?${kind}=${encodeURIComponent(message)}`;
@@ -34,7 +37,7 @@ export async function submitCreateAccount(formData: FormData) {
   const scope = await requirePermission("accounts.create");
   const parsed = z.object({
     accountType: z.enum(roles), fullName: z.string().trim().min(2).max(120), email: z.string().trim().email().optional().or(z.literal("")),
-    mobile: z.string().trim().max(24).optional(), countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+    mobile: z.string().trim().max(24).optional(), countryCode: z.string().trim().toUpperCase().refine(isPanelCountry),
     applicationUserId: z.string().trim().max(80).optional(), password: z.string().min(8).max(200), requestedParentId: z.string().uuid().optional().or(z.literal("")),
   }).safeParse(Object.fromEntries(["accountType", "fullName", "email", "mobile", "countryCode", "applicationUserId", "password", "requestedParentId"].map((key) => [key, formData.get(key)])));
   if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Check the required account details and use a password of at least 8 characters."));
@@ -91,21 +94,19 @@ export async function submitAccountEdit(formData: FormData) {
   redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", "Account details updated and audited."));
 }
 
-export async function submitAccountRoleChange(formData: FormData) {
+export async function submitAccountRoleChange(_previous: { error: string | null }, formData: FormData): Promise<{ error: string | null }> {
   const scope = await requirePermission("accounts.roles");
-  const parsed = z.object({
-    accountId: z.string().uuid(), role: z.enum(roles), parentAccountId: z.string().uuid(),
-    childParentId: z.string().uuid().optional().or(z.literal("")),
-    reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes"),
-  }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Choose a valid role, parent, reason, and confirm."));
+  const parsed = parseRoleChange(formData);
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the role change details." };
+  let result: Awaited<ReturnType<typeof changePlatformAccountRole>>;
   try {
-    await changePlatformAccountRole({ scope, ...parsed.data });
+    result = await changePlatformAccountRole({ scope, ...parsed.data });
   } catch (error) {
-    redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "error", error instanceof Error ? error.message : "Account role could not be changed."));
+    return { error: error instanceof Error ? error.message : "Account role could not be changed. Please try again." };
   }
-  revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/hierarchy");
-  redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", "Role and parent updated and audited."));
+  revalidatePath("/dashboard", "layout");
+  const created = result.created.map((account) => `${roleLabel(account.role)} created: management ID ${account.publicId}.`).join(" ");
+  redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", `Role changed to ${roleLabel(parsed.data.role)}. Hierarchy saved and audited. ${created}`.trim()));
 }
 
 export async function submitPermanentAccountRemoval(formData: FormData) {
