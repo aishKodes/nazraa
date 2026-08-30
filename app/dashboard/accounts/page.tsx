@@ -37,7 +37,7 @@ export default async function AccountsPage({ searchParams }: {
     {canCreate ? <Card className="create-panel">
       <details id="create-account">
         <summary><span><UserCog size={18} /><b>Create a panel account</b></span><small>Only roles allowed under your branch are shown</small></summary>
-        <form action={submitCreateAccount} className="admin-form" encType="multipart/form-data">
+        <form action={submitCreateAccount} className="admin-form">
           <div className="form-grid">
             <label>Account type<select name="accountType" required defaultValue=""><option value="" disabled>Select role</option>{creatable.map((role) => <option value={role} key={role}>{roleLabel(role)}</option>)}</select></label>
             <label>Full name<input name="fullName" required maxLength={120} /></label>

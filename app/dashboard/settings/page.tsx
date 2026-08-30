@@ -124,7 +124,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
     <Card className="settings-card">
       <div className="card-title"><div><h2>Party &amp; Live room features</h2><p>Published interaction labels, PK modes, Rocket thresholds, and Face Live safety limits. Mobile clients receive changes during silent refresh.</p></div></div>
-      <form action={submitRoomFeatureSettings} className="form-grid" encType="multipart/form-data">
+      <form action={submitRoomFeatureSettings} className="form-grid">
         <label className="span-two">Interactions — one per line<textarea name="interactionRows" rows={7} required defaultValue={interactions.map((item) => `${item.key} | ${item.label} | ${item.emoji} | ${item.enabled === false ? "disabled" : "enabled"}`).join("\n")} /><span>Format: key | label | emoji | enabled/disabled. Add, edit, disable, or remove rows; no APK update is required.</span></label>
         <label>Animation target key<input name="interactionAssetKey" placeholder="Example: kiss" /></label>
         <label>Upload/replace animation<input name="interactionAsset" type="file" accept="image/jpeg,image/png,image/webp" /><span>JPG, PNG, or animated WebP · max 1 MB. Existing artwork stays unless replaced.</span></label>
