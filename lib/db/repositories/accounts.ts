@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import bcrypt from "bcryptjs";
+import { cache } from "react";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { scopedAccountsSql } from "@/lib/db/queries/sql";
@@ -43,14 +44,14 @@ export async function accountByManagementId(publicId: string) {
   return rows[0] ? { ...mapAccount(rows[0]), passwordHash: rows[0].password_hash! } : null;
 }
 
-export async function accountById(id: string) {
+export const accountById = cache(async (id: string) => {
   const [rows] = await db().execute<AccountRow[]>(
     `SELECT id, public_id, role, role_code, full_name, email, mobile, status, parent_account_id
      FROM platform_accounts WHERE id = ? LIMIT 1`,
     [id],
   );
   return rows[0] ? mapAccount(rows[0]) : null;
-}
+});
 
 export async function createInitialMaster(input: { publicId: number; fullName: string; password: string }) {
   const [masters] = await db().query<(RowDataPacket & { value: number })[]>(
@@ -73,11 +74,19 @@ export async function createInitialMaster(input: { publicId: number; fullName: s
   return true;
 }
 
-export async function scopeFor(account: Scope["account"]): Promise<Scope> {
-  if (account.role === "MASTER" || account.role === "MONITORING_CS") return { account, accountIds: [], isGlobal: true };
-  const [rows] = await db().query<(RowDataPacket & { id: string })[]>(scopedAccountsSql, [account.id]);
+export const scopeFor = cache(async (account: Scope["account"]): Promise<Scope> => {
+  if (account.role === "MASTER") return { account, accountIds: [], isGlobal: true };
+  let scopeRootId = account.id;
+  if (account.role === "MONITORING_CS") {
+    const [parents] = await db().query<(RowDataPacket & { parent_account_id: string | null })[]>(
+      "SELECT parent_account_id FROM platform_accounts WHERE id = ? LIMIT 1",
+      [account.id],
+    );
+    scopeRootId = parents[0]?.parent_account_id ?? account.id;
+  }
+  const [rows] = await db().query<(RowDataPacket & { id: string })[]>(scopedAccountsSql, [scopeRootId]);
   return { account, accountIds: rows.map((row) => row.id), isGlobal: false };
-}
+});
 
 export function scopeWhere(scope: Scope, column: string) {
   if (scope.isGlobal) return { clause: "1=1", values: [] as string[] };
@@ -87,8 +96,10 @@ export function scopeWhere(scope: Scope, column: string) {
 
 const codePrefix: Record<Role, string> = {
   MASTER: "MST",
+  COUNTRY_MANAGER: "CM",
   SUPER_ADMIN: "SA",
   ADMIN: "ADM",
+  BD: "BD",
   AGENCY: "AG",
   COIN_SELLER: "CS",
   MONITORING_CS: "MCS",

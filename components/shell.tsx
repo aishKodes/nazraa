@@ -8,44 +8,53 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Activity, BadgeIndianRupee, Bell, Building2, CircleHelp, ClipboardList, Coins, FileBarChart, Gauge, Gift, Images, Landmark, LayoutDashboard, LogOut, Menu, Network, Radio, ReceiptText, ScanFace, Search, Settings, ShieldAlert, ShoppingBag, UserCog, Users, WalletCards, X } from "lucide-react";
 import { signOut } from "@/app/actions";
-import { can, type Permission } from "@/lib/auth/permissions";
+import { roleLabel } from "@/lib/auth/role-hierarchy";
 import { initials } from "@/lib/utils/format";
-import type { SessionAccount } from "@/types/platform";
+import type { Role, SessionAccount } from "@/types/platform";
 
-type NavItem = { href: Route; label: string; icon: typeof LayoutDashboard; permission: Permission };
+type NavItem = { href: Route; label: string; icon: typeof LayoutDashboard };
 
-const navigation: NavItem[] = [
-  { href: "/dashboard", label: "Overview", icon: LayoutDashboard, permission: "dashboard.read" },
-  { href: "/dashboard/accounts", label: "Team accounts", icon: UserCog, permission: "accounts.read" },
-  { href: "/dashboard/users", label: "Users", icon: Users, permission: "users.read" },
-  { href: "/dashboard/hosts", label: "Hosts", icon: Activity, permission: "hosts.read" },
-  { href: "/dashboard/agencies", label: "Agencies", icon: Building2, permission: "agencies.read" },
-  { href: "/dashboard/hierarchy", label: "Hierarchy", icon: Network, permission: "hierarchy.read" },
-  { href: "/dashboard/wallet", label: "Wallet & economy", icon: WalletCards, permission: "wallet.read" },
-  { href: "/dashboard/commerce", label: "Coin commerce", icon: ShoppingBag, permission: "coin_orders.read" },
-  { href: "/dashboard/transactions", label: "Transactions", icon: ReceiptText, permission: "transactions.read" },
-  { href: "/dashboard/withdrawals", label: "Withdrawals", icon: Landmark, permission: "withdrawals.read" },
-  { href: "/dashboard/rooms", label: "Live rooms", icon: Radio, permission: "rooms.read" },
-  { href: "/dashboard/face-verification", label: "Face verification", icon: ScanFace, permission: "face_verification.read" },
-  { href: "/dashboard/gifts", label: "Gifts", icon: Gift, permission: "gifts.read" },
-  { href: "/dashboard/banners", label: "Banners", icon: Images, permission: "banners.read" },
-  { href: "/dashboard/notifications", label: "Notifications", icon: Bell, permission: "notifications.read" },
-  { href: "/dashboard/reports", label: "Reports", icon: FileBarChart, permission: "reports.export" },
-  { href: "/dashboard/audit", label: "Audit log", icon: ClipboardList, permission: "audit.read" },
-  { href: "/dashboard/risk", label: "Risk queue", icon: ShieldAlert, permission: "risk.read" },
-  { href: "/dashboard/support", label: "Support", icon: CircleHelp, permission: "support.read" },
-  { href: "/dashboard/settings", label: "Settings", icon: Settings, permission: "settings.manage" },
-];
+const common = {
+  overview: { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  accounts: { href: "/dashboard/accounts", label: "Team", icon: UserCog },
+  users: { href: "/dashboard/users", label: "Users", icon: Users },
+  hosts: { href: "/dashboard/hosts", label: "Hosts", icon: Activity },
+  agencies: { href: "/dashboard/agencies", label: "Agencies", icon: Building2 },
+  hierarchy: { href: "/dashboard/hierarchy", label: "Hierarchy", icon: Network },
+  monitoring: { href: "/dashboard/monitoring", label: "Monitoring", icon: Radio },
+  wallet: { href: "/dashboard/wallet", label: "Wallet & coins", icon: WalletCards },
+  commerce: { href: "/dashboard/commerce", label: "Coin orders", icon: ShoppingBag },
+  transactions: { href: "/dashboard/transactions", label: "Transactions", icon: ReceiptText },
+  withdrawals: { href: "/dashboard/withdrawals", label: "Withdrawals", icon: Landmark },
+  rooms: { href: "/dashboard/rooms", label: "Live rooms", icon: Radio },
+  face: { href: "/dashboard/face-verification", label: "Verification", icon: ScanFace },
+  gifts: { href: "/dashboard/gifts", label: "Gifts", icon: Gift },
+  banners: { href: "/dashboard/banners", label: "Banners", icon: Images },
+  notifications: { href: "/dashboard/notifications", label: "Notifications", icon: Bell },
+  reports: { href: "/dashboard/reports", label: "Reports", icon: FileBarChart },
+  audit: { href: "/dashboard/audit", label: "Audit log", icon: ClipboardList },
+  risk: { href: "/dashboard/risk", label: "Risk queue", icon: ShieldAlert },
+  support: { href: "/dashboard/support", label: "Support", icon: CircleHelp },
+  settings: { href: "/dashboard/settings", label: "Settings", icon: Settings },
+} satisfies Record<string, NavItem>;
 
-function roleLabel(role: string) {
-  return role.replaceAll("_", " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
+const navigationByRole: Record<Role, NavItem[]> = {
+  MASTER: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.rooms, common.commerce, common.face, common.reports, common.audit, common.risk, common.support, common.gifts, common.banners, common.notifications, common.settings],
+  COUNTRY_MANAGER: [common.overview, common.accounts, common.hierarchy, common.users, common.hosts, common.agencies, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.commerce, common.rooms, common.face, common.reports, common.audit, common.risk, common.support],
+  SUPER_ADMIN: [common.overview, common.accounts, common.hierarchy, common.agencies, common.hosts, common.users, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.audit, common.risk, common.support],
+  ADMIN: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.risk, common.support],
+  BD: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.risk, common.support],
+  AGENCY: [common.overview, common.agencies, common.hosts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.face, common.support],
+  COIN_SELLER: [common.overview, common.wallet, common.commerce, common.transactions],
+  MONITORING_CS: [common.overview, common.monitoring, common.rooms, common.support, common.risk, common.audit],
+};
 
 export function AppShell({ account, children }: { account: SessionAccount; children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
-  const visibleItems = navigation.filter((item) => can(account.role, item.permission));
+  const visibleItems = navigationByRole[account.role];
+  const mobileItems = visibleItems.slice(0, 4);
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -72,10 +81,11 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     <main className="main-area">
       <header className="topbar">
         <button className="mobile-menu" type="button" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
-        {can(account.role, "users.read") ? <form className="quick-search" action="/dashboard/users"><Search size={18} /><input ref={searchRef} name="q" aria-label="Scoped user search" placeholder="Search name or user ID" /><kbd>⌘ K</kbd></form> : <span />}
-        <div className="top-actions">{can(account.role, "notifications.read") ? <Link href="/dashboard/notifications" className="icon-button" aria-label="Notifications"><Bell size={19} /></Link> : null}<span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
+        {!['COIN_SELLER'].includes(account.role) ? <form className="quick-search" action="/dashboard/monitoring"><Search size={18} /><input ref={searchRef} name="q" aria-label="Scoped user or host search" placeholder="Search user or host ID" /><kbd>⌘ K</kbd></form> : <span />}
+        <div className="top-actions"><span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
       </header>
       <div className="page-content">{children}</div>
+      <nav className="mobile-bottom-nav" aria-label="Quick navigation">{mobileItems.map((item) => { const Icon = item.icon; const active = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href); return <Link href={item.href} key={item.href} className={active ? "active" : ""}><Icon size={19} /><span>{item.label}</span></Link>; })}</nav>
     </main>
   </div>;
 }

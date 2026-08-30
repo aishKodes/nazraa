@@ -46,11 +46,15 @@ function tokenHash(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function deviceHash(deviceId?: string) {
+  return deviceId ? createHash("sha256").update(`nazraa-device:${deviceId}`).digest("hex") : null;
+}
+
 function mapPlatformRole(role: string | null, isHost: number): MobileRole {
   if (role === "AGENCY") return "AGENCY_OWNER";
   if (role === "COIN_SELLER") return "COIN_SELLER";
   if (role === "MONITORING_CS") return "MONITORING_CS";
-  if (role === "ADMIN") return "ADMIN";
+  if (role === "ADMIN" || role === "BD" || role === "COUNTRY_MANAGER") return "ADMIN";
   if (role === "SUPER_ADMIN") return "SUPER_ADMIN";
   if (role === "MASTER") return "MASTER";
   return isHost ? "HOST" : "NORMAL_USER";
@@ -79,6 +83,7 @@ export async function createGoogleMobileSession(input: {
   idToken: string;
   profile?: RegistrationProfile;
   deviceLabel?: string;
+  deviceId?: string;
 }) {
   const google = await verifyGoogleIdentity(input.idToken);
   const [existingRows] = await db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number })[]>(
@@ -92,6 +97,7 @@ export async function createGoogleMobileSession(input: {
 
   const token = randomBytes(32).toString("base64url");
   const sessionId = randomUUID();
+  const hashedDeviceId = deviceHash(input.deviceId);
 
   const result = await withTransaction(async (connection) => {
     let userId = existing?.id;
@@ -116,6 +122,13 @@ export async function createGoogleMobileSession(input: {
       publicId = String(users[0].public_id);
       await connection.execute("UPDATE application_users SET external_user_id = ? WHERE id = ?", [publicId, userId]);
     } else {
+      if (hashedDeviceId) {
+        const [blocks] = await connection.query<RowDataPacket[]>(
+          "SELECT id FROM mobile_device_blocks WHERE application_user_id = ? AND device_id_hash = ? AND status = 'ACTIVE' LIMIT 1",
+          [userId, hashedDeviceId],
+        );
+        if (blocks[0]) throw new Error("This device is blocked. Contact Nazraa support.");
+      }
       await connection.execute(
         "UPDATE application_users SET email = ?, avatar_url = COALESCE(avatar_url, ?), last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
         [google.email, google.picture ?? null, userId],
@@ -144,9 +157,9 @@ export async function createGoogleMobileSession(input: {
       [randomUUID(), userId],
     );
     await connection.execute(
-      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, expires_at)
-       VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))`,
-      [sessionId, userId, tokenHash(token), input.deviceLabel || null],
+      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))`,
+      [sessionId, userId, tokenHash(token), input.deviceLabel || null, hashedDeviceId],
     );
     return publicId;
   });
@@ -154,7 +167,7 @@ export async function createGoogleMobileSession(input: {
   return { token, userId: result, requiresProfile: false };
 }
 
-export async function createDevelopmentMobileSession(input: { fullName: string; countryCode: string; deviceLabel?: string }) {
+export async function createDevelopmentMobileSession(input: { fullName: string; countryCode: string; deviceLabel?: string; deviceId?: string }) {
   if (process.env.NODE_ENV === "production" || process.env.ALLOW_DEVELOPMENT_MOBILE_AUTH !== "true") {
     throw new Error("Development mobile authentication is disabled.");
   }
@@ -176,7 +189,7 @@ export async function createDevelopmentMobileSession(input: { fullName: string; 
       await connection.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, ?)", [randomUUID(), userId, assetType]);
     }
     await connection.execute("INSERT INTO host_profiles (id, application_user_id, status, verification_status) VALUES (?, ?, 'ACTIVE', 'UNVERIFIED')", [randomUUID(), userId]);
-    await connection.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, expires_at) VALUES (?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))", [sessionId, userId, tokenHash(token), input.deviceLabel || null]);
+    await connection.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))", [sessionId, userId, tokenHash(token), input.deviceLabel || null, deviceHash(input.deviceId)]);
     return id;
   });
   return { token, userId: publicId, requiresProfile: false };
@@ -216,12 +229,20 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
       AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
      WHERE session.token_hash = ? AND session.revoked_at IS NULL
        AND session.expires_at > CURRENT_TIMESTAMP(3) AND user.account_status = 'ACTIVE'
+       AND NOT EXISTS (
+         SELECT 1 FROM mobile_device_blocks block
+         WHERE block.status = 'ACTIVE' AND block.application_user_id = user.id
+           AND (block.mobile_session_id = session.id OR (session.device_id_hash IS NOT NULL AND block.device_id_hash = session.device_id_hash))
+       )
      ORDER BY account.created_at ASC LIMIT 1`,
     [tokenHash(token)],
   );
   const row = rows[0];
   if (!row) return null;
-  await db().execute("UPDATE mobile_sessions SET last_used_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [row.session_id]);
+  await db().execute(
+    "UPDATE mobile_sessions SET last_used_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND last_used_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 5 MINUTE)",
+    [row.session_id],
+  );
   return {
     userId: row.user_id,
     publicId: String(row.public_id),

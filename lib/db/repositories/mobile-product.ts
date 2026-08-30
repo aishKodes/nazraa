@@ -56,7 +56,7 @@ function switchRole(role: string, isHost: boolean) {
   if (role === "AGENCY") return "agency_owner";
   if (role === "COIN_SELLER") return "coin_seller";
   if (role === "MONITORING_CS") return "monitoring_cs";
-  if (role === "ADMIN") return "admin";
+  if (role === "ADMIN" || role === "BD" || role === "COUNTRY_MANAGER") return "admin";
   if (role === "SUPER_ADMIN") return "super_admin";
   if (role === "MASTER") return "master";
   return isHost ? "host" : "user";

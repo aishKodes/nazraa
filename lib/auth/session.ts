@@ -1,7 +1,9 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
-import type { SessionAccount } from "@/types/platform";
+import { cache } from "react";
+import { accountById } from "@/lib/db/repositories/accounts";
+import { roles, type SessionAccount } from "@/types/platform";
 
 const cookieName = "nazraa_control_session";
 const encoder = new TextEncoder();
@@ -28,18 +30,20 @@ export async function createSession(account: SessionAccount) {
   });
 }
 
-export async function getSession(): Promise<SessionAccount | null> {
+export const getSession = cache(async (): Promise<SessionAccount | null> => {
   try {
     const token = (await cookies()).get(cookieName)?.value;
     if (!token) return null;
     const verified = await jwtVerify(token, sessionKey());
-    const { id, publicId, role, fullName } = verified.payload;
-    if (typeof id !== "string" || typeof publicId !== "string" || typeof role !== "string" || typeof fullName !== "string") return null;
-    return { id, publicId, role: role as SessionAccount["role"], fullName };
+    const { id } = verified.payload;
+    if (typeof id !== "string") return null;
+    const account = await accountById(id);
+    if (!account || account.status !== "ACTIVE" || !roles.includes(account.role)) return null;
+    return { id: account.id, publicId: account.publicId, role: account.role, fullName: account.fullName };
   } catch {
     return null;
   }
-}
+});
 
 export async function clearSession() {
   (await cookies()).delete(cookieName);

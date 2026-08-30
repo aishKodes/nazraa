@@ -1,7 +1,9 @@
 export const roles = [
   "MASTER",
+  "COUNTRY_MANAGER",
   "SUPER_ADMIN",
   "ADMIN",
+  "BD",
   "AGENCY",
   "COIN_SELLER",
   "MONITORING_CS",
@@ -29,6 +31,19 @@ export type Scope = {
   account: SessionAccount;
   accountIds: string[];
   isGlobal: boolean;
+};
+
+export type PageResult<T> = {
+  items: T[];
+  page: number;
+  pageSize: number;
+  hasNext: boolean;
+};
+
+export type PageRequest = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
 };
 
 export type DashboardMetrics = {

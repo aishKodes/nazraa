@@ -1,5 +1,6 @@
 import { ExternalLink, ScanFace } from "lucide-react";
 import { submitFaceLiveAuthorization, submitFaceVerificationReview } from "@/app/admin-actions";
+import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
@@ -8,14 +9,17 @@ import { formatDate } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
 
-export default async function FaceVerificationPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
+export default async function FaceVerificationPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string; page?: string }> }) {
   const scope = await requirePermission("face_verification.read");
-  const [{ error, success }, requests] = await Promise.all([searchParams, listFaceVerificationRequests(scope)]);
+  const { error, success, page: rawPage } = await searchParams;
+  const page = Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1);
+  const rows = await listFaceVerificationRequests(scope, page);
+  const requests = rows.slice(0, 25);
   const manageLegacy = can(scope.account.role, "face_verification.manage");
   const authorize = can(scope.account.role, "face_live.authorize");
   const authorizationTypes = scope.account.role === "AGENCY"
     ? ["AGENCY_FACE_LIVE"] as const
-    : scope.account.role === "SUPER_ADMIN"
+    : ["SUPER_ADMIN", "COUNTRY_MANAGER"].includes(scope.account.role)
       ? ["SUPER_ADMIN_FACE_LIVE"] as const
       : ["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"] as const;
 
@@ -44,7 +48,7 @@ export default async function FaceVerificationPage({ searchParams }: { searchPar
         </form> : null}
       </td>
       {manageLegacy ? <td>{request.status === "PENDING" ? <form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue="" required><option value="" disabled>Decision…</option><option value="VERIFIED">Verify</option><option value="REJECTED">Reject</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Recovery reason" /><button className="table-button" type="submit">Save</button></form> : <span className="muted">Automatic flow</span>}</td> : null}
-    </tr>)}</tbody></table></div> : <EmptyState title="No Face Verification activity" detail="Automatic mobile verification results will appear here without creating fake queue data." />}</Card>
+    </tr>)}</tbody></table></div> : <EmptyState title="No Face Verification activity" detail="Automatic mobile verification results will appear here without creating fake queue data." />}<Pagination path="/dashboard/face-verification" page={page} hasNext={rows.length > 25} /></Card>
     <p className="footnote"><ScanFace size={14} />Government ID is not part of normal Face Verification. Video/Face Live needs verified + approved Agency + Agency authorization + Super Admin authorization.</p>
   </>;
 }

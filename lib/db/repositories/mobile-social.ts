@@ -22,7 +22,7 @@ export async function agencyApplicationsForUser(identity: MobileIdentity) {
     db().query<RowDataPacket[]>(
       `SELECT application.id, application.status, application.review_reason, application.created_at,
               approved.public_id agency_public_id, application.agency_name,
-              parent.public_id parent_public_id, parent.full_name parent_name, parent.admin_kind
+              parent.public_id parent_public_id, parent.full_name parent_name, parent.role parent_role
        FROM agency_creation_applications application
        LEFT JOIN platform_accounts approved ON approved.id = application.approved_agency_account_id
        LEFT JOIN platform_accounts parent ON parent.id = application.parent_account_id
@@ -32,7 +32,7 @@ export async function agencyApplicationsForUser(identity: MobileIdentity) {
     ]);
     return [
       ...joins[0].map((row) => ({ id: String(row.id), type: "join", status: String(row.status).toLowerCase(), agencyId: String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, createdAt: row.created_at })),
-      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, parent: row.parent_public_id == null ? null : { id: String(row.parent_public_id), name: String(row.parent_name), role: row.admin_kind === "BD" ? "BD" : "Admin" }, createdAt: row.created_at })),
+      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, parent: row.parent_public_id == null ? null : { id: String(row.parent_public_id), name: String(row.parent_name), role: row.parent_role === "BD" ? "BD" : "Admin" }, createdAt: row.created_at })),
     ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   } catch (error) {
     // Keeps mobile bootstrap available while a production migration rolls out.
@@ -57,15 +57,15 @@ export async function searchAgency(publicId: string) {
 }
 
 export async function verifyAgencyParent(publicId: string) {
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; admin_kind: "ADMIN" | "BD" | null })[]>(
-    `SELECT id, public_id, full_name, admin_kind
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; role: "ADMIN" | "BD" })[]>(
+    `SELECT id, public_id, full_name, role
      FROM platform_accounts
-     WHERE public_id = ? AND role = 'ADMIN' AND status = 'ACTIVE' LIMIT 1`,
+     WHERE public_id = ? AND role IN ('ADMIN','BD') AND status = 'ACTIVE' LIMIT 1`,
     [publicId],
   );
   const parent = rows[0];
   if (!parent) throw new Error("No active Admin or BD was found with that six-digit code.");
-  return { id: String(parent.public_id), name: parent.full_name, role: parent.admin_kind === "BD" ? "BD" : "Admin" };
+  return { id: String(parent.public_id), name: parent.full_name, role: parent.role === "BD" ? "BD" : "Admin" };
 }
 
 export async function applyToJoinAgency(identity: MobileIdentity, publicId: string) {
@@ -107,8 +107,8 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
     if (users[0]?.agency_account_id) throw new Error("This account is already linked to an Agency.");
     const [pending] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [identity.userId]);
     if (pending.length) throw new Error("Your Agency creation application is already pending.");
-    const [parents] = await connection.query<(RowDataPacket & { id: string; public_id: number; full_name: string; admin_kind: "ADMIN" | "BD" | null })[]>(
-      "SELECT id, public_id, full_name, admin_kind FROM platform_accounts WHERE public_id = ? AND role = 'ADMIN' AND status = 'ACTIVE' LIMIT 1 FOR SHARE",
+    const [parents] = await connection.query<(RowDataPacket & { id: string; public_id: number; full_name: string; role: "ADMIN" | "BD" })[]>(
+      "SELECT id, public_id, full_name, role FROM platform_accounts WHERE public_id = ? AND role IN ('ADMIN','BD') AND status = 'ACTIVE' LIMIT 1 FOR SHARE",
       [input.parentCode],
     );
     const parent = parents[0];
@@ -127,9 +127,9 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
        logo?.mimeType ?? null, logo?.data ?? null, logo?.byteSize ?? null,
        proof.originalName, proof.mimeType, proof.byteSize, proof.encryptedData, proof.iv, proof.tag],
     );
-    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'Agency creation pending', ?, 'agency')", [randomUUID(), identity.userId, `${parent.admin_kind === "BD" ? "BD" : "Admin"} ${parent.full_name} will review this application.`]);
+    await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'Agency creation pending', ?, 'agency')", [randomUUID(), identity.userId, `${parent.role === "BD" ? "BD" : "Admin"} ${parent.full_name} will review this application.`]);
     await connection.execute("INSERT INTO audit_logs (id, action, module, target_type, target_id, new_data, reason) VALUES (?, 'agency.creation_submit', 'agencies', 'agency_creation_application', ?, ?, 'Submitted from authenticated mobile account')", [randomUUID(), applicationId, JSON.stringify({ parentAccountId: parent.id, parentPublicId: Number(parent.public_id), hasEncryptedKyc: true })]);
-    return { status: "pending", parent: { id: String(parent.public_id), name: parent.full_name, role: parent.admin_kind === "BD" ? "BD" : "Admin" } };
+    return { status: "pending", parent: { id: String(parent.public_id), name: parent.full_name, role: parent.role === "BD" ? "BD" : "Admin" } };
   });
 }
 

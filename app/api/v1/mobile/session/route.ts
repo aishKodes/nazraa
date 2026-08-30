@@ -10,6 +10,7 @@ export async function POST(request: Request) {
     const google = z.object({
       idToken: z.string().min(100).max(10_000),
       deviceLabel: z.string().trim().max(120).optional(),
+      deviceId: z.string().trim().min(8).max(200).optional(),
       profile: z.object({
         fullName: z.string().trim().min(2).max(120),
         countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
@@ -32,6 +33,7 @@ export async function POST(request: Request) {
       fullName: z.string().trim().min(2).max(120),
       countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
       deviceLabel: z.string().trim().max(120).optional(),
+      deviceId: z.string().trim().min(8).max(200).optional(),
     }).safeParse(body);
     if (!development.success) return NextResponse.json({ message: "Google Sign-In is required." }, { status: 400 });
     return NextResponse.json(await createDevelopmentMobileSession(development.data), { status: 201, headers: { "Cache-Control": "no-store" } });

@@ -5,7 +5,16 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requirePermission } from "@/lib/auth/guard";
-import { createPlatformAccount, reassignPlatformAccount, resetAccountPassword, updateAccountStatus, updateDocumentVerification } from "@/lib/db/repositories/administration";
+import {
+  changePlatformAccountRole,
+  createPlatformAccount,
+  permanentlyRemovePlatformAccount,
+  reassignPlatformAccount,
+  resetAccountPassword,
+  updateAccountStatus,
+  updateDocumentVerification,
+  updatePlatformAccount,
+} from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
@@ -15,6 +24,7 @@ import { preparePrivateDocument } from "@/lib/security/documents";
 import { preparePublicImage } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
 import { roles } from "@/types/platform";
+import { deleteBanner } from "@/lib/db/repositories/catalog";
 
 function destination(path: string, kind: "error" | "success", message: string) {
   return `${path}?${kind}=${encodeURIComponent(message)}`;
@@ -23,7 +33,7 @@ function destination(path: string, kind: "error" | "success", message: string) {
 export async function submitCreateAccount(formData: FormData) {
   const scope = await requirePermission("accounts.create");
   const parsed = z.object({
-    accountType: z.enum([...roles, "BD"]), fullName: z.string().trim().min(2).max(120), email: z.string().trim().email().optional().or(z.literal("")),
+    accountType: z.enum(roles), fullName: z.string().trim().min(2).max(120), email: z.string().trim().email().optional().or(z.literal("")),
     mobile: z.string().trim().max(24).optional(), countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
     applicationUserId: z.string().trim().max(80).optional(), password: z.string().min(8).max(200), requestedParentId: z.string().uuid().optional().or(z.literal("")),
   }).safeParse(Object.fromEntries(["accountType", "fullName", "email", "mobile", "countryCode", "applicationUserId", "password", "requestedParentId"].map((key) => [key, formData.get(key)])));
@@ -40,7 +50,7 @@ export async function submitCreateAccount(formData: FormData) {
       }
     }
     const { accountType, ...data } = parsed.data;
-    result = await createPlatformAccount({ scope, ...data, role: accountType === "BD" ? "ADMIN" : accountType, adminKind: accountType === "BD" ? "BD" : accountType === "ADMIN" ? "ADMIN" : undefined, documents });
+    result = await createPlatformAccount({ scope, ...data, role: accountType, documents });
   } catch (error) {
     redirect(destination("/dashboard/accounts", "error", error instanceof Error ? error.message : "Account could not be created."));
   }
@@ -50,21 +60,72 @@ export async function submitCreateAccount(formData: FormData) {
 }
 
 export async function submitHierarchyReassignment(formData: FormData) {
-  const scope = await requirePermission("accounts.manage");
-  const parsed = z.object({ accountId: z.string().uuid(), parentAccountId: z.string().uuid(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/hierarchy", "error", "Choose a child, parent, and enter a clear reason."));
-  try { await reassignPlatformAccount({ scope, ...parsed.data }); } catch (error) {
+  const scope = await requirePermission("accounts.reassign");
+  const parsed = z.object({ accountId: z.string().uuid(), parentAccountId: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/hierarchy", "error", "Choose a child, parent, enter a clear reason, and confirm."));
+  try {
+    await reassignPlatformAccount({ scope, ...parsed.data });
+  } catch (error) {
     redirect(destination("/dashboard/hierarchy", "error", error instanceof Error ? error.message : "Hierarchy could not be updated."));
   }
   revalidatePath("/dashboard/hierarchy"); revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/agencies");
   redirect(destination("/dashboard/hierarchy", "success", "Hierarchy assignment updated and audited."));
 }
 
+export async function submitAccountEdit(formData: FormData) {
+  const scope = await requirePermission("accounts.edit");
+  const parsed = z.object({
+    accountId: z.string().uuid(),
+    fullName: z.string().trim().min(2).max(120),
+    email: z.string().trim().email().optional().or(z.literal("")),
+    mobile: z.string().trim().max(24).optional(),
+    countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Check the account details and provide a clear reason."));
+  try { await updatePlatformAccount({ scope, ...parsed.data }); } catch (error) {
+    redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "error", error instanceof Error ? error.message : "Account details could not be updated."));
+  }
+  revalidatePath("/dashboard/accounts");
+  revalidatePath(`/dashboard/accounts/${parsed.data.accountId}`);
+  redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", "Account details updated and audited."));
+}
+
+export async function submitAccountRoleChange(formData: FormData) {
+  const scope = await requirePermission("accounts.roles");
+  const parsed = z.object({
+    accountId: z.string().uuid(), role: z.enum(roles), parentAccountId: z.string().uuid(),
+    childParentId: z.string().uuid().optional().or(z.literal("")),
+    reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Choose a valid role, parent, reason, and confirm."));
+  try {
+    await changePlatformAccountRole({ scope, ...parsed.data });
+  } catch (error) {
+    redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "error", error instanceof Error ? error.message : "Account role could not be changed."));
+  }
+  revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/hierarchy");
+  redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", "Role and parent updated and audited."));
+}
+
+export async function submitPermanentAccountRemoval(formData: FormData) {
+  const scope = await requirePermission("accounts.permanent");
+  const parsed = z.object({
+    accountId: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmation: z.literal("REMOVE"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Type REMOVE and provide a clear reason."));
+  try { await permanentlyRemovePlatformAccount({ scope, accountId: parsed.data.accountId, reason: parsed.data.reason, confirmed: true }); } catch (error) {
+    redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "error", error instanceof Error ? error.message : "Account could not be removed."));
+  }
+  revalidatePath("/dashboard/accounts"); revalidatePath("/dashboard/hierarchy");
+  redirect(destination("/dashboard/accounts", "success", "Account permanently disabled and the action was audited."));
+}
+
 export async function submitAccountStatus(formData: FormData) {
   const scope = await requirePermission("accounts.manage");
-  const parsed = z.object({ accountId: z.string().uuid(), nextStatus: z.enum(["ACTIVE", "SUSPENDED", "DISABLED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ accountId: z.string().uuid(), nextStatus: z.enum(["ACTIVE", "SUSPENDED"]), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Choose a status and provide a clear reason."));
-  try { await updateAccountStatus({ scope, ...parsed.data }); } catch (error) {
+  try { await updateAccountStatus({ scope, accountId: parsed.data.accountId, nextStatus: parsed.data.nextStatus, reason: parsed.data.reason }); } catch (error) {
     redirect(destination("/dashboard/accounts", "error", error instanceof Error ? error.message : "Account status could not be updated."));
   }
   revalidatePath("/dashboard/accounts");
@@ -186,8 +247,19 @@ export async function submitBannerStatus(formData: FormData) {
   await setBannerActive({ scope, id, active }); revalidatePath("/dashboard/banners"); redirect(destination("/dashboard/banners", "success", active ? "Banner enabled." : "Banner disabled."));
 }
 
+export async function submitDeleteBanner(formData: FormData) {
+  const scope = await requirePermission("banners.manage");
+  const parsed = z.object({ id: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmation: z.literal("DELETE") }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/banners", "error", "Enter a reason and type DELETE to confirm."));
+  try { await deleteBanner({ scope, id: parsed.data.id, reason: parsed.data.reason, confirmed: true }); } catch (error) {
+    redirect(destination("/dashboard/banners", "error", error instanceof Error ? error.message : "Banner could not be deleted."));
+  }
+  revalidatePath("/dashboard/banners");
+  redirect(destination("/dashboard/banners", "success", "Banner deleted. Its artwork and audit history are preserved."));
+}
+
 export async function submitAgencyApplicationReview(formData: FormData) {
-  const scope = await requirePermission("agencies.read");
+  const scope = await requirePermission("agencies.review");
   const parsed = z.object({ applicationId: z.string().uuid(), type: z.enum(["JOIN", "CREATE"]), decision: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/agencies", "error", "Choose a decision and enter a clear review reason."));
   try {
@@ -313,9 +385,9 @@ export async function submitRiskStatus(formData: FormData) {
 }
 
 export async function submitRoomStatus(formData: FormData) {
-  const scope = await requirePermission("rooms.manage"); const parsed = z.object({ roomId: z.string().uuid(), status: z.enum(["ACTIVE", "LOCKED", "ENDED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const scope = await requirePermission("rooms.manage"); const parsed = z.object({ roomId: z.string().uuid(), status: z.enum(["ACTIVE", "LOCKED", "ENDED"]), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/rooms", "error", "Choose a room action and provide a reason."));
-  try { await updateRoomStatus({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/rooms", "error", error instanceof Error ? error.message : "Room action failed.")); }
+  try { await updateRoomStatus({ scope, roomId: parsed.data.roomId, status: parsed.data.status, reason: parsed.data.reason }); } catch (error) { redirect(destination("/dashboard/rooms", "error", error instanceof Error ? error.message : "Room action failed.")); }
   revalidatePath("/dashboard/rooms"); redirect(destination("/dashboard/rooms", "success", `Room ${parsed.data.status.toLowerCase()}.`));
 }
 

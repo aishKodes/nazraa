@@ -9,6 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test:roles": "tsx scripts/verify-role-matrix.ts",
+    "test:integration": "tsx scripts/verify-control-integration.ts",
     "bootstrap:master": "tsx scripts/bootstrap-master.ts",
     "provision:master": "tsx scripts/provision-master.ts",
     "migrate": "tsx scripts/migrate.ts"

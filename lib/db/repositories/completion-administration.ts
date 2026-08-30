@@ -82,7 +82,7 @@ export async function saveHostRewardRules(input: { scope: Scope; live: number; f
 export async function setFaceLiveAuthorization(input: { scope: Scope; userPublicId: string; authorizationType: "AGENCY_FACE_LIVE" | "SUPER_ADMIN_FACE_LIVE"; approved: boolean; reason: string }) {
   const role = input.scope.account.role;
   if (input.authorizationType === "AGENCY_FACE_LIVE" && role !== "AGENCY" && role !== "MASTER") throw new Error("Only the user’s Agency or Master can change Agency Face Live authorization.");
-  if (input.authorizationType === "SUPER_ADMIN_FACE_LIVE" && role !== "SUPER_ADMIN" && role !== "MASTER") throw new Error("Only Super Admin or Master can change Super Admin Face Live authorization.");
+  if (input.authorizationType === "SUPER_ADMIN_FACE_LIVE" && !["SUPER_ADMIN", "COUNTRY_MANAGER", "MASTER"].includes(role)) throw new Error("Only the assigned Super Admin, Country Manager, or Master can change team Face Live authorization.");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; agency_account_id: string | null; face_verification_status: string; agency_face_live_authorized: number; super_admin_face_live_authorized: number })[]>(
       "SELECT id, agency_account_id, face_verification_status, agency_face_live_authorized, super_admin_face_live_authorized FROM application_users WHERE public_id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE",
@@ -90,6 +90,7 @@ export async function setFaceLiveAuthorization(input: { scope: Scope; userPublic
     );
     const user = rows[0];
     if (!user) throw new Error("Active user was not found.");
+    if (!input.scope.isGlobal && (!user.agency_account_id || !input.scope.accountIds.includes(user.agency_account_id))) throw new Error("This user is outside your permitted hierarchy.");
     if (user.face_verification_status !== "VERIFIED") throw new Error("Face Live authorization requires completed automatic Face Verification.");
     if (input.authorizationType === "AGENCY_FACE_LIVE") {
       if (!user.agency_account_id) throw new Error("The user is not linked to an approved Agency.");

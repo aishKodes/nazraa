@@ -6,6 +6,7 @@ import { withTransaction } from "@/lib/db/transaction";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
 import type { PreparedPublicImage } from "@/lib/security/public-images";
+import { can } from "@/lib/auth/permissions";
 
 async function auditedMutation(input: { scope: Scope; action: string; module: string; targetType: string; targetId: string; reason: string; run: Parameters<typeof withTransaction>[0] }) {
   await withTransaction(async (connection) => {
@@ -61,9 +62,9 @@ export async function setGiftActive(input: { scope: Scope; id: string; active: b
   } });
 }
 
-export async function listBanners() {
+export async function listBanners(page = 1) {
   const [rows] = await db().query<(RowDataPacket & { id: string; placement: string; title: string; subtitle: string | null; image_url: string; action_type: string; action_target: string | null; starts_at: string | null; ends_at: string | null; priority: number; active: number })[]>(
-    "SELECT id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, active FROM banners ORDER BY active DESC, priority DESC, created_at DESC",
+    "SELECT id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, active FROM banners ORDER BY active DESC, priority DESC, created_at DESC LIMIT 26 OFFSET ?", [(Math.max(1, Math.trunc(page)) - 1) * 25],
   );
   return rows.map((row) => ({ id: row.id, placement: row.placement, title: row.title, subtitle: row.subtitle, imageUrl: row.image_url, actionType: row.action_type, actionTarget: row.action_target, startsAt: row.starts_at, endsAt: row.ends_at, priority: row.priority, active: Boolean(row.active) }));
 }
@@ -82,9 +83,19 @@ export async function setBannerActive(input: { scope: Scope; id: string; active:
   await auditedMutation({ scope: input.scope, action: "banner.status_change", module: "banners", targetType: "banner", targetId: input.id, reason: input.active ? "Enabled banner" : "Disabled banner", run: async (connection) => { await connection.execute("UPDATE banners SET active = ? WHERE id = ?", [input.active, input.id]); } });
 }
 
+export async function deleteBanner(input: { scope: Scope; id: string; reason: string; confirmed: boolean }) {
+  if (!can(input.scope.account.role, "banners.manage") || !input.confirmed || input.reason.trim().length < 5) throw new Error("Banner deletion requires permission, confirmation, and a reason.");
+  await withTransaction(async (connection) => {
+    const [rows] = await connection.query<RowDataPacket[]>("SELECT id, title, placement, image_url, active FROM banners WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
+    if (!rows[0]) throw new Error("Banner was not found or has already been deleted.");
+    await connection.execute("DELETE FROM banners WHERE id = ?", [input.id]);
+    await connection.execute("INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, reason) VALUES (?, ?, ?, 'banner.delete', 'banners', 'banner', ?, ?, ?)", [randomUUID(), input.scope.account.id, input.scope.account.role, input.id, JSON.stringify(rows[0]), input.reason]);
+  });
+}
+
 export async function listNotifications() {
   const [rows] = await db().query<(RowDataPacket & { id: string; title: string; message: string; audience_role: string | null; status: string; scheduled_at: string | null; published_at: string | null; created_at: string })[]>(
-    "SELECT id, title, message, audience_role, status, scheduled_at, published_at, created_at FROM platform_notifications ORDER BY created_at DESC LIMIT 100",
+    "SELECT id, title, message, audience_role, status, scheduled_at, published_at, created_at FROM platform_notifications ORDER BY created_at DESC LIMIT 50",
   );
   return rows.map((row) => ({ id: row.id, title: row.title, message: row.message, audienceRole: row.audience_role, status: row.status, scheduledAt: row.scheduled_at, publishedAt: row.published_at, createdAt: row.created_at }));
 }
@@ -100,21 +111,27 @@ export async function createNotification(input: { scope: Scope; title: string; m
   } });
 }
 
-export async function listSupportTickets(scope: Scope) {
+export async function listSupportTickets(scope: Scope, page = 1) {
   const filter = scopeWhere(scope, "u.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & { id: string; ticket_code: string; subject: string; category: string; priority: string; status: string; full_name: string | null; external_user_id: string | null; assignee: string | null; updated_at: string })[]>(
     `SELECT t.id, t.ticket_code, t.subject, t.category, t.priority, t.status, u.full_name, u.external_user_id, a.full_name assignee, t.updated_at
      FROM support_tickets t LEFT JOIN application_users u ON u.id = t.application_user_id LEFT JOIN platform_accounts a ON a.id = t.assigned_to
-     WHERE ${filter.clause} ORDER BY FIELD(t.priority, 'URGENT','HIGH','NORMAL','LOW'), t.updated_at DESC LIMIT 100`, filter.values,
+     WHERE ${filter.clause} ORDER BY FIELD(t.priority, 'URGENT','HIGH','NORMAL','LOW'), t.updated_at DESC LIMIT 26 OFFSET ?`, [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
   if (!rows.length) return [];
   const [messages] = await db().query<(RowDataPacket & { id: string; ticket_id: string; sender_type: string; message: string; internal_note: number; created_at: string })[]>(
     `SELECT id, ticket_id, sender_type, message, internal_note, created_at FROM support_messages WHERE ticket_id IN (${rows.map(() => "?").join(",")}) ORDER BY created_at`,
     rows.map((row) => row.id),
   );
+  const messagesByTicket = new Map<string, typeof messages>();
+  for (const message of messages) {
+    const thread = messagesByTicket.get(message.ticket_id) ?? [];
+    thread.push(message);
+    messagesByTicket.set(message.ticket_id, thread);
+  }
   return rows.map((row) => ({
     id: row.id, code: row.ticket_code, subject: row.subject, category: row.category, priority: row.priority, status: row.status, userName: row.full_name, externalUserId: row.external_user_id, assignee: row.assignee, updatedAt: row.updated_at,
-    messages: messages.filter((message) => message.ticket_id === row.id).map((message) => ({ id: message.id, senderType: message.sender_type, message: message.message, internalNote: Boolean(message.internal_note), createdAt: message.created_at })),
+    messages: (messagesByTicket.get(row.id) ?? []).map((message) => ({ id: message.id, senderType: message.sender_type, message: message.message, internalNote: Boolean(message.internal_note), createdAt: message.created_at })),
   }));
 }
 

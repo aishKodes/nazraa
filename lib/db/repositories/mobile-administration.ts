@@ -39,8 +39,9 @@ function orderScope(scope: Scope) {
   return scopeWhere(scope, "request.seller_account_id");
 }
 
-export async function listCoinCommerce(scope: Scope) {
+export async function listCoinCommerce(scope: Scope, page = 1) {
   const filter = orderScope(scope);
+  const sellerScope = scopeWhere(scope, "account.id");
   const [packageRows, sellerRows, supportRows, orderRows] = await Promise.all([
     db().query<(RowDataPacket & { id: string; public_id: number; name: string; badge_label: string | null; coin_amount: number; display_price: number | null; currency: string | null; active: number; sort_order: number })[]>(
       "SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, active, sort_order FROM coin_packages ORDER BY active DESC, sort_order, coin_amount",
@@ -51,11 +52,16 @@ export async function listCoinCommerce(scope: Scope) {
               profile.availability_status, profile.supported_region
        FROM platform_accounts account
        LEFT JOIN seller_profiles profile ON profile.account_id = account.id
-       WHERE account.role IN ('AGENCY','COIN_SELLER') AND account.status = 'ACTIVE'
-       ORDER BY account.role, account.full_name`,
+       WHERE account.role IN ('AGENCY','COIN_SELLER') AND account.status = 'ACTIVE' AND ${sellerScope.clause}
+       ORDER BY account.role, account.full_name LIMIT 100`,
+      sellerScope.values,
     ),
     db().query<(RowDataPacket & { seller_account_id: string; coin_package_id: string })[]>(
-      "SELECT seller_account_id, coin_package_id FROM seller_package_support WHERE active = TRUE",
+      `SELECT support.seller_account_id, support.coin_package_id
+       FROM seller_package_support support
+       INNER JOIN platform_accounts account ON account.id = support.seller_account_id
+       WHERE support.active = TRUE AND ${sellerScope.clause}`,
+      sellerScope.values,
     ),
     db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; user_name: string; seller_name: string; package_name: string; coin_amount: number; status: string; review_note: string | null; created_at: string; updated_at: string })[]>(
       `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name user_name,
@@ -66,8 +72,8 @@ export async function listCoinCommerce(scope: Scope) {
        INNER JOIN platform_accounts seller ON seller.id = request.seller_account_id
        INNER JOIN coin_packages package ON package.id = request.coin_package_id
        WHERE ${filter.clause}
-       ORDER BY request.created_at DESC LIMIT 150`,
-      filter.values,
+       ORDER BY request.created_at DESC LIMIT 26 OFFSET ?`,
+      [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
     ),
   ]);
   const packageSupport = new Map<string, string[]>();
@@ -205,7 +211,7 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
   });
 }
 
-export async function listFaceVerificationRequests(scope: Scope) {
+export async function listFaceVerificationRequests(scope: Scope, page = 1) {
   const filter = scopeWhere(scope, "user.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; selfie_document_id: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; agency_face_live_authorized: number; super_admin_face_live_authorized: number; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
     `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name, user.country_code,
@@ -214,8 +220,8 @@ export async function listFaceVerificationRequests(scope: Scope) {
             request.review_reason, request.created_at, request.reviewed_at
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
-     WHERE ${filter.clause} ORDER BY FIELD(request.status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED'), request.created_at DESC LIMIT 150`,
-    filter.values,
+     WHERE ${filter.clause} ORDER BY FIELD(request.status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED'), request.created_at DESC LIMIT 26 OFFSET ?`,
+    [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
   return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.status, documentId: row.selfie_document_id, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
 }
@@ -226,7 +232,7 @@ export async function listPayoutMethodReviews(scope: Scope) {
     `SELECT method.id, user.public_id user_public_id, user.full_name, method.method_type,
             method.display_name, method.masked_destination, method.verified, method.active, method.created_at
      FROM payout_methods method INNER JOIN application_users user ON user.id = method.application_user_id
-     WHERE ${filter.clause} ORDER BY method.verified ASC, method.created_at DESC LIMIT 150`,
+     WHERE ${filter.clause} ORDER BY method.verified ASC, method.created_at DESC LIMIT 50`,
     filter.values,
   );
   return rows.map((row) => ({ id: row.id, userPublicId: String(row.user_public_id), fullName: row.full_name, type: row.method_type, displayName: row.display_name, maskedDestination: row.masked_destination, verified: Boolean(row.verified), active: Boolean(row.active), createdAt: row.created_at }));
