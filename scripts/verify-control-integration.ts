@@ -225,7 +225,8 @@ async function main() {
     const creationId = randomUUID();
     await root.execute("INSERT INTO agency_creation_applications (id, application_user_id, agency_name, country_code, business_whatsapp_e164, parent_account_id) VALUES (?, ?, 'QA Approved Agency', 'IN', '+919999000001', ?)", [creationId, applicant.id, branchAdmin.account.id]);
     await assert.rejects(agencies.reviewAgencyCreation({ scope: await refresh(cmOther), applicationId: creationId, decision: "APPROVED", reason: "QA cannot approve other branch" }));
-    await agencies.reviewAgencyCreation({ scope: await refresh(cm), applicationId: creationId, decision: "APPROVED", reason: "QA approve verified Agency" });
+    await assert.rejects(agencies.reviewAgencyCreation({ scope: await refresh(cm), applicationId: creationId, decision: "APPROVED", reason: "QA non-Master cannot approve Agency" }), /Only Master/);
+    await agencies.reviewAgencyCreation({ scope: master, applicationId: creationId, decision: "APPROVED", reason: "QA Master approves verified Agency" });
     const [creation] = await root.query<RowDataPacket[]>("SELECT status, approved_agency_account_id FROM agency_creation_applications WHERE id = ?", [creationId]);
     assert.equal(creation[0].status, "APPROVED");
     const joiner = await user(null, "QA Join applicant");

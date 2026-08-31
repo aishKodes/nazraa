@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomUUID } from "crypto";
+import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
@@ -107,6 +107,67 @@ async function settingsMap() {
   return Object.fromEntries(rows.map((row) => [row.setting_key, asObject(row.setting_value)]));
 }
 
+
+async function activeRoomRows(after?: string) {
+  return db().query<RowDataPacket[]>(
+      `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
+              room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.country_code,
+              room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled,
+              top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
+              top_avatar.updated_at top_avatar_updated_at,
+              top_user.country_code top_country, top_user.language_code top_language,
+              top_user.anchor_income_points top_anchor_points, top_user.level_number top_level, top_user.vip_tier top_vip,
+              room.status, (SELECT COUNT(*) FROM live_room_members recent WHERE recent.room_id = room.id AND recent.left_at IS NULL AND recent.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE) audience_count,
+              user.public_id host_public_id, user.full_name host_name, user.anchor_income_points host_anchor_points, user.level_number host_level,
+              user.vip_tier host_vip, user.avatar_url host_avatar_url, host_avatar.updated_at host_avatar_updated_at, user.country_code host_country,
+              user.language_code host_language,
+              (SELECT operator.role FROM platform_accounts operator
+               WHERE operator.status = 'ACTIVE' AND
+                 (operator.application_user_id = user.id OR operator.application_user_id = user.external_user_id
+                  OR operator.application_user_id = CAST(user.public_id AS CHAR))
+               ORDER BY operator.created_at LIMIT 1) host_platform_role,
+              account.public_id agency_public_id, account.full_name agency_name
+       FROM live_rooms room INNER JOIN application_users user ON user.id = room.host_application_user_id
+       LEFT JOIN application_user_avatars host_avatar ON host_avatar.application_user_id = user.id
+       LEFT JOIN application_users top_user ON top_user.id = room.top_application_user_id
+       LEFT JOIN application_user_avatars top_avatar ON top_avatar.application_user_id = top_user.id
+       LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
+       WHERE room.status IN ('ACTIVE','LOCKED')
+         AND EXISTS (SELECT 1 FROM live_room_members owner WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)
+       ${after ? "AND (room.started_at, room.id) < (SELECT started_at, id FROM live_rooms WHERE room_code = ?)" : ""}
+       ORDER BY room.started_at DESC, room.id DESC LIMIT 30`, after ? [after] : [],
+    );
+}
+
+function mapActiveRoom(row: RowDataPacket, maximumLevel = 120) {
+  return {
+    id: String(row.room_code), title: String(row.title), category: String(row.category),
+    language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
+    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
+    photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
+    passwordRequired: row.password_hash != null,
+    chatLocked: Boolean(row.chat_locked), interactionsEnabled: Boolean(row.interactions_enabled),
+    themeEnabled: Boolean(row.theme_enabled),
+    pkRequestsEnabled: Boolean(row.pk_requests_enabled),
+    countryCode: row.country_code,
+    agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
+    host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
+      country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level), anchorLevel: levelProgress(Number(row.host_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
+      vip: Number(row.host_vip), role: productRole(row.host_platform_role, true) },
+    topUser: row.top_public_id == null ? null : {
+      id: String(row.top_public_id), name: String(row.top_name), avatarUrl: mobileAvatarUrl(row, "top_"),
+      country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level), anchorLevel: levelProgress(Number(row.top_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
+      vip: Number(row.top_vip), role: "user",
+    },
+    managers: [], participants: [], giftEvents: [],
+  };
+}
+
+export async function activeRoomPage(after?: string) {
+  const [rows] = await activeRoomRows(after);
+  return rows.map((row) => mapActiveRoom(row));
+}
+
 export async function mobileBootstrap(identity: MobileIdentity) {
   await pruneInactiveRooms();
   const [
@@ -114,8 +175,6 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     walletRows,
     transactionRows,
     roomRows,
-    roomMemberRows,
-    roomGiftRows,
     peopleRows,
     giftRows,
     bannerRows,
@@ -147,68 +206,10 @@ export async function mobileBootstrap(identity: MobileIdentity) {
        FROM ledger_transactions WHERE source_id = ? OR destination_id = ? ORDER BY created_at DESC LIMIT 100`,
       [identity.userId, identity.userId],
     ),
-    db().query<RowDataPacket[]>(
-      `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
-              room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.country_code,
-              room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled,
-              top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
-              top_avatar.updated_at top_avatar_updated_at,
-              top_user.country_code top_country, top_user.language_code top_language,
-              top_user.level_number top_level, top_user.vip_tier top_vip,
-              room.status, room.audience_count,
-              user.public_id host_public_id, user.full_name host_name, user.level_number host_level,
-              user.vip_tier host_vip, user.avatar_url host_avatar_url, host_avatar.updated_at host_avatar_updated_at, user.country_code host_country,
-              user.language_code host_language,
-              (SELECT operator.role FROM platform_accounts operator
-               WHERE operator.status = 'ACTIVE' AND
-                 (operator.application_user_id = user.id OR operator.application_user_id = user.external_user_id
-                  OR operator.application_user_id = CAST(user.public_id AS CHAR))
-               ORDER BY operator.created_at LIMIT 1) host_platform_role,
-              account.public_id agency_public_id, account.full_name agency_name
-       FROM live_rooms room INNER JOIN application_users user ON user.id = room.host_application_user_id
-       LEFT JOIN application_user_avatars host_avatar ON host_avatar.application_user_id = user.id
-       LEFT JOIN application_users top_user ON top_user.id = room.top_application_user_id
-       LEFT JOIN application_user_avatars top_avatar ON top_avatar.application_user_id = top_user.id
-       LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
-       WHERE room.status IN ('ACTIVE','LOCKED')
-         AND EXISTS (SELECT 1 FROM live_room_members owner WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)
-       ORDER BY room.started_at DESC LIMIT 60`,
-    ),
-    db().query<RowDataPacket[]>(
-      `SELECT room.room_code, member.room_role, member.muted, user.public_id, user.full_name, user.avatar_url,
-              avatar.updated_at avatar_updated_at,
-              COALESCE(gifts.received_value, 0) received_gift_value
-       FROM live_room_members member INNER JOIN live_rooms room ON room.id = member.room_id
-       INNER JOIN application_users user ON user.id = member.application_user_id
-       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-       LEFT JOIN (
-         SELECT room_id, receiver_application_user_id, SUM(coin_value) received_value
-         FROM live_room_gift_events GROUP BY room_id, receiver_application_user_id
-       ) gifts ON gifts.room_id = member.room_id AND gifts.receiver_application_user_id = member.application_user_id
-       WHERE room.status IN ('ACTIVE','LOCKED') AND member.left_at IS NULL
-         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
-       ORDER BY room.room_code, member.room_role = 'OWNER' DESC, member.updated_at`,
-    ),
-    db().query<RowDataPacket[]>(
-      `SELECT room.room_code, event.id, event.quantity, event.coin_value, event.created_at,
-              gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
-              sender.public_id sender_public_id, sender.full_name sender_name, sender.avatar_url sender_avatar_url,
-              sender_avatar.updated_at sender_avatar_updated_at,
-              receiver.public_id receiver_public_id, receiver.full_name receiver_name, receiver.avatar_url receiver_avatar_url,
-              receiver_avatar.updated_at receiver_avatar_updated_at
-       FROM live_room_gift_events event
-       INNER JOIN live_rooms room ON room.id = event.room_id
-       INNER JOIN gift_catalog gift ON gift.id = event.gift_catalog_id
-       INNER JOIN application_users sender ON sender.id = event.sender_application_user_id
-       INNER JOIN application_users receiver ON receiver.id = event.receiver_application_user_id
-       LEFT JOIN application_user_avatars sender_avatar ON sender_avatar.application_user_id = sender.id
-       LEFT JOIN application_user_avatars receiver_avatar ON receiver_avatar.application_user_id = receiver.id
-       WHERE room.status IN ('ACTIVE','LOCKED')
-       ORDER BY event.created_at DESC LIMIT 300`,
-    ),
+    activeRoomRows(),
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at, user.country_code, user.language_code,
-              user.level_number, user.vip_tier, user.is_host,
+              user.level_number, user.anchor_income_points, user.vip_tier, user.is_host,
               account.role platform_role
        FROM application_users user
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
@@ -223,13 +224,17 @@ export async function mobileBootstrap(identity: MobileIdentity) {
        AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3)) ORDER BY priority DESC`,
     ),
     db().query<RowDataPacket[]>(
-      `SELECT id, title, message, action_target, COALESCE(published_at, scheduled_at, created_at) created_at
+      `SELECT id, title, message, action_target,
+              COALESCE(published_at, scheduled_at, created_at) created_at,
+              ROUND(UNIX_TIMESTAMP(COALESCE(published_at, scheduled_at, created_at)) * 1000) created_at_epoch_ms
        FROM platform_notifications WHERE (status = 'PUBLISHED' OR (status = 'SCHEDULED' AND scheduled_at <= CURRENT_TIMESTAMP(3)))
        AND (audience_role IS NULL OR audience_role IN (?, 'ALL')) ORDER BY created_at DESC LIMIT 40`,
       [identity.role],
     ),
     db().query<RowDataPacket[]>(
-      "SELECT id, notification_type, title, message, action_target, read_at, created_at FROM mobile_notifications WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 60",
+      `SELECT id, notification_type, title, message, action_target, read_at, created_at,
+              ROUND(UNIX_TIMESTAMP(created_at) * 1000) created_at_epoch_ms
+       FROM mobile_notifications WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 60`,
       [identity.userId],
     ),
     db().query<RowDataPacket[]>("SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE active = TRUE ORDER BY sort_order, coin_amount"),
@@ -269,7 +274,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT account.id, account.public_id, account.full_name, account.status, account.country_code,
-              owner.public_id owner_public_id,
+              owner.public_id owner_public_id, owner.full_name owner_name,
               COUNT(host.id) host_count, COALESCE(SUM(host.live_minutes_30d), 0) total_live_minutes,
               COALESCE(SUM(host.gifts_value_30d), 0) estimated_earnings
        FROM application_users user INNER JOIN platform_accounts account ON account.id = user.agency_account_id
@@ -278,7 +283,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
          OR owner.external_user_id = account.application_user_id
          OR CAST(owner.public_id AS CHAR) = account.application_user_id
        LEFT JOIN host_profiles host ON host.agency_account_id = account.id
-       WHERE user.id = ? GROUP BY account.id, account.public_id, account.full_name, account.status, account.country_code, owner.public_id LIMIT 1`,
+       WHERE user.id = ? GROUP BY account.id, account.public_id, account.full_name, account.status, account.country_code, owner.public_id, owner.full_name LIMIT 1`,
       [identity.userId],
     ),
     db().query<RowDataPacket[]>(
@@ -313,49 +318,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
 
-  const roomMembers = new Map<string, RowDataPacket[]>();
-  for (const member of roomMemberRows[0]) {
-    const roomCode = String(member.room_code);
-    roomMembers.set(roomCode, [...(roomMembers.get(roomCode) ?? []), member]);
-  }
-  const roomGifts = new Map<string, RowDataPacket[]>();
-  for (const gift of roomGiftRows[0]) {
-    const roomCode = String(gift.room_code);
-    roomGifts.set(roomCode, [...(roomGifts.get(roomCode) ?? []), gift]);
-  }
-  const rooms = roomRows[0].map((row, index) => ({
-    id: String(row.room_code), title: String(row.title), category: String(row.category),
-    language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? index % 6), privacy: String(row.privacy).toLowerCase(),
-    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
-    photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
-    passwordRequired: row.password_hash != null,
-    chatLocked: Boolean(row.chat_locked), interactionsEnabled: Boolean(row.interactions_enabled),
-    themeEnabled: Boolean(row.theme_enabled),
-    pkRequestsEnabled: Boolean(row.pk_requests_enabled),
-    countryCode: row.country_code,
-    agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
-    host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
-      country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level),
-      vip: Number(row.host_vip), role: productRole(row.host_platform_role, true) },
-    topUser: row.top_public_id == null ? null : {
-      id: String(row.top_public_id), name: String(row.top_name), avatarUrl: mobileAvatarUrl(row, "top_"),
-      country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level),
-      vip: Number(row.top_vip), role: "user",
-    },
-    managers: (roomMembers.get(String(row.room_code)) ?? [])
-      .filter((member) => member.room_role === "OWNER" || member.room_role === "ADMIN")
-      .map((member) => ({ id: String(member.public_id), name: String(member.full_name), avatarUrl: mobileAvatarUrl(member), roomRole: String(member.room_role).toLowerCase() })),
-    participants: (roomMembers.get(String(row.room_code)) ?? []).map((member) => ({
-      user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: mobileAvatarUrl(member) },
-      roomRole: String(member.room_role).toLowerCase(), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
-    })),
-    giftEvents: (roomGifts.get(String(row.room_code)) ?? []).slice(0, 50).map((event) => ({
-      id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
-      gift: { id: String(event.gift_key), name: String(event.gift_name), symbol: event.gift_emoji ? String(event.gift_emoji) : giftSymbol(String(event.gift_key), String(event.gift_name)), imageUrl: event.gift_visual_url },
-      sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: mobileAvatarUrl(event, "sender_") },
-      receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: mobileAvatarUrl(event, "receiver_") },
-    })).reverse(),
-  }));
+  const rooms = roomRows[0].map((row) => mapActiveRoom(row, maximumLevel));
 
   const currentAgency = agencyRows[0][0];
   const currentHost = hostRows[0][0];
@@ -371,7 +334,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
         : profile.avatar_url,
       country: profile.country_code ?? "", language: profile.language_code, bio: profile.bio,
       gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
-      whatsappE164: profile.whatsapp_e164, level: Number(profile.level_number),
+      whatsappE164: profile.whatsapp_e164, level: Number(profile.level_number), anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumLevel).level,
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
       permissions: permissionsForMobileRole(identity.role),
     },
@@ -390,11 +353,22 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     })),
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
-      country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number),
+      country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number), anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumLevel).level,
       vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
     gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
-    announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({ id: String(row.id), message: String(row.message), title: row.title, kind: row.notification_type ? "system" : "event", actionTarget: row.action_target, priority: 100 - index, startAt: row.created_at, endAt: "2999-12-31T23:59:59.000Z", isActive: true })),
+    announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({
+      id: String(row.id), message: String(row.message), title: row.title,
+      kind: row.notification_type ? "system" : "event", actionTarget: row.action_target,
+      priority: 100 - index,
+      // DATETIME has no timezone. UNIX_TIMESTAMP converts it using the MySQL
+      // server/session timezone so clients do not see local DB mail as future.
+      startAt: new Date(Number(row.created_at_epoch_ms)).toISOString(),
+      endAt: "2999-12-31T23:59:59.000Z", isActive: true,
+      // Platform broadcasts are shared and have no per-user read row. Personal
+      // mail is unread until this user opens Nazraa Mail.
+      read: row.notification_type ? row.read_at != null : true,
+    })),
     coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),
     coinSellers: sellerRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), whatsappE164: String(row.business_whatsapp_e164), supportUri: `https://wa.me/${String(row.business_whatsapp_e164).replace(/\D/g, "")}`, availability: row.availability_status === "AVAILABLE" ? "available" : "offline", fulfilledOrders: Number(row.fulfilled_orders), rating: 5, supportedRegion: row.supported_region ?? row.country_code ?? "", verified: row.verification_status === "VERIFIED" })),
     coinPurchaseRequests: orderRows[0].map((row) => ({ id: String(row.public_id), userId: identity.publicId, packageId: String(row.package_public_id), sellerId: String(row.seller_public_id), coins: Number(row.coin_amount), pricePaise: Math.round(Number(row.display_price ?? 0) * 100), status: String(row.status).toLowerCase(), createdAt: row.created_at })),
@@ -404,13 +378,13 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     followedUserIds: followUserRows[0].map((row) => String(row.public_id)),
     followedAgencyIds: followAgencyRows[0].map((row) => String(row.public_id)),
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
-    agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), status: String(currentAgency.status), hosts: [], targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
+    agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
     hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: levelProgress(Number(currentHost.anchor_income_points), "anchorIncome", maximumLevel).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
     consumptionLevel: levelProgress(Number(profile.consumption_points), "consumption", maximumLevel),
     anchorIncomeLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumLevel),
     rankings: rankingRows[0].map((row, index) => ({ rank: index + 1, user: { id: String(row.public_id), name: String(row.full_name), level: Number(row.level_number), vip: Number(row.vip_tier), role: "user" }, score: Number(row.consumption_points), label: "Consumption" })),
     agencyRankings: agencyRankingRows[0].map((row, index) => ({ rank: index + 1, agency: { id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: "", ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0, estimatedEarnings: Number(row.score), totalLiveMinutes: 0 }, score: Number(row.score), label: "Agency" })),
-    posts: [],
+    posts: completion.posts,
     role: roleName,
     permissions: permissionsForMobileRole(identity.role),
   };
@@ -670,6 +644,234 @@ export async function mutateGameWallet(identity: MobileIdentity, input: {
     );
     return { success: true, coinBalance: after, message: input.direction === "DEBIT" ? "Accepted" : "Paid" };
   });
+}
+
+const teenPattiGame = "teen_patti_pro";
+const supportedRoundGames = new Set([teenPattiGame, "luck77", "bounty_football", "jungle_hunt"]);
+const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
+const junglePaylines = [
+  [0, 0, 0, 0, 0], [1, 1, 1, 1, 1], [2, 2, 2, 2, 2], [0, 1, 2, 2, 1], [2, 1, 0, 0, 1],
+  [0, 0, 1, 2, 2], [2, 2, 1, 0, 0], [1, 0, 0, 1, 2], [1, 2, 2, 1, 0], [0, 1, 1, 0, 0],
+  [2, 1, 1, 2, 2], [1, 0, 1, 2, 1], [1, 2, 1, 0, 1], [0, 1, 0, 1, 0], [2, 1, 2, 1, 2],
+] as const;
+const jungleSymbols = ["ten", "crocodile", "rhino", "elephant"] as const;
+
+type ServerGameRoundInput = {
+  clientRoundId: string;
+  game: string;
+  bets: Record<string, number>;
+};
+
+type ServerGameOutcome = {
+  outcome: Record<string, unknown>;
+  wager: number;
+  payout: number;
+};
+
+function canonicalBets(bets: Record<string, number>) {
+  return Object.fromEntries(Object.entries(bets).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function checkedBets(bets: Record<string, number>, keys: readonly string[], unit: number, maximum = 50_000_000) {
+  const allowed = new Set(keys);
+  if (Object.keys(bets).some((key) => !allowed.has(key))) throw new Error("This game bet contains an invalid option.");
+  const result: Record<string, number> = {};
+  let total = 0;
+  for (const key of keys) {
+    const amount = bets[key] ?? 0;
+    if (!Number.isSafeInteger(amount) || amount < 0 || amount % unit !== 0) throw new Error("Choose a valid game amount.");
+    result[key] = amount;
+    total += amount;
+  }
+  if (!Number.isSafeInteger(total) || total > maximum) throw new Error("The total game amount is too large.");
+  return { bets: result, total };
+}
+
+function secureShuffle<T>(items: T[]) {
+  for (let index = items.length - 1; index > 0; index--) {
+    const selected = randomInt(index + 1);
+    [items[index], items[selected]] = [items[selected], items[index]];
+  }
+  return items;
+}
+
+function teenPattiValue(cards: number[]) {
+  const ranks = cards.map((card) => card % 13 + 2).sort((a, b) => b - a);
+  const suits = cards.map((card) => Math.floor(card / 13));
+  const counts = new Map<number, number>();
+  for (const rank of ranks) counts.set(rank, (counts.get(rank) ?? 0) + 1);
+  const flush = new Set(suits).size === 1;
+  const unique = new Set(ranks).size === 3;
+  const sequence = unique && (
+    (ranks[0] === 14 && ranks[1] === 13 && ranks[2] === 12) ||
+    (ranks[0] === 14 && ranks[1] === 3 && ranks[2] === 2) ||
+    (ranks[0] - 1 === ranks[1] && ranks[1] - 1 === ranks[2])
+  );
+  if (counts.size === 1) return { category: "trail", label: "Three of a Kind", multiplier: 25 };
+  if (flush && sequence) return { category: "pureSequence", label: "Straight Flush", multiplier: 10 };
+  if (sequence) return { category: "sequence", label: "Straight", multiplier: 2 };
+  if (flush) return { category: "color", label: "Flush", multiplier: 4 };
+  if ([...counts.values()].includes(2)) return { category: "pair", label: "Pair", multiplier: 0 };
+  return { category: "highCard", label: "High Card", multiplier: 0 };
+}
+
+function teenPattiRound(input: Record<string, number>): ServerGameOutcome {
+  const checked = checkedBets(input, ["0", "1", "2"], 10_000);
+  const deck = secureShuffle(Array.from({ length: 52 }, (_, index) => index));
+  const hands = [deck.slice(0, 3), deck.slice(3, 6), deck.slice(6, 9)].map((cards) => {
+    const value = teenPattiValue(cards);
+    return {
+      cards: cards.map((card) => ({ rank: card % 13 + 2, suit: Math.floor(card / 13) })),
+      ...value,
+    };
+  });
+  const payout = hands.reduce((sum, hand, lane) => sum + checked.bets[String(lane)] * hand.multiplier, 0);
+  return { outcome: { hands }, wager: checked.total, payout };
+}
+
+function luck77Round(input: Record<string, number>): ServerGameOutcome {
+  const checked = checkedBets(input, ["watermelon", "seven", "plum"], 500);
+  const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "seven", "plum", "watermelon", "plum", "watermelon", "plum"];
+  const winner = segments[randomInt(segments.length)];
+  const multiplier = winner === "seven" ? 8 : 2;
+  return { outcome: { winner, multiplier }, wager: checked.total, payout: checked.bets[winner] * multiplier };
+}
+
+function footballRound(input: Record<string, number>): ServerGameOutcome {
+  const checked = checkedBets(input, footballMultipliers.map((_, index) => String(index)), 500);
+  const weights = footballMultipliers.map((multiplier) => Math.round(100_000 / multiplier));
+  const ticket = randomInt(weights.reduce((sum, weight) => sum + weight, 0));
+  let cursor = 0;
+  let winner = 0;
+  for (let index = 0; index < weights.length; index++) {
+    cursor += weights[index];
+    if (ticket < cursor) { winner = index; break; }
+  }
+  const multiplier = footballMultipliers[winner];
+  return { outcome: { winner, multiplier }, wager: checked.total, payout: checked.bets[String(winner)] * multiplier };
+}
+
+function jungleMultiplier(symbol: typeof jungleSymbols[number], matches: number) {
+  const table = {
+    ten: [0, 0, 0, 3, 10, 20], crocodile: [0, 0, 0, 5, 20, 40],
+    rhino: [0, 0, 0, 8, 30, 60], elephant: [0, 0, 0, 10, 50, 100],
+  } as const;
+  return table[symbol][matches] ?? 0;
+}
+
+function jungleRound(input: Record<string, number>): ServerGameOutcome {
+  const checked = checkedBets(input, ["spin"], 150, 3_000);
+  if (checked.total === 0) throw new Error("Choose a spin amount.");
+  if (checked.total % junglePaylines.length !== 0) throw new Error("The Jungle Hunt bet must cover all 15 lines.");
+  const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleSymbols[randomInt(jungleSymbols.length)]));
+  const winningLines: number[] = [];
+  const lineBet = checked.total / junglePaylines.length;
+  let payout = 0;
+  for (let line = 0; line < junglePaylines.length; line++) {
+    const path = junglePaylines[line];
+    const first = grid[path[0]][0];
+    let matches = 1;
+    for (let column = 1; column < 5 && grid[path[column]][column] === first; column++) matches++;
+    if (matches < 3) continue;
+    winningLines.push(line + 1);
+    payout += lineBet * jungleMultiplier(first, matches);
+  }
+  return { outcome: { grid, winningLines }, wager: checked.total, payout };
+}
+
+function createServerGameOutcome(game: string, bets: Record<string, number>) {
+  if (game === teenPattiGame) return teenPattiRound(bets);
+  if (game === "luck77") return luck77Round(bets);
+  if (game === "bounty_football") return footballRound(bets);
+  if (game === "jungle_hunt") return jungleRound(bets);
+  throw new Error("This game is unavailable.");
+}
+
+function gameRoundResponse(row: RowDataPacket) {
+  return {
+    success: true,
+    roundId: String(row.id),
+    clientRoundId: String(row.client_round_id),
+    game: String(row.game_name),
+    bets: asObject(row.bets_json),
+    outcome: asObject(row.outcome_json),
+    wager: Number(row.wager_total),
+    payout: Number(row.payout_total),
+    coinBalance: Number(row.balance_after),
+    createdAt: new Date(row.created_at as string | Date).toISOString(),
+  };
+}
+
+export async function settleGameRound(identity: MobileIdentity, input: ServerGameRoundInput) {
+  if (!supportedRoundGames.has(input.game)) throw new Error("This game is unavailable.");
+  const bets = canonicalBets(input.bets);
+  return withTransaction(async (connection) => {
+    const [existingRows] = await connection.query<RowDataPacket[]>(
+      "SELECT * FROM game_round_results WHERE application_user_id = ? AND client_round_id = ? LIMIT 1 FOR UPDATE",
+      [identity.userId, input.clientRoundId],
+    );
+    if (existingRows[0]) {
+      const existing = existingRows[0];
+      if (String(existing.game_name) !== input.game || JSON.stringify(canonicalBets(asObject(existing.bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
+        throw new Error("This game round ID was already used.");
+      }
+      return gameRoundResponse(existing);
+    }
+
+    const result = createServerGameOutcome(input.game, bets);
+    await ensureWallet(connection, identity.userId, "COIN");
+    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
+      [identity.userId],
+    );
+    const before = Number(walletRows[0].available_balance);
+    if (before < result.wager) throw new Error("Not enough coins.");
+    const after = before - result.wager + result.payout;
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error("The game result could not be settled.");
+    await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [after, walletRows[0].id]);
+
+    if (result.wager > 0) {
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
+         VALUES (?, ?, ?, 'COIN', 'GAME_DEBIT', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
+        [randomUUID(), code("GMD"), `GAME_ROUND:${input.clientRoundId}:DEBIT`, identity.userId, result.wager, `${input.game} round wager`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, bets })],
+      );
+    }
+    if (result.payout > 0) {
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
+         VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
+        [randomUUID(), code("GMC"), `GAME_ROUND:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId })],
+      );
+    }
+
+    const id = randomUUID();
+    const now = new Date();
+    await connection.execute(
+      `INSERT INTO game_round_results
+       (id, client_round_id, application_user_id, game_name, bets_json, outcome_json, wager_total, payout_total, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.clientRoundId, identity.userId, input.game, JSON.stringify(bets), JSON.stringify(result.outcome), result.wager, result.payout, after, now],
+    );
+    return gameRoundResponse({
+      id, client_round_id: input.clientRoundId, game_name: input.game, bets_json: bets,
+      outcome_json: result.outcome, wager_total: result.wager, payout_total: result.payout,
+      balance_after: after, created_at: now,
+    } as RowDataPacket);
+  });
+}
+
+export async function gameRoundHistory(identity: MobileIdentity, game: string, limit = 10) {
+  if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
+  const [rows] = await db().query<RowDataPacket[]>(
+    `SELECT * FROM game_round_results
+     WHERE application_user_id = ? AND game_name = ?
+     ORDER BY created_at DESC, id DESC LIMIT ?`,
+    [identity.userId, game, Math.max(1, Math.min(20, limit))],
+  );
+  return { rounds: rows.map(gameRoundResponse) };
 }
 
 async function ensureWallet(connection: PoolConnection, ownerId: string, assetType: "COIN" | "DIAMOND") {

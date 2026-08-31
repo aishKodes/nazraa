@@ -4,12 +4,15 @@ import { authenticateMobileRequest, mobileCan } from "@/lib/auth/mobile-session"
 import { publicMobileConfig } from "@/lib/db/repositories/mobile";
 import {
   createCoinPurchaseRequest,
+  activeRoomPage,
   createPayoutMethod,
   createRoom,
   createWithdrawalRequest,
+  gameRoundHistory,
   mobileBootstrap,
   mutateGameWallet,
   sendGift,
+  settleGameRound,
   setFollow,
 } from "@/lib/db/repositories/mobile-product";
 import {
@@ -23,6 +26,7 @@ import {
   joinLiveRoom,
   kickRoomMember,
   leaveLiveRoom,
+  markMobileNotificationsRead,
   refreshRoomPresence,
   roomPublishingDecision,
   sendRoomChat,
@@ -34,7 +38,9 @@ import {
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
-import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, reportDiscoveryPost, reportPrivateMessage, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
+import { discoveryPosts, privateMessagingForUser, respondToPrivateRequest } from "@/lib/db/repositories/mobile-social";
+import { actOnRoomSeat } from "@/lib/db/repositories/mobile-seats";
+import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, removeOwnAgencyHost, reportDiscoveryPost, reportPrivateMessage, reviewOwnAgencyJoin, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +75,24 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
   const identity = await authenticateMobileRequest(request);
   if (!identity) return errorResponse(new Error("Unauthorized."), 401);
   try {
+    if (resource === "rooms") {
+      const after = z.string().min(3).max(80).optional().parse(new URL(request.url).searchParams.get("after") ?? undefined);
+      return NextResponse.json({ rooms: await activeRoomPage(after) }, { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "discovery-posts") {
+      const after = z.string().uuid().optional().parse(new URL(request.url).searchParams.get("after") ?? undefined);
+      return NextResponse.json({ posts: await discoveryPosts(after) }, { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "private-messages") {
+      const before = z.string().uuid().optional().parse(new URL(request.url).searchParams.get("before") ?? undefined);
+      return NextResponse.json(await privateMessagingForUser(identity, before), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "game-rounds") {
+      const parameters = new URL(request.url).searchParams;
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt"]).parse(parameters.get("game"));
+      const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
+      return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
+    }
     const payload = selectResource(resource, await mobileBootstrap(identity));
     return payload ? NextResponse.json(payload, { headers: { "Cache-Control": "private, no-store" } }) : errorResponse(new Error("Mobile resource not found."), 404);
   } catch (error) { return errorResponse(error, 503); }
@@ -80,6 +104,14 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   if (!identity) return errorResponse(new Error("Unauthorized."), 401);
   try {
     const body = await request.json();
+    if (resource === "room-seat") {
+      const parsed = z.object({ roomCode: z.string().min(3).max(80), action: z.enum(["request", "accept", "reject", "assign", "leave"]), seatIndex: z.number().int().min(0).max(19).optional(), targetPublicId: z.string().regex(/^\d+$/).optional() }).parse(body);
+      return NextResponse.json(await actOnRoomSeat(identity, parsed));
+    }
+    if (resource === "private-message-request") {
+      const parsed = z.object({ targetPublicId: z.string().regex(/^\d+$/), accept: z.boolean() }).parse(body);
+      return NextResponse.json(await respondToPrivateRequest(identity, parsed));
+    }
     if (resource === "coin-orders") {
       if (!mobileCan(identity, "coin_orders.create")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({ packageId: z.string().regex(/^\d+$/), sellerId: z.string().regex(/^\d+$/) }).parse(body);
@@ -116,6 +148,9 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       if (!mobileCan(identity, "daily_rewards.claim")) return errorResponse(new Error("Forbidden."), 403);
       return NextResponse.json(await claimDailyReward(identity), { status: 201 });
     }
+    if (resource === "notifications-read") {
+      return NextResponse.json(await markMobileNotificationsRead(identity));
+    }
     if (resource === "diamond-exchange") {
       if (!mobileCan(identity, "diamonds.exchange")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({ diamonds: z.number().int().positive() }).parse(body);
@@ -129,6 +164,14 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
       return NextResponse.json(await applyToJoinAgency(identity, parsed.publicId), { status: 201 });
     }
+    if (resource === "agency-membership-review") {
+      const parsed = z.object({ applicationId: z.string().uuid(), decision: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().max(500).optional() }).parse(body);
+      return NextResponse.json(await reviewOwnAgencyJoin(identity, parsed));
+    }
+    if (resource === "agency-host-remove") {
+      const parsed = z.object({ targetPublicId: z.string().regex(/^\d+$/), reason: z.string().trim().min(3).max(500) }).parse(body);
+      return NextResponse.json(await removeOwnAgencyHost(identity, parsed));
+    }
     if (resource === "agency-parent-verify") {
       const parsed = z.object({ publicId: z.string().regex(/^\d{6}$/) }).parse(body);
       return NextResponse.json(await verifyAgencyParent(parsed.publicId));
@@ -139,17 +182,17 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         ownerName: z.string().trim().min(2).max(120),
         countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
         whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
-        pan: z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/)),
         aadhaar: z.string().transform((value) => value.replace(/\D/g, "")).pipe(z.string().regex(/^\d{12}$/)),
         parentCode: z.string().regex(/^\d{6}$/),
         documentDataUrl: z.string().max(2_850_000),
         documentName: z.string().trim().min(1).max(255),
-        logoDataUrl: z.string().max(1_500_000).optional(),
+        additionalDocuments: z.array(z.object({ dataUrl: z.string().min(1).max(950_000), name: z.string().trim().min(1).max(255) })).length(2, "Upload Aadhaar front, Aadhaar back, and a selfie holding Aadhaar."),
+        logoDataUrl: z.string().min(1, "Agency logo is required.").max(1_500_000),
       }).parse(body);
       return NextResponse.json(await applyToCreateAgency(identity, parsed), { status: 201 });
     }
     if (resource === "discovery-posts") {
-      const parsed = z.object({ caption: z.string().trim().max(500), photoDataUrl: z.string().max(2_100_000) }).parse(body);
+      const parsed = z.object({ caption: z.string().trim().max(500), photoDataUrl: z.string().min(1).max(2_100_000).optional() }).refine((value) => value.caption.length > 0 || value.photoDataUrl, "Write something or add a photo.").parse(body);
       return NextResponse.json(await createDiscoveryPost(identity, parsed), { status: 201 });
     }
     if (resource === "discovery-delete") {
@@ -186,11 +229,11 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         privacy: z.enum(["public", "followers", "locked"]),
         seatCount: z.number().int().min(0).max(20),
         themeIndex: z.number().int().min(0).max(20),
-        themeEnabled: z.boolean().default(true),
+        themeEnabled: z.boolean().default(false),
         countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()).optional(),
         photoDataUrl: z.string().max(2_100_000).optional(),
         password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(),
-      }).parse(body);
+      }).refine((value) => value.kind !== "party" || Boolean(value.photoDataUrl), "Add a room photo before starting a Party.").parse(body);
       const permission = parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
       if (!mobileCan(identity, permission)) return errorResponse(new Error("Your role cannot start this room type."), 403);
       if (parsed.kind === "face" && identity.faceVerificationStatus !== "VERIFIED") return errorResponse(new Error("Verified Face Live access is required."), 403);
@@ -271,6 +314,15 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         reason: z.string().trim().min(1).max(240),
       }).parse(body);
       return NextResponse.json(await mutateGameWallet(identity, parsed), { status: 201 });
+    }
+    if (resource === "game-rounds") {
+      if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
+      const parsed = z.object({
+        clientRoundId: z.string().uuid(),
+        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt"]),
+        bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
+      }).parse(body);
+      return NextResponse.json(await settleGameRound(identity, parsed), { status: 201 });
     }
     if (resource === "face") {
       if (!mobileCan(identity, "face.submit")) return errorResponse(new Error("Forbidden."), 403);

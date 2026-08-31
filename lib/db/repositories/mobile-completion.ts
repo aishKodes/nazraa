@@ -10,7 +10,7 @@ import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { FaceBiometricService } from "@/lib/services/face-biometric-service";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
-import { agencyApplicationsForUser, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
+import { agencyApplicationsForUser, agencyOwnerSnapshot, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -116,6 +116,15 @@ export async function claimDailyReward(identity: MobileIdentity) {
   });
 }
 
+export async function markMobileNotificationsRead(identity: MobileIdentity) {
+  const [result] = await db().execute(
+    `UPDATE mobile_notifications SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP(3))
+     WHERE application_user_id = ? AND read_at IS NULL`,
+    [identity.userId],
+  );
+  return { read: (result as { affectedRows?: number }).affectedRows ?? 0 };
+}
+
 export async function exchangeDiamonds(identity: MobileIdentity, diamonds: number) {
   return withTransaction(async (connection) => {
     const [ruleRows] = await connection.query<(RowDataPacket & { id: string; diamonds: number; coins: number; minimum_diamonds: number; maximum_diamonds: number })[]>(
@@ -181,14 +190,15 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
         throw new Error("The room password is incorrect.");
       }
     }
-    const interactionAllowed = LiveAccessPolicyService.for(identity).chat.allowed;
     const requestedRole = room.host_application_user_id === identity.userId
       ? "OWNER"
-      : room.room_type === "PARTY" && interactionAllowed ? "SPEAKER" : "AUDIENCE";
+      : "AUDIENCE";
     await connection.execute(
       `INSERT INTO live_room_members (room_id, application_user_id, room_role, muted, left_at, last_seen_at)
        VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
-       ON DUPLICATE KEY UPDATE room_role = IF(room_role IN ('OWNER','ADMIN'), room_role, VALUES(room_role)), muted = VALUES(muted), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
+       ON DUPLICATE KEY UPDATE seat_index = IF(left_at IS NULL, seat_index, NULL),
+         room_role = IF(room_role IN ('OWNER','ADMIN') OR left_at IS NULL, room_role, VALUES(room_role)),
+         muted = IF(left_at IS NULL, muted, VALUES(muted)), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
       [room.id, identity.userId, requestedRole, requestedRole === "AUDIENCE"],
     );
     await connection.execute(
@@ -214,13 +224,13 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
     const room = rooms[0];
     if (!room) return { left: true };
     if (room.host_application_user_id === identity.userId) {
-      await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [room.id]);
+      await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE, seat_index = NULL WHERE room_id = ?", [room.id]);
       await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), audience_count = 0 WHERE id = ?", [room.id]);
       await connection.execute("UPDATE live_session_accounting SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), status = IF(status = 'ACTIVE', 'VOID', status) WHERE room_id = ?", [room.id]);
       return { left: true, closed: true };
     }
     await connection.execute(
-      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE WHERE room_id = ? AND application_user_id = ?",
+      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?",
       [room.id, identity.userId],
     );
     await connection.execute(
@@ -235,19 +245,35 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
 
 export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { id: string })[]>(
-      `SELECT room.id FROM live_rooms room
+    const [rows] = await connection.query<RowDataPacket[]>(
+      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, member.room_role, member.seat_index, member.muted,
+              COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
+                WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
+              COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
+                WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'DIAMOND' LIMIT 1), 0) diamond_balance
+       FROM live_rooms room
        INNER JOIN live_room_members member ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [identity.userId, roomCode],
     );
     if (!rows[0]) return { active: false };
+    const [requests] = await connection.query<RowDataPacket[]>(
+      `SELECT user.public_id, user.full_name, request.seat_index, request.status
+       FROM live_seat_requests request INNER JOIN application_users user ON user.id = request.application_user_id
+       INNER JOIN live_room_members member ON member.room_id = request.room_id AND member.application_user_id = user.id
+       WHERE request.room_id = ? AND member.left_at IS NULL AND request.requested_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         AND (request.application_user_id = ? OR (? IN ('OWNER','ADMIN') AND request.status = 'PENDING'))
+       ORDER BY request.requested_at LIMIT 50`, [rows[0].id, identity.userId, rows[0].room_role]);
+    const [messages] = await connection.query<RowDataPacket[]>(
+      `SELECT message.id, user.full_name, message.body, message.created_at FROM live_room_messages message
+       INNER JOIN application_users user ON user.id = message.sender_application_user_id
+       WHERE message.room_id = ? AND message.visible = TRUE ORDER BY message.created_at DESC LIMIT 60`, [rows[0].id]);
     await connection.execute(
       "UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [rows[0].id, identity.userId],
     );
     const [participants] = await connection.query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, member.room_role, member.muted,
+      `SELECT user.public_id, user.full_name, user.level_number, LEAST(120, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level, member.room_role, member.seat_index, member.muted,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url,
@@ -286,9 +312,15 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     );
     return {
       active: true,
+      roomRole: String(rows[0].room_role).toLowerCase(), seatIndex: rows[0].seat_index,
+      muted: Boolean(rows[0].muted), chatLocked: Boolean(rows[0].chat_locked),
+      themeIndex: Number(rows[0].theme_index), themeEnabled: Boolean(rows[0].theme_enabled),
+      wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
+      seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
+      messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), body: String(row.body), createdAt: row.created_at })),
       participants: participants.map((member) => ({
-        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url },
-        roomRole: String(member.room_role).toLowerCase(), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
+        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, level: Number(member.level_number), anchorLevel: Number(member.anchor_level) },
+        roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
@@ -310,12 +342,15 @@ export async function roomPublishingDecision(identity: MobileIdentity, roomCode:
   const policy = LiveAccessPolicyService.for(identity);
   if (room.room_type === "PARTY") {
     if (!policy.chat.allowed) throw new Error(policy.chat.reason);
-    const [members] = await db().query<(RowDataPacket & { room_role: string })[]>(
-      "SELECT room_role FROM live_room_members WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL LIMIT 1",
+    const [members] = await db().query<(RowDataPacket & { room_role: string; muted: number })[]>(
+      "SELECT room_role, muted FROM live_room_members WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL LIMIT 1",
       [room.id, identity.userId],
     );
     if (!members[0] || !["OWNER", "ADMIN", "SPEAKER"].includes(String(members[0].room_role))) {
       throw new Error("An active Party speaker role is required to publish audio.");
+    }
+    if (Boolean(members[0].muted)) {
+      throw new Error("Your microphone is muted by room staff.");
     }
     return policy.chat;
   }
@@ -835,7 +870,7 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
 }
 
 export async function mobileCompletionSnapshot(identity: MobileIdentity) {
-  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards, agencyApplications, posts, privateMessaging] = await Promise.all([
+  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards, agencyApplications, agencyManagement, posts, privateMessaging] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT day_number, reward_coins, label FROM daily_reward_rules WHERE enabled = TRUE ORDER BY day_number"),
     db().query<RowDataPacket[]>("SELECT claim_date, streak_day, reward_coins, claim_code, claimed_at FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 31", [identity.userId]),
     db().query<RowDataPacket[]>("SELECT id, diamonds, coins, minimum_diamonds, maximum_diamonds, effective_from FROM diamond_conversion_rules WHERE enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3) ORDER BY effective_from DESC LIMIT 1"),
@@ -846,6 +881,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     db().query<RowDataPacket[]>("SELECT updated_at FROM application_user_avatars WHERE application_user_id = ? LIMIT 1", [identity.userId]),
     Promise.all([leaderboardFor("daily"), leaderboardFor("weekly"), leaderboardFor("monthly")]),
     agencyApplicationsForUser(identity),
+    agencyOwnerSnapshot(identity),
     discoveryPosts(),
     privateMessagingForUser(identity),
   ]);
@@ -875,6 +911,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     profileAvatarVersion: avatarRows[0][0]?.updated_at ? new Date(avatarRows[0][0].updated_at).getTime() : null,
     leaderboards: { daily: leaderboards[0], weekly: leaderboards[1], monthly: leaderboards[2] },
     agencyApplications,
+    agencyManagement,
     posts,
     privateMessaging,
   };

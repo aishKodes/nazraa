@@ -57,7 +57,7 @@ export async function publicImageFromDataUrl(
     .resize({ width: options.maxWidth, height: options.maxHeight, fit: "inside", withoutEnlargement: true })
     .webp({ quality: 82, effort: 4 })
     .toBuffer();
-  if (optimized.length < 1_000 || optimized.length > maxBytes) {
+  if (optimized.length === 0 || optimized.length > maxBytes) {
     throw new Error(`${label} remains too large after optimization. Choose a smaller image.`);
   }
   return { mimeType: "image/webp", data: optimized, byteSize: optimized.length, originalName: "mobile-upload.webp" };
