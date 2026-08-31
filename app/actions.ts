@@ -29,9 +29,11 @@ export async function signIn(formData: FormData) {
     await createInitialMaster({ publicId: Number(initialPublicId), fullName: initialName, password: initialPassword });
     account = await accountByManagementId(initialPublicId);
   }
-  if (!account || account.status !== "ACTIVE" || !(await bcrypt.compare(parsed.data.password, account.passwordHash))) {
+  if (!account || !(await bcrypt.compare(parsed.data.password, account.passwordHash))) {
     redirect("/login?error=Invalid+management+ID+or+password.");
   }
+  if (account.status === "SUSPENDED") redirect("/login?error=This+account+is+suspended.+Contact+your+manager+to+restore+access.");
+  if (account.status !== "ACTIVE") redirect("/login?error=This+account+is+disabled.+Contact+the+platform+Master.");
   await db().execute("UPDATE platform_accounts SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [account.id]);
   const requestHeaders = await headers();
   await db().execute(

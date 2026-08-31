@@ -287,11 +287,18 @@ async function manageableAccount(scope: Scope, accountId: string, lock = false) 
   return target;
 }
 
-export async function updateAccountStatus(input: { scope: Scope; accountId: string; nextStatus: "ACTIVE" | "SUSPENDED" | "DISABLED"; reason: string }) {
+export async function updateAccountStatus(input: { scope: Scope; accountId: string; expectedStatus?: "ACTIVE" | "SUSPENDED"; nextStatus: "ACTIVE" | "SUSPENDED" | "DISABLED"; reason: string }) {
   if (input.nextStatus === "DISABLED" && input.scope.account.role !== "MASTER") throw new Error("Only Master can permanently deactivate an account.");
-  const target = await manageableAccount(input.scope, input.accountId);
+  if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a reason of 5 to 500 characters for the status change.");
   await withTransaction(async (connection) => {
-    await connection.execute("UPDATE platform_accounts SET status = ?, removed_at = IF(? = 'DISABLED', CURRENT_TIMESTAMP(3), NULL), removed_by = IF(? = 'DISABLED', ?, NULL) WHERE id = ?", [input.nextStatus, input.nextStatus, input.nextStatus, input.scope.account.id, target.id]);
+    const scoped = input.scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(input.scope, "id");
+    const [targets] = await connection.query<(RowDataPacket & { id: string; role: Role; status: string })[]>(`SELECT id, role, status FROM platform_accounts WHERE id = ? AND removed_at IS NULL AND ${scoped.clause} LIMIT 1 FOR UPDATE`, [input.accountId, ...scoped.values]);
+    const target = targets[0];
+    if (!target || target.status === "DISABLED" || target.id === input.scope.account.id || target.role === "MASTER" || !canManageRole(input.scope.account.role, target.role)) throw new Error("That account cannot be managed in your branch.");
+    if (input.expectedStatus && target.status !== input.expectedStatus) throw new Error("This account status has already changed. Reload and try again.");
+    if (target.status === input.nextStatus) throw new Error(`This account is already ${input.nextStatus.toLowerCase()}.`);
+    const [result] = await connection.execute("UPDATE platform_accounts SET status = ?, removed_at = IF(? = 'DISABLED', CURRENT_TIMESTAMP(3), NULL), removed_by = IF(? = 'DISABLED', ?, NULL) WHERE id = ? AND status = ?", [input.nextStatus, input.nextStatus, input.nextStatus, input.scope.account.id, target.id, target.status]);
+    if (!("affectedRows" in result) || result.affectedRows !== 1) throw new Error("Account status changed at the same time. Reload and try again.");
     await connection.execute("INSERT INTO account_status_history (id, account_id, from_status, to_status, reason, actor_account_id) VALUES (?, ?, ?, ?, ?, ?)", [randomUUID(), target.id, target.status, input.nextStatus, input.reason, input.scope.account.id]);
     await connection.execute(
       `INSERT INTO audit_logs

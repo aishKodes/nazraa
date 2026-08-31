@@ -84,16 +84,20 @@ export async function reviewHostApplication(input: { scope: Scope; hostId: strin
 }
 
 export async function updateHostStatus(input: { scope: Scope; hostId: string; status: "ACTIVE" | "INACTIVE" | "SUSPENDED"; reason: string }) {
+  if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a reason of 5 to 500 characters for the host status change.");
   const hostScope = scopeWhere(input.scope, "h.agency_account_id");
   await withTransaction(async (connection) => {
-    const [hosts] = await connection.query<(RowDataPacket & { id: string; status: string; verification_status: string })[]>(
-      `SELECT h.id, h.status, h.verification_status FROM host_profiles h WHERE h.id = ? AND ${hostScope.clause} LIMIT 1 FOR UPDATE`,
+    const [hosts] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; status: string })[]>(
+      `SELECT h.id, h.application_user_id, h.status FROM host_profiles h WHERE h.id = ? AND ${hostScope.clause} LIMIT 1 FOR UPDATE`,
       [input.hostId, ...hostScope.values],
     );
     const host = hosts[0];
-    if (!host || host.verification_status !== "VERIFIED") throw new Error("Only a verified host in your hierarchy can change operational status.");
+    if (!host) throw new Error("Only hosts in your hierarchy can change operational status.");
     if (host.status === input.status) throw new Error("Choose a different host status.");
     await connection.execute("UPDATE host_profiles SET status = ? WHERE id = ?", [input.status, host.id]);
+    if (input.status !== "ACTIVE") {
+      await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE host_application_user_id = ? AND status IN ('ACTIVE','LOCKED')", [host.application_user_id]);
+    }
     await connection.execute(
       `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
        VALUES (?, ?, ?, 'host.status_change', 'hosts', 'host', ?, ?, ?, ?)`,

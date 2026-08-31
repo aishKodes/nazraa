@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { FileLock2, Plus, Search, UserCog } from "lucide-react";
-import { submitAccountStatus, submitCreateAccount, submitPasswordReset } from "@/app/admin-actions";
+import { submitCreateAccount, submitPasswordReset } from "@/app/admin-actions";
 import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
@@ -69,7 +69,7 @@ export default async function AccountsPage({ searchParams }: {
         {canManage ? <td data-label="Manage">{canManageRole(scope.account.role, account.role) && account.id !== scope.account.id && account.status !== "DISABLED" ? <div className="account-actions">
           <Link className="table-link" href={`/dashboard/accounts/${account.id}`}>Edit account</Link>
           {can(scope.account.role, "accounts.roles") ? <Link className="table-link" href={`/dashboard/accounts/${account.id}#change-role`}>Change role</Link> : null}
-          <details className="row-action"><summary>Status</summary><form action={submitAccountStatus}><input type="hidden" name="accountId" value={account.id} /><select name="nextStatus" required defaultValue=""><option value="" disabled>Status</option><option value="ACTIVE">Active</option><option value="SUSPENDED">Suspended</option></select><input name="reason" required minLength={5} placeholder="Reason" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm</label><button type="submit" className="secondary-button">Save</button></form></details>
+          <Link className="table-link" href={`/dashboard/accounts/${account.id}#account-status`}>{account.status === "ACTIVE" ? "Suspend" : "Activate"}</Link>
           <details className="row-action"><summary>Password</summary><form action={submitPasswordReset}><input type="hidden" name="accountId" value={account.id} /><input name="password" type="password" minLength={8} required placeholder="Temporary password" /><input name="reason" required minLength={5} placeholder="Reason" /><button type="submit" className="secondary-button">Reset</button></form></details>
         </div> : "—"}</td> : null}
       </tr>)}</tbody></table></div> : <EmptyState title="No team accounts" detail="Try another search or create the first account allowed by your role." />}

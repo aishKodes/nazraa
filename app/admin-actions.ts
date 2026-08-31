@@ -122,15 +122,15 @@ export async function submitPermanentAccountRemoval(formData: FormData) {
   redirect(destination("/dashboard/accounts", "success", "Account permanently disabled and the action was audited."));
 }
 
-export async function submitAccountStatus(formData: FormData) {
+export async function submitAccountStatus(_previous: { error: string | null }, formData: FormData): Promise<{ error: string | null }> {
   const scope = await requirePermission("accounts.manage");
-  const parsed = z.object({ accountId: z.string().uuid(), nextStatus: z.enum(["ACTIVE", "SUSPENDED"]), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/accounts", "error", "Choose a status and provide a clear reason."));
-  try { await updateAccountStatus({ scope, accountId: parsed.data.accountId, nextStatus: parsed.data.nextStatus, reason: parsed.data.reason }); } catch (error) {
-    redirect(destination("/dashboard/accounts", "error", error instanceof Error ? error.message : "Account status could not be updated."));
+  const parsed = z.object({ accountId: z.string().uuid(), expectedStatus: z.enum(["ACTIVE", "SUSPENDED"]), nextStatus: z.enum(["ACTIVE", "SUSPENDED"]), reason: z.string().trim().min(5, "Enter a reason of at least 5 characters.").max(500), confirmed: z.literal("yes", { errorMap: () => ({ message: "Confirm the status change before saving." }) }) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Check the status change details." };
+  try { await updateAccountStatus({ scope, accountId: parsed.data.accountId, expectedStatus: parsed.data.expectedStatus, nextStatus: parsed.data.nextStatus, reason: parsed.data.reason }); } catch (error) {
+    return { error: error instanceof Error ? error.message : "Account status could not be updated." };
   }
-  revalidatePath("/dashboard/accounts");
-  redirect(destination("/dashboard/accounts", "success", "Account status updated."));
+  revalidatePath("/dashboard", "layout");
+  redirect(destination(`/dashboard/accounts/${parsed.data.accountId}`, "success", parsed.data.nextStatus === "SUSPENDED" ? "Account suspended. Its management ID can no longer sign in." : "Account reactivated. Login access has been restored."));
 }
 
 export async function submitPasswordReset(formData: FormData) {
@@ -189,11 +189,11 @@ export async function submitHostReview(formData: FormData) {
 
 export async function submitHostStatus(formData: FormData) {
   const scope = await requirePermission("hosts.review");
-  const parsed = z.object({ hostId: z.string().uuid(), status: z.enum(["ACTIVE", "INACTIVE", "SUSPENDED"]), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/hosts", "error", "Choose a host status and provide a clear reason."));
+  const parsed = z.object({ hostId: z.string().uuid(), status: z.enum(["ACTIVE", "INACTIVE", "SUSPENDED"]), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/hosts", "error", "Choose a host status, enter a clear reason and confirm the change."));
   try { await updateHostStatus({ scope, ...parsed.data }); } catch (error) { redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "error", error instanceof Error ? error.message : "Host status could not be updated.")); }
-  revalidatePath("/dashboard/hosts"); revalidatePath(`/dashboard/hosts/${parsed.data.hostId}`);
-  redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", "Host status updated."));
+  revalidatePath("/dashboard", "layout");
+  redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", parsed.data.status === "ACTIVE" ? "Hosting restored. Other verification and moderation requirements still apply." : "Hosting blocked and current rooms ended. New Video, Party and Face Live rooms cannot be created."));
 }
 
 export async function submitCreateGift(formData: FormData) {

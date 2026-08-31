@@ -521,7 +521,10 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   }
   const passwordHash = input.privacy === "locked" ? await bcrypt.hash(input.password!, 10) : null;
   await withTransaction(async (connection) => {
-    const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null; account_status: string })[]>("SELECT agency_account_id, account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    if (!userRows[0] || userRows[0].account_status !== "ACTIVE") throw new Error("This account cannot create a room.");
+    const [hostRows] = await connection.query<(RowDataPacket & { status: string })[]>("SELECT status FROM host_profiles WHERE application_user_id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    if (hostRows[0] && ["SUSPENDED", "INACTIVE"].includes(hostRows[0].status)) throw new Error("Hosting is suspended or inactive. Contact your Agency or support to restore access.");
     const [restrictionRows] = await connection.query<RowDataPacket[]>(
       `SELECT id FROM moderation_restrictions
        WHERE application_user_id = ? AND status = 'ACTIVE'

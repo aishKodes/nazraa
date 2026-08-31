@@ -39,6 +39,10 @@ h1, h2, p { margin-top: 0; }
 .role-support-fields legend { font-weight: 750; padding: 0 5px; }
 .role-support-fields p, .role-change-form .notice { margin: 0; }
 .role-change-form button:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+.account-status-form { max-width: 640px; }
+.account-status-form .notice { margin: 0; }
+.account-status-form button:disabled { opacity: .6; cursor: wait; transform: none; }
+#account-status, #change-role { scroll-margin-top: 90px; }
 label { display: grid; gap: 7px; color: #4e475d; font-weight: 650; font-size: 12px; }
 input, select, textarea { min-width: 0; width: 100%; border: 1px solid #dcd6e4; border-radius: 8px; outline: none; color: var(--ink); background: #fff; padding: 10px 11px; transition: border .15s, box-shadow .15s; }
 input:focus, select:focus, textarea:focus { border-color: var(--violet); box-shadow: 0 0 0 3px rgba(97, 65, 200, .11); }

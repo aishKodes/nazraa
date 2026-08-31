@@ -81,6 +81,54 @@ async function main() {
     await assert.rejects(admin.createPlatformAccount({ scope: await refresh(cm), role: "ADMIN", fullName: "Escape branch", countryCode: "IN", requestedParentId: saOther.account.id, password, documents: [] }));
     passed++;
 
+    for (const target of [cm, sa, branchAdmin, bd, agency, seller, cs]) {
+      await admin.updateAccountStatus({ scope: master, accountId: target.account.id, expectedStatus: "ACTIVE", nextStatus: "SUSPENDED", reason: "QA suspend management account" });
+      assert.equal((await accounts.accountByManagementId(target.account.publicId))?.status, "SUSPENDED");
+      await assert.rejects(admin.updateAccountStatus({ scope: master, accountId: target.account.id, expectedStatus: "ACTIVE", nextStatus: "SUSPENDED", reason: "QA stale request must fail" }), /already changed/);
+      await admin.updateAccountStatus({ scope: master, accountId: target.account.id, expectedStatus: "SUSPENDED", nextStatus: "ACTIVE", reason: "QA restore management account" });
+      assert.equal((await accounts.accountByManagementId(target.account.publicId))?.status, "ACTIVE");
+      const [history] = await root.query<RowDataPacket[]>("SELECT from_status, to_status FROM account_status_history WHERE account_id = ? ORDER BY created_at", [target.account.id]);
+      assert.deepEqual(history.map((entry) => [entry.from_status, entry.to_status]), [["ACTIVE", "SUSPENDED"], ["SUSPENDED", "ACTIVE"]]);
+      const [audit] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM audit_logs WHERE target_id = ? AND action = 'account.status_change'", [target.account.id]);
+      assert.equal(audit[0].total, 2);
+    }
+    await assert.rejects(admin.updateAccountStatus({ scope: await refresh(cm), accountId: adminOther.account.id, nextStatus: "SUSPENDED", reason: "QA cannot suspend other branch" }));
+    await assert.rejects(admin.updateAccountStatus({ scope: master, accountId: master.account.id, nextStatus: "SUSPENDED", reason: "QA cannot suspend Master" }));
+    await assert.rejects(admin.updateAccountStatus({ scope: await refresh(cm), accountId: cm.account.id, nextStatus: "SUSPENDED", reason: "QA cannot suspend self" }));
+    await assert.rejects(admin.updateAccountStatus({ scope: master, accountId: seller.account.id, nextStatus: "SUSPENDED", reason: "no" }));
+    await admin.updateAccountStatus({ scope: await refresh(cm), accountId: branchAdmin.account.id, nextStatus: "SUSPENDED", reason: "QA CM manages own branch" });
+    await admin.updateAccountStatus({ scope: await refresh(cm), accountId: branchAdmin.account.id, nextStatus: "ACTIVE", reason: "QA CM restores own branch" });
+    passed++;
+
+    const hostsRepository = await import("@/lib/db/repositories/hosts");
+    const product = await import("@/lib/db/repositories/mobile-product");
+    const liveCompletion = await import("@/lib/db/repositories/mobile-completion");
+    for (const kind of ["LIVE", "PARTY", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, 0, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, master.account.id]);
+    const [hostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
+    const hostId = String(hostRows[0].id);
+    const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true };
+    const roomInput = (kind: string) => ({ roomCode: randomUUID(), kind, title: "QA suspension room", category: "chat", language: "en", privacy: "public" as const, seatCount: 8, themeIndex: 0, themeEnabled: true, countryCode: "IN" });
+    const interruptedRoom = await product.createRoom(identity, roomInput("party"));
+    // Unverified hosts must remain moderatable; verification is independent.
+    await root.execute("UPDATE host_profiles SET verification_status = 'UNVERIFIED' WHERE id = ?", [hostId]);
+    await assert.rejects(hostsRepository.updateHostStatus({ scope: agencyOther, hostId, status: "SUSPENDED", reason: "QA reject foreign host suspension" }));
+    await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "SUSPENDED", reason: "QA stop hosting access" });
+    const [stopped] = await root.query<RowDataPacket[]>("SELECT status, ended_at FROM live_rooms WHERE id = ?", [interruptedRoom.id]);
+    assert.equal(stopped[0].status, "ENDED");
+    assert.ok(stopped[0].ended_at);
+    for (const kind of ["live", "party", "face"]) await assert.rejects(product.createRoom(identity, roomInput(kind)), /Hosting is suspended/);
+    await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "ACTIVE", reason: "QA restore host access" });
+    for (const kind of ["live", "party", "face"]) assert.equal((await product.createRoom(identity, roomInput(kind))).status, "ACTIVE");
+    await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "INACTIVE", reason: "QA pause host access" });
+    await assert.rejects(product.createRoom(identity, roomInput("party")), /Hosting is suspended/);
+    await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "ACTIVE", reason: "QA restore paused host" });
+    // Finalization after suspension cannot continue accruing time/rewards.
+    await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = ?", [interruptedRoom.id]);
+    await root.execute("UPDATE live_rooms SET ended_at = DATE_ADD((SELECT started_at FROM live_session_accounting WHERE room_id = ?), INTERVAL 60 SECOND) WHERE id = ?", [interruptedRoom.id, interruptedRoom.id]);
+    assert.equal((await liveCompletion.finalizeLiveSession(identity, interruptedRoom.roomCode)).validSeconds, 60);
+    await root.execute("UPDATE host_profiles SET verification_status = 'VERIFIED' WHERE id = ?", [hostId]);
+    passed++;
+
     const promotion = await create("ADMIN", sa, "Promotion target");
     const childAgency = await create("AGENCY", promotion, "Promotion child");
     await admin.changePlatformAccountRole({ scope: await refresh(cm), accountId: promotion.account.id, role: "SUPER_ADMIN", parentAccountId: cm.account.id, childParentId: branchAdmin.account.id, reason: "QA promote Admin to Super Admin" });

@@ -45,6 +45,23 @@ async function main() {
         assert.equal(response.status, expected, `${role} lazy hierarchy branch access`);
         checked++;
       }
+      // A token issued before suspension must stop working on the next request.
+      // These writes are restricted above to the isolated, generated QA database.
+      if (role !== "MASTER") {
+        try {
+          await connection.execute("UPDATE platform_accounts SET status = 'SUSPENDED' WHERE id = ?", [rows[0].id]);
+          const suspended = await fetch(`${base}/dashboard`, { headers: { cookie: `nazraa_control_session=${token}` }, redirect: "manual" });
+          const html = await suspended.text();
+          assert.ok(suspended.headers.get("location")?.includes("/login") || html.includes('/login'), `${role}: existing session must be blocked during suspension`);
+          checked++;
+        } finally {
+          await connection.execute("UPDATE platform_accounts SET status = 'ACTIVE' WHERE id = ?", [rows[0].id]);
+        }
+        const restored = await fetch(`${base}/dashboard`, { headers: { cookie: `nazraa_control_session=${token}` }, redirect: "manual" });
+        assert.equal(restored.status, 200, `${role}: restored account must regain access`);
+        assert.ok(!(await restored.text()).includes('Application error: a server-side exception'));
+        checked++;
+      }
       console.log(`${role}: ${routes.length} allowed/denied route checks passed; median ${timings.sort((a,b) => a-b)[Math.floor(timings.length / 2)]}ms (local development)`);
     }
     console.log(`PASS: ${checked} role-specific HTTP route checks.`);

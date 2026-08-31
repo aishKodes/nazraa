@@ -704,11 +704,12 @@ export async function kickRoomMember(identity: MobileIdentity, input: { roomCode
 export async function finalizeLiveSession(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
-      accounting_id: string; room_id: string; room_type: "LIVE" | "PARTY" | "FACE"; started_at: Date;
+      accounting_id: string; room_id: string; room_type: "LIVE" | "PARTY" | "FACE"; started_at: Date; ended_at: Date;
       status: string; host_application_user_id: string; reward_rule_id: string | null;
     })[]>(
       `SELECT accounting.id accounting_id, room.id room_id, accounting.room_type, accounting.started_at,
-              accounting.status, accounting.host_application_user_id, accounting.reward_rule_id
+              accounting.status, accounting.host_application_user_id, accounting.reward_rule_id,
+              COALESCE(room.ended_at, accounting.ended_at, CURRENT_TIMESTAMP(3)) ended_at
        FROM live_session_accounting accounting INNER JOIN live_rooms room ON room.id = accounting.room_id
        WHERE room.room_code = ? LIMIT 1 FOR UPDATE`,
       [roomCode],
@@ -716,7 +717,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
     const session = rows[0];
     if (!session || session.host_application_user_id !== identity.userId) throw new Error("Only the room owner can finalize this Live session.");
     if (session.status !== "ACTIVE") throw new Error("This Live session was already finalized.");
-    const [durationRows] = await connection.query<(RowDataPacket & { seconds: number })[]>("SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, CURRENT_TIMESTAMP(3))) seconds", [session.started_at]);
+    const [durationRows] = await connection.query<(RowDataPacket & { seconds: number })[]>("SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, LEAST(?, CURRENT_TIMESTAMP(3)))) seconds", [session.started_at, session.ended_at]);
     const validSeconds = Number(durationRows[0].seconds);
     const [ruleRows] = await connection.query<(RowDataPacket & { id: string; coins_per_hour: number; minimum_eligible_seconds: number })[]>(
       session.reward_rule_id
@@ -743,12 +744,12 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       );
     }
     await connection.execute(
-      `UPDATE live_session_accounting SET ended_at = CURRENT_TIMESTAMP(3), valid_duration_seconds = ?, eligible_duration_seconds = ?,
+      `UPDATE live_session_accounting SET ended_at = ?, valid_duration_seconds = ?, eligible_duration_seconds = ?,
        reward_rule_id = ?, reward_coins = ?, reward_ledger_id = ?, status = 'FINALIZED', finalized_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
-      [validSeconds, eligibleSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
+      [session.ended_at, validSeconds, eligibleSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
     );
     await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [session.room_id]);
-    await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3), audience_count = 0 WHERE id = ?", [session.room_id]);
+    await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, ?), audience_count = 0 WHERE id = ?", [session.ended_at, session.room_id]);
     return { transactionId: rewardCode, roomType: session.room_type.toLowerCase(), validSeconds, eligibleSeconds, rewardCoins };
   });
 }
