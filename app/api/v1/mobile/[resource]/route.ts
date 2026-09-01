@@ -101,15 +101,16 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     }
     if (resource === "game-rounds") {
       const parameters = new URL(request.url).searchParams;
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-leaderboard") {
       const parameters = new URL(request.url).searchParams;
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
-      return NextResponse.json(await gameRoundLeaderboard(game, limit), { headers: { "Cache-Control": "private, no-store" } });
+      const period = z.enum(["round", "daily", "weekly", "monthly"]).default("daily").parse(parameters.get("period") ?? undefined);
+      return NextResponse.json(await gameRoundLeaderboard(game, limit, period), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "rocket") {
       const roomCode = z.string().trim().min(3).max(80).parse(new URL(request.url).searchParams.get("roomCode"));
@@ -355,7 +356,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({
         clientRoundId: z.string().uuid(),
-        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]),
+        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]),
         bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
       }).parse(body);
       return NextResponse.json(await settleGameRound(identity, parsed), { status: 201 });

@@ -191,7 +191,10 @@ async function rocketPolicy(connection: PoolConnection): Promise<RocketPolicy> {
 
 async function ensureRocketCycle(connection: PoolConnection, roomId: string) {
   await connection.execute(
-    "UPDATE rocket_cycles SET status = 'EXPIRED' WHERE room_id = ? AND status = 'ACTIVE' AND ends_at <= CURRENT_TIMESTAMP(3)",
+    // Rocket cycle boundaries are persisted as UTC DATETIME values. Hostinger
+    // may expose CURRENT_TIMESTAMP in its local server zone, so compare with
+    // UTC_TIMESTAMP to avoid expiring a valid India-day cycle several hours early.
+    "UPDATE rocket_cycles SET status = 'EXPIRED' WHERE room_id = ? AND status = 'ACTIVE' AND ends_at <= UTC_TIMESTAMP(3)",
     [roomId],
   );
   const [active] = await connection.query<(RowDataPacket & { id: string; rocket_level: number; target_coins: number; contributed_coins: number; ends_at: Date })[]>(

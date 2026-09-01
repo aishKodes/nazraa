@@ -733,7 +733,7 @@ export async function mutateGameWallet(identity: MobileIdentity, input: {
 }
 
 const teenPattiGame = "teen_patti_pro";
-const goldenSingleGames = new Set(["food_wheel", "cat_wheel", "deep_sea", "card_arena"]);
+const goldenSingleGames = new Set(["food_wheel", "cat_wheel"]);
 const goldenZoneGames = new Set(["greedy_king", "greedy_lion"]);
 const supportedRoundGames = new Set([
   teenPattiGame,
@@ -741,7 +741,6 @@ const supportedRoundGames = new Set([
   "bounty_football",
   "jungle_hunt",
   ...goldenSingleGames,
-  "three_card",
   ...goldenZoneGames,
 ]);
 const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
@@ -762,6 +761,7 @@ type ServerGameOutcome = {
   outcome: Record<string, unknown>;
   wager: number;
   payout: number;
+  commissionablePayout?: number;
 };
 
 type GameEconomyRules = {
@@ -873,7 +873,10 @@ function strongestTeenPattiLane(hands: ReturnType<typeof buildTeenPattiHands>) {
 }
 
 function teenPattiRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
-  const checked = checkedBets(input, ["0", "1", "2"], 500);
+  const checked = checkedBets(input, ["0", "1", "2", "crown"], 500);
+  if (["0", "1", "2"].filter((key) => checked.bets[key] > 0).length > 2) {
+    throw new Error("You can bet on up to 2 hands.");
+  }
   if (checked.total === 0) {
     const hands = buildTeenPattiHands();
     const winnerLane = strongestTeenPattiLane(hands);
@@ -885,7 +888,10 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
         winningCategory: winner.category,
         winningLabel: winner.label,
         crownMultiplier: winner.multiplier,
-        payoutMultiplier: winner.multiplier || 3,
+        normalMultiplier: 3,
+        payoutMultiplier: 3,
+        normalPayout: 0,
+        crownPayout: 0,
         spectator: true,
         targetWin: false,
       },
@@ -899,14 +905,16 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
   for (let attempt = 0; attempt < 512; attempt++) {
     const hands = buildTeenPattiHands();
     const winnerLane = strongestTeenPattiLane(hands);
-    const payoutMultiplier = hands[winnerLane].multiplier || 3;
-    const payout = checked.bets[String(winnerLane)] * payoutMultiplier;
+    const crownMultiplier = hands[winnerLane].multiplier;
+    const payout = checked.bets[String(winnerLane)] * 3 + checked.bets.crown * crownMultiplier;
     selectedHands = hands;
     selectedPayout = payout;
     selectedWinner = winnerLane;
     if (targetWin ? payout > checked.total : payout <= checked.total) break;
   }
   const winner = selectedHands![selectedWinner];
+  const normalPayout = checked.bets[String(selectedWinner)] * 3;
+  const crownPayout = checked.bets.crown * winner.multiplier;
   return {
     outcome: {
       hands: selectedHands,
@@ -914,11 +922,18 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
       winningCategory: winner.category,
       winningLabel: winner.label,
       crownMultiplier: winner.multiplier,
-      payoutMultiplier: winner.multiplier || 3,
+      normalMultiplier: 3,
+      payoutMultiplier: 3,
+      normalPayout,
+      crownPayout,
+      crownWon: crownPayout > 0,
       targetWin,
     },
     wager: checked.total,
     payout: selectedPayout,
+    // The supplied rules charge commission only on the normal-hand return;
+    // Crown payout is deliberately outside this base.
+    commissionablePayout: normalPayout,
   };
 }
 
@@ -1216,13 +1231,19 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
     const targetWin = targetPlayerWin(rules.targetWinRate);
     const result = createServerGameOutcome(input.game, bets, targetWin);
     const grossPayout = result.payout;
-    const winningsDeduction = grossPayout > result.wager
-      ? Math.floor(grossPayout * rules.winningsDeductionRate)
-      : 0;
+    const commissionablePayout = result.commissionablePayout;
+    const winningsDeduction = commissionablePayout == null
+      ? grossPayout > result.wager
+        ? Math.floor(grossPayout * rules.winningsDeductionRate)
+        : 0
+      : commissionablePayout > 0
+        ? Math.max(1, Math.floor(commissionablePayout * rules.winningsDeductionRate))
+        : 0;
     result.payout = grossPayout - winningsDeduction;
     result.outcome = {
       ...result.outcome,
       grossPayout,
+      commissionablePayout: commissionablePayout ?? grossPayout,
       winningsDeduction,
       winningsDeductionRate: rules.winningsDeductionRate,
       netPayout: result.payout,
@@ -1284,27 +1305,43 @@ export async function gameRoundHistory(identity: MobileIdentity, game: string, l
   return { rounds: rows.map(gameRoundResponse) };
 }
 
-export async function gameRoundLeaderboard(game: string, limit = 10) {
+export async function gameRoundLeaderboard(
+  game: string,
+  limit = 10,
+  period: "round" | "daily" | "weekly" | "monthly" = "daily",
+) {
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
+  const periodFilter = period === "round"
+    ? `result.created_at >= DATE_SUB(
+         (SELECT MAX(latest.created_at) FROM game_round_results latest
+          WHERE latest.game_name = ? AND latest.wager_total > 0),
+         INTERVAL 25 SECOND)`
+    : period === "weekly"
+      ? "result.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
+      : period === "monthly"
+        ? "result.created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')"
+        : "result.created_at >= CURRENT_DATE AND result.created_at < DATE_ADD(CURRENT_DATE, INTERVAL 1 DAY)";
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.avatar_url,
             avatar.updated_at avatar_updated_at, user.country_code,
             COUNT(*) rounds, SUM(result.wager_total) total_wager,
             SUM(result.payout_total) total_payout,
-            SUM(result.payout_total - result.wager_total) net_winnings
+            SUM(CAST(result.payout_total AS SIGNED) - CAST(result.wager_total AS SIGNED)) net_winnings
      FROM game_round_results result
      INNER JOIN application_users user ON user.id = result.application_user_id
      LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
      WHERE result.game_name = ? AND result.wager_total > 0
-       AND DATE(result.created_at) = CURRENT_DATE
+       AND ${periodFilter}
      GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
               avatar.updated_at, user.country_code
      ORDER BY net_winnings DESC, total_payout DESC, MIN(result.created_at), user.public_id
      LIMIT ?`,
-    [game, Math.max(1, Math.min(20, limit))],
+    period === "round"
+      ? [game, game, Math.max(1, Math.min(20, limit))]
+      : [game, Math.max(1, Math.min(20, limit))],
   );
   return {
-    period: "daily",
+    period,
     entries: rows.map((row, index) => ({
       rank: index + 1,
       publicId: String(row.public_id),

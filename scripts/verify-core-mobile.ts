@@ -212,11 +212,18 @@ async function main() {
     const [rocketAfterDisabledGift] = await root.query<RowDataPacket[]>("SELECT COALESCE(SUM(coin_value), 0) total FROM rocket_contributions");
     assert.equal(Number(rocketAfterDisabledGift[0].total), Number(rocketBeforeDisabledGift[0].total));
     await completionAdmin.saveRocketSettings({ ...rocketInput, enabled: true });
-    await root.execute(
-      `UPDATE rocket_cycles SET target_coins = contributed_coins + 10
+    const [rocketTargetUpdate] = await root.execute(
+      `UPDATE rocket_cycles SET target_coins = contributed_coins + ?
        WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?) AND status = 'ACTIVE'`,
+      [gift.cost, roomCode],
+    );
+    assert.equal(Number((rocketTargetUpdate as { affectedRows?: number }).affectedRows ?? 0), 1, "Rocket QA must have one active cycle");
+    const [armedRocketRows] = await root.query<RowDataPacket[]>(
+      `SELECT contributed_coins, target_coins FROM rocket_cycles
+       WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?) AND status = 'ACTIVE' LIMIT 1`,
       [roomCode],
     );
+    assert.equal(Number(armedRocketRows[0].target_coins), Number(armedRocketRows[0].contributed_coins) + gift.cost);
     const beforeLaunch = (await product.mobileBootstrap(owner)).wallet.coins;
     const rocketLaunch = await product.sendGift(owner, {
       roomCode,
@@ -225,7 +232,7 @@ async function main() {
       quantity: 1,
     });
     assert.ok(rocketLaunch.rocket, "Enabled Rocket must return authoritative progress");
-    assert.equal(rocketLaunch.rocket.launched, true);
+    assert.equal(rocketLaunch.rocket.launched, true, JSON.stringify(rocketLaunch.rocket));
     assert.equal(rocketLaunch.remainingCoins, beforeLaunch - gift.cost + 500, "Rocket Top 1 reward must be in the immediate wallet response");
     const rocketState = await rewards.rocketSnapshot(owner, roomCode);
     assert.equal(rocketState.history.some((cycle) => cycle.status === "completed"), true);
@@ -369,6 +376,25 @@ async function main() {
       Number(teenRound.bets[String(teenRound.outcome.winnerLane)] ?? 0) * Number(teenRound.outcome.payoutMultiplier),
       "Teen Patti Pro payout must come only from the strongest winning lane",
     );
+    assert.equal(Number(teenRound.outcome.payoutMultiplier), 3, "every normal Teen Patti hand must pay fixed x3");
+    const crownRound = await product.settleGameRound(owner, {
+      clientRoundId: randomUUID(),
+      game: "teen_patti_pro",
+      bets: { "0": 10000, "1": 10000, "2": 0, crown: 10000 },
+    });
+    const crownMultiplier = Number(crownRound.outcome.crownMultiplier);
+    const normalGross = Number(crownRound.bets[String(crownRound.outcome.winnerLane)] ?? 0) * 3;
+    assert.equal(
+      Number(crownRound.outcome.grossPayout),
+      normalGross + Number(crownRound.bets.crown) * crownMultiplier,
+      "Crown must settle independently from the winning normal hand",
+    );
+    assert.equal(Number(crownRound.outcome.commissionablePayout), normalGross, "Crown payout must not enter normal-hand commission base");
+    await assert.rejects(product.settleGameRound(owner, {
+      clientRoundId: randomUUID(),
+      game: "teen_patti_pro",
+      bets: { "0": 500, "1": 500, "2": 500, crown: 500 },
+    }), /up to 2 hands/);
     const teenLeaderboard = await product.gameRoundLeaderboard("teen_patti_pro", 10);
     assert.ok(teenLeaderboard.entries.some((entry) => entry.publicId === owner.publicId));
     assert.ok(teenLeaderboard.entries.every((entry) => Number.isInteger(entry.netWinnings)));
@@ -393,26 +419,15 @@ async function main() {
     });
     assert.equal(Array.isArray(jungleRound.outcome.grid) && jungleRound.outcome.grid.length, 3);
     assert.equal(Array.isArray(jungleRound.outcome.winningLines), true);
-    for (const game of ["food_wheel", "cat_wheel", "deep_sea", "card_arena"] as const) {
+    for (const game of ["food_wheel", "cat_wheel"] as const) {
       const round = await product.settleGameRound(owner, {
         clientRoundId: randomUUID(),
         game,
-        bets: { play: game === "deep_sea" ? 200 : 100 },
+        bets: { play: 100 },
       });
       assert.equal(typeof round.outcome.label, "string");
       assert.equal(typeof round.outcome.multiplier, "number");
-      if (game === "card_arena") {
-        assert.equal(Number.isInteger(round.outcome.player), true);
-        assert.equal(Number.isInteger(round.outcome.dealer), true);
-      }
     }
-    const threeCardRound = await product.settleGameRound(owner, {
-      clientRoundId: randomUUID(),
-      game: "three_card",
-      bets: { "0": 100, "1": 100, "2": 0 },
-    });
-    assert.equal(Array.isArray(threeCardRound.outcome.hands) && threeCardRound.outcome.hands.length, 3);
-    assert.ok([1, 2, 3].includes(Number(threeCardRound.outcome.winningSeat)));
     for (const game of ["greedy_king", "greedy_lion"] as const) {
       const zoneCount = game === "greedy_king" ? 10 : 8;
       const round = await product.settleGameRound(owner, {
@@ -428,22 +443,20 @@ async function main() {
       }
     }
     assert.equal((await product.mobileBootstrap(owner)).wallet.diamonds, diamondsBeforeGame, "game results must never credit withdrawable host earnings");
-    console.log("PASS games: all eleven server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
+    console.log("PASS games: all eight published server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
 
     // Repeated real database rounds, not mocked Flutter results. Validate each
     // server payout against the returned result, the wallet and paired ledgers.
     await root.execute("UPDATE wallet_balances SET available_balance = 100000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
-    const importedGames = ["food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"] as const;
+    const importedGames = ["food_wheel", "cat_wheel", "greedy_king", "greedy_lion"] as const;
     for (const game of importedGames) {
       for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
         const before = (await product.mobileBootstrap(stranger)).wallet.coins;
-        const bets: Record<string, number> = game === "three_card"
-          ? { "0": 100, "1": 100 }
-          : game.startsWith("greedy_")
+        const bets: Record<string, number> = game.startsWith("greedy_")
           ? Object.fromEntries(Array.from({length: game === "greedy_king" ? 10 : 8}, (_, index) => [String(index), index < 2 ? 500 : 0]))
-          : { play: game === "deep_sea" ? 200 : 100 };
+          : { play: 100 };
         const round = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game, bets});
-        const winner = game === "three_card" ? Number(round.outcome.winningSeat) - 1 : Number(round.outcome.winner);
+        const winner = Number(round.outcome.winner);
         const gross = "play" in bets
           ? Math.floor(Number(bets.play) * Number(round.outcome.multiplier))
           : game.startsWith("greedy_")
