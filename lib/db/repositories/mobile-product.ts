@@ -838,12 +838,38 @@ function teenPattiValue(cards: number[]) {
     (ranks[0] === 14 && ranks[1] === 3 && ranks[2] === 2) ||
     (ranks[0] - 1 === ranks[1] && ranks[1] - 1 === ranks[2])
   );
-  if (counts.size === 1) return { category: "trail", label: "Three of a Kind", multiplier: 25 };
-  if (flush && sequence) return { category: "pureSequence", label: "Straight Flush", multiplier: 10 };
-  if (sequence) return { category: "sequence", label: "Straight", multiplier: 2 };
-  if (flush) return { category: "color", label: "Flush", multiplier: 4 };
-  if ([...counts.values()].includes(2)) return { category: "pair", label: "Pair", multiplier: 0 };
-  return { category: "highCard", label: "High Card", multiplier: 0 };
+  const sequenceRank = ranks[0] === 14 && ranks[1] === 13 && ranks[2] === 12
+    ? 15
+    : ranks[0] === 14 && ranks[1] === 3 && ranks[2] === 2
+      ? 14
+      : ranks[0];
+  if (counts.size === 1) return { category: "trail", label: "Three of a Kind", multiplier: 25, categoryRank: 5, tieBreak: [ranks[0]] };
+  if (flush && sequence) return { category: "pureSequence", label: "Straight Flush", multiplier: 10, categoryRank: 4, tieBreak: [sequenceRank] };
+  if (sequence) return { category: "sequence", label: "Straight", multiplier: 2, categoryRank: 3, tieBreak: [sequenceRank] };
+  if (flush) return { category: "color", label: "Flush", multiplier: 4, categoryRank: 2, tieBreak: ranks };
+  const pairRank = [...counts.entries()].find(([, count]) => count === 2)?.[0];
+  if (pairRank != null) {
+    const kicker = [...counts.entries()].find(([, count]) => count === 1)?.[0] ?? 0;
+    return { category: "pair", label: "Pair", multiplier: 0, categoryRank: 1, tieBreak: [pairRank, kicker] };
+  }
+  return { category: "highCard", label: "High Card", multiplier: 0, categoryRank: 0, tieBreak: ranks };
+}
+
+function compareTeenPattiHands(left: ReturnType<typeof teenPattiValue>, right: ReturnType<typeof teenPattiValue>) {
+  if (left.categoryRank !== right.categoryRank) return left.categoryRank - right.categoryRank;
+  for (let index = 0; index < Math.max(left.tieBreak.length, right.tieBreak.length); index++) {
+    const compared = (left.tieBreak[index] ?? 0) - (right.tieBreak[index] ?? 0);
+    if (compared !== 0) return compared;
+  }
+  return 0;
+}
+
+function strongestTeenPattiLane(hands: ReturnType<typeof buildTeenPattiHands>) {
+  let winner = 0;
+  for (let lane = 1; lane < hands.length; lane++) {
+    if (compareTeenPattiHands(hands[lane], hands[winner]) > 0) winner = lane;
+  }
+  return winner;
 }
 
 function teenPattiRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
@@ -851,14 +877,31 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
   if (checked.total === 0) throw new Error("Choose at least one Teen Patti hand.");
   let selectedHands: ReturnType<typeof buildTeenPattiHands> | null = null;
   let selectedPayout = 0;
+  let selectedWinner = 0;
   for (let attempt = 0; attempt < 512; attempt++) {
     const hands = buildTeenPattiHands();
-    const payout = hands.reduce((sum, hand, lane) => sum + checked.bets[String(lane)] * hand.multiplier, 0);
+    const winnerLane = strongestTeenPattiLane(hands);
+    const payoutMultiplier = hands[winnerLane].multiplier || 3;
+    const payout = checked.bets[String(winnerLane)] * payoutMultiplier;
     selectedHands = hands;
     selectedPayout = payout;
+    selectedWinner = winnerLane;
     if (targetWin ? payout > checked.total : payout <= checked.total) break;
   }
-  return { outcome: { hands: selectedHands, targetWin }, wager: checked.total, payout: selectedPayout };
+  const winner = selectedHands![selectedWinner];
+  return {
+    outcome: {
+      hands: selectedHands,
+      winnerLane: selectedWinner,
+      winningCategory: winner.category,
+      winningLabel: winner.label,
+      crownMultiplier: winner.multiplier,
+      payoutMultiplier: winner.multiplier || 3,
+      targetWin,
+    },
+    wager: checked.total,
+    payout: selectedPayout,
+  };
 }
 
 function buildTeenPattiHands() {
@@ -1221,6 +1264,40 @@ export async function gameRoundHistory(identity: MobileIdentity, game: string, l
     [identity.userId, game, Math.max(1, Math.min(20, limit))],
   );
   return { rounds: rows.map(gameRoundResponse) };
+}
+
+export async function gameRoundLeaderboard(game: string, limit = 10) {
+  if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
+  const [rows] = await db().query<RowDataPacket[]>(
+    `SELECT user.public_id, user.full_name, user.avatar_url,
+            avatar.updated_at avatar_updated_at, user.country_code,
+            COUNT(*) rounds, SUM(result.wager_total) total_wager,
+            SUM(result.payout_total) total_payout,
+            SUM(result.payout_total - result.wager_total) net_winnings
+     FROM game_round_results result
+     INNER JOIN application_users user ON user.id = result.application_user_id
+     LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+     WHERE result.game_name = ? AND DATE(result.created_at) = CURRENT_DATE
+     GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
+              avatar.updated_at, user.country_code
+     ORDER BY net_winnings DESC, total_payout DESC, MIN(result.created_at), user.public_id
+     LIMIT ?`,
+    [game, Math.max(1, Math.min(20, limit))],
+  );
+  return {
+    period: "daily",
+    entries: rows.map((row, index) => ({
+      rank: index + 1,
+      publicId: String(row.public_id),
+      name: String(row.full_name),
+      avatarUrl: mobileAvatarUrl(row),
+      countryCode: row.country_code ? String(row.country_code) : null,
+      rounds: Number(row.rounds),
+      totalWager: Number(row.total_wager),
+      totalPayout: Number(row.total_payout),
+      netWinnings: Number(row.net_winnings),
+    })),
+  };
 }
 
 async function ensureWallet(connection: PoolConnection, ownerId: string, assetType: "COIN" | "DIAMOND") {

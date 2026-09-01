@@ -213,17 +213,25 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
 
 export async function listFaceVerificationRequests(scope: Scope, page = 1) {
   const filter = scopeWhere(scope, "user.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; selfie_document_id: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; agency_face_live_authorized: number; super_admin_face_live_authorized: number; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; user_status: string; selfie_document_id: string | null; document_mime_type: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; agency_face_live_authorized: number; super_admin_face_live_authorized: number; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
     `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name, user.country_code,
-            request.status, request.selfie_document_id, request.provider, request.liveness_score, request.match_score,
+            request.status, user.face_verification_status user_status, request.selfie_document_id,
+            document.mime_type document_mime_type, request.provider, request.liveness_score, request.match_score,
             user.agency_face_live_authorized, user.super_admin_face_live_authorized,
             request.review_reason, request.created_at, request.reviewed_at
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
-     WHERE ${filter.clause} ORDER BY FIELD(request.status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED'), request.created_at DESC LIMIT 26 OFFSET ?`,
+     LEFT JOIN private_documents document ON document.id = request.selfie_document_id
+     WHERE ${filter.clause}
+       AND NOT EXISTS (
+         SELECT 1 FROM face_verification_requests newer
+         WHERE newer.application_user_id = request.application_user_id
+           AND (newer.created_at > request.created_at OR (newer.created_at = request.created_at AND newer.id > request.id))
+       )
+     ORDER BY FIELD(user.face_verification_status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED','NOT_SUBMITTED'), request.created_at DESC LIMIT 26 OFFSET ?`,
     [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
-  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.status, documentId: row.selfie_document_id, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
+  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.user_status, requestStatus: row.status, documentId: row.selfie_document_id, documentMimeType: row.document_mime_type, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
 }
 
 export async function listPayoutMethodReviews(scope: Scope) {
@@ -258,18 +266,32 @@ export async function reviewPayoutMethod(input: { scope: Scope; methodId: string
 export async function reviewFaceVerification(input: { scope: Scope; requestId: string; decision: "VERIFIED" | "REJECTED"; reason: string }) {
   const filter = scopeWhere(input.scope, "user.agency_account_id");
   await withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; selfie_document_id: string; status: string })[]>(
-      `SELECT request.id, request.application_user_id, request.selfie_document_id, request.status
+    const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; selfie_document_id: string | null; status: string; user_status: string })[]>(
+      `SELECT request.id, request.application_user_id, request.selfie_document_id, request.status,
+              user.face_verification_status user_status
        FROM face_verification_requests request INNER JOIN application_users user ON user.id = request.application_user_id
        WHERE request.id = ? AND ${filter.clause} FOR UPDATE`,
       [input.requestId, ...filter.values],
     );
     const request = rows[0];
     if (!request) throw new Error("Face verification request was not found in your permitted scope.");
-    if (request.status !== "PENDING") throw new Error("Only a pending face verification can be reviewed.");
-    await connection.execute("UPDATE face_verification_requests SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ? WHERE id = ?", [input.decision, input.scope.account.id, input.reason, request.id]);
+    if (request.user_status === input.decision && request.status === input.decision) return;
+    await connection.execute(
+      `UPDATE face_verification_requests
+       SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ?,
+           verified_at = CASE WHEN ? = 'VERIFIED' THEN COALESCE(verified_at, CURRENT_TIMESTAMP(3)) ELSE NULL END
+       WHERE application_user_id = ?
+         AND (id = ? OR status IN ('PENDING','PROCESSING','RETRY','DUPLICATE'))`,
+      [input.decision, input.scope.account.id, input.reason, input.decision, request.application_user_id, request.id],
+    );
     await connection.execute("UPDATE application_users SET face_verification_status = ? WHERE id = ?", [input.decision, request.application_user_id]);
-    await connection.execute("UPDATE private_documents SET verification_status = ? WHERE id = ?", [input.decision, request.selfie_document_id]);
+    await connection.execute(
+      `UPDATE private_documents document
+       INNER JOIN face_verification_requests face_request ON face_request.id = document.owner_id
+       SET document.verification_status = ?
+       WHERE document.owner_type = 'FACE_VERIFICATION' AND face_request.application_user_id = ?`,
+      [input.decision, request.application_user_id],
+    );
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'FACE_VERIFICATION', ?, ?, 'face')", [randomUUID(), request.application_user_id, input.decision === "VERIFIED" ? "Face verification approved" : "Face verification needs attention", input.decision === "VERIFIED" ? "Your Face Live verification is active." : input.reason]);
     await audit(connection, { scope: input.scope, action: "face_verification.review", module: "face_verification", targetType: "face_verification_request", targetId: request.id, reason: input.reason, previous: { status: request.status }, next: { status: input.decision } });
   });

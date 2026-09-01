@@ -9,6 +9,7 @@ import {
   createRoom,
   createWithdrawalRequest,
   gameRoundHistory,
+  gameRoundLeaderboard,
   mobileBootstrap,
   mutateGameWallet,
   sendGift,
@@ -103,6 +104,12 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
       const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "game-leaderboard") {
+      const parameters = new URL(request.url).searchParams;
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
+      const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
+      return NextResponse.json(await gameRoundLeaderboard(game, limit), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "rocket") {
       const roomCode = z.string().trim().min(3).max(80).parse(new URL(request.url).searchParams.get("roomCode"));

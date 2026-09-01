@@ -29,6 +29,7 @@ async function main() {
     const ops = await import("@/lib/db/repositories/operations");
     const monitoring = await import("@/lib/db/repositories/monitoring");
     const agencies = await import("@/lib/db/repositories/agency-applications");
+    const mobileAdministration = await import("@/lib/db/repositories/mobile-administration");
     const dashboard = await import("@/lib/db/repositories/dashboard");
     const catalog = await import("@/lib/db/repositories/catalog");
     const completion = await import("@/lib/db/repositories/completion-administration");
@@ -242,6 +243,17 @@ async function main() {
     await completion.setFaceLiveAuthorization({ scope: agency, userPublicId: ownUser.publicId, authorizationType: "AGENCY_FACE_LIVE", approved: true, reason: "QA own host authorization" });
     await completion.setFaceLiveAuthorization({ scope: await refresh(cm), userPublicId: ownUser.publicId, authorizationType: "SUPER_ADMIN_FACE_LIVE", approved: true, reason: "QA team Live authorization" });
     await assert.rejects(completion.setFaceLiveAuthorization({ scope: await refresh(cm), userPublicId: otherUser.publicId, authorizationType: "SUPER_ADMIN_FACE_LIVE", approved: true, reason: "QA cannot authorize other branch" }));
+    const olderFaceRequest = randomUUID();
+    const currentFaceRequest = randomUUID();
+    await root.execute("UPDATE application_users SET face_verification_status = 'PENDING' WHERE id = ?", [ownUser.id]);
+    await root.execute("INSERT INTO face_verification_requests (id, application_user_id, status, created_at) VALUES (?, ?, 'RETRY', DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 MINUTE)), (?, ?, 'PENDING', CURRENT_TIMESTAMP(3))", [olderFaceRequest, ownUser.id, currentFaceRequest, ownUser.id]);
+    await mobileAdministration.reviewFaceVerification({ scope: await refresh(cm), requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA approve current selfie" });
+    await mobileAdministration.reviewFaceVerification({ scope: await refresh(cm), requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA idempotent approval retry" });
+    const [faceRows] = await root.query<RowDataPacket[]>("SELECT status FROM face_verification_requests WHERE id IN (?, ?) ORDER BY created_at", [olderFaceRequest, currentFaceRequest]);
+    assert.deepEqual(faceRows.map((entry) => entry.status), ["VERIFIED", "VERIFIED"]);
+    const visibleFaceRows = await mobileAdministration.listFaceVerificationRequests(await refresh(cm));
+    assert.equal(visibleFaceRows.filter((entry) => entry.userPublicId === ownUser.publicId).length, 1, "Panel shows only the current Face Verification row per user");
+    assert.equal(visibleFaceRows.find((entry) => entry.userPublicId === ownUser.publicId)?.status, "VERIFIED");
     passed++;
 
     const temp = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 30, reason: "QA temporary Live restriction" });

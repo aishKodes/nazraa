@@ -840,6 +840,13 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
     ? await preparePrivateDocument(new File([Uint8Array.from(frames[0])], "face-reference.jpg", { type: "image/jpeg" }), randomUUID(), "FACE_REFERENCE")
     : null;
   await withTransaction(async (connection) => {
+    const [currentUsers] = await connection.query<(RowDataPacket & { face_verification_status: string })[]>(
+      "SELECT face_verification_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE",
+      [identity.userId],
+    );
+    if (!currentUsers[0]) throw new Error("User account was not found.");
+    // A later retry must never silently undo a completed panel approval.
+    const effectiveStatus = currentUsers[0].face_verification_status === "VERIFIED" ? "VERIFIED" : result.status;
     let duplicateUserId: string | null = null;
     if (result.duplicateSubjectId) {
       const [duplicates] = await connection.query<(RowDataPacket & { id: string })[]>("SELECT id FROM application_users WHERE id = ? LIMIT 1", [result.duplicateSubjectId]);
@@ -857,11 +864,11 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
         (id, application_user_id, selfie_document_id, status, provider, provider_face_id, embedding_reference,
          liveness_score, match_score, duplicate_application_user_id, verified_at, review_reason)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [requestId, identity.userId, retained?.id ?? null, result.status, result.provider, result.providerFaceId,
+      [requestId, identity.userId, retained?.id ?? null, effectiveStatus, result.provider, result.providerFaceId,
         result.embeddingReference, result.livenessScore, result.matchScore, duplicateUserId,
-        result.status === "VERIFIED" ? new Date() : null, result.reason],
+        effectiveStatus === "VERIFIED" ? new Date() : null, result.reason],
     );
-    await connection.execute("UPDATE application_users SET face_verification_status = ? WHERE id = ?", [result.status, identity.userId]);
+    await connection.execute("UPDATE application_users SET face_verification_status = ? WHERE id = ?", [effectiveStatus, identity.userId]);
     if (result.status === "DUPLICATE") {
       await connection.execute(
         "INSERT INTO risk_flags (id, application_user_id, severity, rule_key, summary) VALUES (?, ?, 'HIGH', 'DUPLICATE_FACE', ?)",

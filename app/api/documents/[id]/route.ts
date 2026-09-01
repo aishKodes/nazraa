@@ -1,5 +1,6 @@
 import type { RowDataPacket } from "mysql2";
 import { NextResponse } from "next/server";
+import sharp from "sharp";
 import { can } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { scopeFor, scopeWhere } from "@/lib/db/repositories/accounts";
@@ -9,7 +10,7 @@ import { decryptPrivateDocument } from "@/lib/security/documents";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const account = await getSession();
   if (!account || !can(account.role, "documents.read")) return new NextResponse("Unauthorized", { status: 401 });
   const scope = await scopeFor(account); const { id } = await params;
@@ -32,5 +33,25 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   } else permitted = scope.isGlobal || document.owner_id === account.id || scope.accountIds.includes(document.owner_id);
   if (!permitted) return new NextResponse("Forbidden", { status: 403 });
   const plain = decryptPrivateDocument({ encryptedData: document.encrypted_data, iv: document.encryption_iv, tag: document.encryption_tag });
-  return new NextResponse(new Uint8Array(plain), { headers: { "Content-Type": document.mime_type, "Content-Disposition": `attachment; filename="${document.original_name.replaceAll('"', "")}"`, "Cache-Control": "private, no-store" } });
+  const url = new URL(request.url);
+  const preview = url.searchParams.get("preview") === "1";
+  const inline = preview || url.searchParams.get("inline") === "1";
+  const isImage = document.mime_type === "image/jpeg" || document.mime_type === "image/png" || document.mime_type === "image/webp";
+  if (preview) {
+    if (!isImage) return new NextResponse("Preview unavailable", { status: 415 });
+    const thumbnail = await sharp(plain).rotate().resize(96, 96, { fit: "cover", position: "centre" }).webp({ quality: 76 }).toBuffer();
+    return new NextResponse(new Uint8Array(thumbnail), { headers: {
+      "Content-Type": "image/webp",
+      "Content-Disposition": "inline; filename=face-selfie-preview.webp",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    } });
+  }
+  const disposition = inline && isImage ? "inline" : "attachment";
+  return new NextResponse(new Uint8Array(plain), { headers: {
+    "Content-Type": document.mime_type,
+    "Content-Disposition": `${disposition}; filename="${document.original_name.replaceAll('"', "")}"`,
+    "Cache-Control": "private, no-store",
+    "X-Content-Type-Options": "nosniff",
+  } });
 }

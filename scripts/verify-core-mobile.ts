@@ -362,6 +362,16 @@ async function main() {
       bets: { "0": 10000, "1": 0, "2": 0 },
     });
     assert.equal(Array.isArray(teenRound.outcome.hands) && teenRound.outcome.hands.length, 3);
+    assert.ok([0, 1, 2].includes(Number(teenRound.outcome.winnerLane)), "Teen Patti Pro must settle exactly one of its three lanes");
+    assert.ok([2, 3, 4, 10, 25].includes(Number(teenRound.outcome.payoutMultiplier)));
+    assert.equal(
+      Number(teenRound.outcome.grossPayout),
+      Number(teenRound.bets[String(teenRound.outcome.winnerLane)] ?? 0) * Number(teenRound.outcome.payoutMultiplier),
+      "Teen Patti Pro payout must come only from the strongest winning lane",
+    );
+    const teenLeaderboard = await product.gameRoundLeaderboard("teen_patti_pro", 10);
+    assert.ok(teenLeaderboard.entries.some((entry) => entry.publicId === owner.publicId));
+    assert.ok(teenLeaderboard.entries.every((entry) => Number.isInteger(entry.netWinnings)));
     const footballRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "bounty_football",
