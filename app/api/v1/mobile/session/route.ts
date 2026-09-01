@@ -39,7 +39,8 @@ export async function POST(request: Request) {
     if (!development.success) return NextResponse.json({ message: "Google Sign-In is required." }, { status: 400 });
     return NextResponse.json(await createDevelopmentMobileSession(development.data), { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return NextResponse.json({ message: error instanceof Error ? error.message : "Session creation failed." }, { status: 500 });
+    console.error("Mobile session creation failed", error);
+    return NextResponse.json({ message: "Nazraa could not complete sign-in. Please try again." }, { status: 500 });
   }
 }
 

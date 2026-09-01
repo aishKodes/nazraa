@@ -109,6 +109,30 @@ async function main() {
     const hostsRepository = await import("@/lib/db/repositories/hosts");
     const product = await import("@/lib/db/repositories/mobile-product");
     const liveCompletion = await import("@/lib/db/repositories/mobile-completion");
+    const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
+    const resetUser = await user(agency.account.id, "QA Monthly Reset Host");
+    await root.execute(
+      "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance, reserved_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 350, 0)",
+      [randomUUID(), resetUser.id],
+    );
+    const resetResult = await monthlyReset.runMonthlyHostEarningsReset(new Date("2026-09-01T06:00:00.000Z"));
+    assert.equal(resetResult.status, "completed");
+    assert.equal(resetResult.affectedUsers, 1);
+    assert.equal(resetResult.expiredAmount, 350);
+    const [resetWallet] = await root.query<RowDataPacket[]>(
+      "SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'",
+      [resetUser.id],
+    );
+    assert.equal(Number(resetWallet[0].available_balance), 0);
+    const [resetLedger] = await root.query<RowDataPacket[]>(
+      "SELECT transaction_code FROM ledger_transactions WHERE source_id = ? AND transaction_type = 'HOST_MONTHLY_RESET'",
+      [resetUser.id],
+    );
+    assert.deepEqual(resetLedger.map((row) => String(row.transaction_code)), [`HMR-20260901-${resetUser.publicId}`]);
+    const repeatedReset = await monthlyReset.runMonthlyHostEarningsReset(new Date("2026-09-01T12:00:00.000Z"));
+    assert.equal(repeatedReset.status, "already_completed");
+    assert.equal(repeatedReset.expiredAmount, 350);
+    passed++;
     for (const kind of ["LIVE", "PARTY", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, 0, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, master.account.id]);
     const [hostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
     const hostId = String(hostRows[0].id);

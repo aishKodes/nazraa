@@ -734,14 +734,12 @@ export async function mutateGameWallet(identity: MobileIdentity, input: {
 }
 
 const teenPattiGame = "teen_patti_pro";
-const goldenSingleGames = new Set(["food_wheel", "cat_wheel"]);
 const goldenZoneGames = new Set(["greedy_king", "greedy_lion"]);
 const supportedRoundGames = new Set([
   teenPattiGame,
   "luck77",
   "bounty_football",
   "jungle_hunt",
-  ...goldenSingleGames,
   ...goldenZoneGames,
 ]);
 export const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
@@ -1065,33 +1063,6 @@ export function evaluateJungleGrid(grid: JungleSymbol[][], total: number) {
   return { grid, winningLines, lineWins, jackpotResult, payout };
 }
 
-type WeightedGoldenOutcome = { label: string; multiplier: number; weight: number };
-
-const goldenWheelOutcomes: Record<string, readonly WeightedGoldenOutcome[]> = {
-  food_wheel: [
-    { label: "Empty Plate", multiplier: 0, weight: 400 },
-    { label: "Rice Bowl", multiplier: 1, weight: 300 },
-    { label: "Ramen", multiplier: 1.5, weight: 150 },
-    { label: "Sushi", multiplier: 2, weight: 90 },
-    { label: "Feast", multiplier: 5, weight: 45 },
-    { label: "Golden Wagyu", multiplier: 10, weight: 15 },
-  ],
-  cat_wheel: [
-    { label: "Sleeping Cat", multiplier: 0, weight: 500 },
-    { label: "Silver Coin", multiplier: 1, weight: 280 },
-    { label: "Gold Coin", multiplier: 2, weight: 140 },
-    { label: "Lucky Charm", multiplier: 5, weight: 60 },
-    { label: "Maneki Neko Jackpot", multiplier: 20, weight: 20 },
-  ],
-  deep_sea: [
-    { label: "Empty Net", multiplier: 0, weight: 450 },
-    { label: "Small Fish", multiplier: 1.2, weight: 300 },
-    { label: "Tuna", multiplier: 2, weight: 150 },
-    { label: "Shark", multiplier: 4, weight: 70 },
-    { label: "Golden Whale", multiplier: 15, weight: 30 },
-  ],
-};
-
 function chooseWeighted<T extends { weight: number }>(values: readonly T[]) {
   const total = values.reduce((sum, value) => sum + value.weight, 0);
   const ticket = randomInt(total);
@@ -1101,30 +1072,6 @@ function chooseWeighted<T extends { weight: number }>(values: readonly T[]) {
     if (ticket < cursor) return value;
   }
   return values[values.length - 1];
-}
-
-function goldenSingleRound(game: string, input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
-  const unit = game === "deep_sea" ? 200 : 100;
-  const checked = checkedBets(input, ["play"], unit, 10_000);
-  if (checked.total === 0) throw new Error("Choose a play amount.");
-  if (game === "card_arena") {
-    const dealer = targetWin ? randomInt(1, 14) : randomInt(2, 15);
-    const player = targetWin ? dealer + 1 : dealer - 1;
-    const multiplier = player > dealer ? 2 : player === dealer ? 1 : 0;
-    const label = player > dealer ? "Win" : player === dealer ? "Push" : "Lose";
-    return {
-      outcome: { label, multiplier, player, dealer, targetWin },
-      wager: checked.total,
-      payout: checked.total * multiplier,
-    };
-  }
-  const available = goldenWheelOutcomes[game].filter((outcome) => targetWin ? outcome.multiplier > 1 : outcome.multiplier <= 1);
-  const selected = chooseWeighted(available.length ? available : goldenWheelOutcomes[game]);
-  return {
-    outcome: { label: selected.label, multiplier: selected.multiplier, targetWin },
-    wager: checked.total,
-    payout: Math.floor(checked.total * selected.multiplier),
-  };
 }
 
 function threeCardValue(cards: number[]) {
@@ -1238,7 +1185,6 @@ function createServerGameOutcome(game: string, bets: Record<string, number>, tar
   if (game === "luck77") return luck77Round(bets, targetWin);
   if (game === "bounty_football") return footballRound(bets, targetWin);
   if (game === "jungle_hunt") return jungleRound(bets, targetWin, config);
-  if (goldenSingleGames.has(game)) return goldenSingleRound(game, bets, targetWin);
   if (game === "three_card") return threeCardRound(bets, targetWin);
   if (goldenZoneGames.has(game)) return greedyRound(game, bets, targetWin);
   throw new Error("This game is unavailable.");

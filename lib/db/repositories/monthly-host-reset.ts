@@ -26,6 +26,7 @@ function indiaDateParts(now = new Date()) {
 export async function runMonthlyHostEarningsReset(now = new Date()) {
   const india = indiaDateParts(now);
   const resetMonth = `${india.year}-${india.month}-01`;
+  const resetCode = `${india.year}${india.month}01`;
   if (india.day !== "01") return { resetMonth, status: "not_due", affectedUsers: 0, expiredAmount: 0 };
 
   // This idempotent guard also lets a newly deployed runtime become healthy
@@ -77,7 +78,7 @@ export async function runMonthlyHostEarningsReset(now = new Date()) {
     await connection.execute(
       `INSERT IGNORE INTO ledger_transactions
        (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
-       SELECT UUID(), CONCAT('HMR-', REPLACE(?, '-', ''), '-', user.public_id), CONCAT('HOST_MONTH_RESET:', ?, ':', wallet.owner_id),
+       SELECT UUID(), CONCAT('HMR-', ?, '-', user.public_id), CONCAT('HOST_MONTH_RESET:', ?, ':', wallet.owner_id),
               'DIAMOND', 'HOST_MONTHLY_RESET', 'APPLICATION_USER', wallet.owner_id, 'SYSTEM', wallet.available_balance,
               'COMPLETED', 'Monthly Host/Agency earnings balance reset', JSON_OBJECT('resetMonth', ?)
        FROM wallet_balances wallet
@@ -87,7 +88,7 @@ export async function runMonthlyHostEarningsReset(now = new Date()) {
            EXISTS (SELECT 1 FROM host_profiles host WHERE host.application_user_id = wallet.owner_id)
            OR EXISTS (SELECT 1 FROM platform_accounts agency WHERE agency.application_user_id = wallet.owner_id AND agency.role = 'AGENCY')
          )`,
-      [resetMonth, resetMonth, resetMonth],
+      [resetCode, resetMonth, resetMonth],
     );
     await connection.execute(
       `UPDATE wallet_balances wallet

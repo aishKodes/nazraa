@@ -52,9 +52,15 @@ export const dynamic = "force-dynamic";
 
 function errorResponse(error: unknown, status = 400) {
   const transientDatabaseFailure = isDatabaseAvailabilityError(error);
+  const rawMessage = error instanceof Error ? error.message : "Request failed.";
+  const internalDatabaseFailure =
+    /collation|sql|unknown column|database|er_[a-z_]+/i.test(rawMessage) ||
+    (typeof error === "object" && error !== null && "code" in error);
+  const hideInternalDetails = transientDatabaseFailure || internalDatabaseFailure || status >= 500;
+  if (hideInternalDetails) console.error("Mobile API request failed", error);
   return NextResponse.json(
-    { message: transientDatabaseFailure ? "Nazraa is reconnecting to the server. Please retry." : error instanceof Error ? error.message : "Request failed." },
-    { status: transientDatabaseFailure ? 503 : status, headers: { "Cache-Control": "no-store", ...(transientDatabaseFailure ? { "Retry-After": "2" } : {}) } },
+    { message: hideInternalDetails ? "Nazraa is reconnecting to the server. Please retry." : rawMessage },
+    { status: transientDatabaseFailure || internalDatabaseFailure ? 503 : status, headers: { "Cache-Control": "no-store", ...(hideInternalDetails ? { "Retry-After": "2" } : {}) } },
   );
 }
 
@@ -103,7 +109,7 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     }
     if (resource === "game-rounds") {
       const parameters = new URL(request.url).searchParams;
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
     }
@@ -112,12 +118,12 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
       return NextResponse.json(await gameSharedRoundState(identity, game), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-social") {
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(new URL(request.url).searchParams.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "greedy_king", "greedy_lion"]).parse(new URL(request.url).searchParams.get("game"));
       return NextResponse.json(await gameSocialState(game), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-leaderboard") {
       const parameters = new URL(request.url).searchParams;
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       const period = z.enum(["round", "daily", "weekly", "monthly"]).default("daily").parse(parameters.get("period") ?? undefined);
       return NextResponse.json(await gameRoundLeaderboard(game, limit, period), { headers: { "Cache-Control": "private, no-store" } });
@@ -361,7 +367,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({
         clientRoundId: z.string().uuid(),
-        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]),
+        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "greedy_king", "greedy_lion"]),
         bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
       }).parse(body);
       return NextResponse.json(await settleGameRound(identity, parsed), { status: 201 });

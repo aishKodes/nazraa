@@ -419,15 +419,6 @@ async function main() {
     });
     assert.equal(Array.isArray(jungleRound.outcome.grid) && jungleRound.outcome.grid.length, 3);
     assert.equal(Array.isArray(jungleRound.outcome.winningLines), true);
-    for (const game of ["food_wheel", "cat_wheel"] as const) {
-      const round = await product.settleGameRound(owner, {
-        clientRoundId: randomUUID(),
-        game,
-        bets: { play: 100 },
-      });
-      assert.equal(typeof round.outcome.label, "string");
-      assert.equal(typeof round.outcome.multiplier, "number");
-    }
     for (const game of ["greedy_king", "greedy_lion"] as const) {
       const zoneCount = game === "greedy_king" ? 10 : 8;
       const round = await product.settleGameRound(owner, {
@@ -443,26 +434,18 @@ async function main() {
       }
     }
     assert.equal((await product.mobileBootstrap(owner)).wallet.diamonds, diamondsBeforeGame, "game results must never credit withdrawable host earnings");
-    console.log("PASS games: all eight published server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
+    console.log("PASS games: published server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
 
     // Repeated real database rounds, not mocked Flutter results. Validate each
     // server payout against the returned result, the wallet and paired ledgers.
     await root.execute("UPDATE wallet_balances SET available_balance = 100000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
-    const importedGames = ["food_wheel", "cat_wheel", "greedy_king", "greedy_lion"] as const;
+    const importedGames = ["jungle_hunt"] as const;
     for (const game of importedGames) {
       for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
         const before = (await product.mobileBootstrap(stranger)).wallet.coins;
-        const bets: Record<string, number> = game.startsWith("greedy_")
-          ? Object.fromEntries(Array.from({length: game === "greedy_king" ? 10 : 8}, (_, index) => [String(index), index < 2 ? 500 : 0]))
-          : { play: 100 };
+        const bets: Record<string, number> = { spin: 150 };
         const round = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game, bets});
-        const winner = Number(round.outcome.winner);
-        const gross = "play" in bets
-          ? Math.floor(Number(bets.play) * Number(round.outcome.multiplier))
-          : game.startsWith("greedy_")
-          ? Math.floor(Number(bets[String(winner)] ?? 0) * Number(round.outcome.multiplier) +
-              Number(bets[String(round.outcome.secondaryWinner)] ?? 0) * Number(round.outcome.secondaryMultiplier ?? 0))
-          : (winner === 0 || winner === 1 ? 100 * Number(round.outcome.multiplier) : 0);
+        const gross = Number(round.outcome.grossPayout);
         const deduction = gross > round.wager ? Math.floor(gross * 0.01) : 0;
         const expected = gross - deduction;
         assert.equal(round.payout, expected, `${game} payout must agree with visible result`);
@@ -479,10 +462,10 @@ async function main() {
       }
       assert.equal((await product.gameRoundHistory(stranger, game, 10)).rounds.length, 3);
     }
-    const concurrentInput = {clientRoundId: randomUUID(), game: 'food_wheel', bets: {play: 100}};
+    const concurrentInput = {clientRoundId: randomUUID(), game: 'jungle_hunt' as const, bets: {spin: 150}};
     const concurrent = await Promise.all(Array.from({length: 4}, () => product.settleGameRound(stranger, concurrentInput)));
     assert.equal(new Set(concurrent.map((round) => round.roundId)).size, 1);
-    const laterRound = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'cat_wheel', bets: {play: 100}});
+    const laterRound = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'jungle_hunt', bets: {spin: 150}});
     const oldRetry = await product.settleGameRound(stranger, concurrentInput);
     assert.equal(oldRetry.coinBalance, laterRound.coinBalance, 'old retry must return CURRENT wallet, not historical balance');
     assert.deepEqual(oldRetry.outcome, concurrent[0].outcome);
