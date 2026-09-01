@@ -10,9 +10,9 @@ import {
   createWithdrawalRequest,
   gameRoundHistory,
   gameRoundLeaderboard,
+  gameSocialState,
   gameSharedRoundState,
   mobileBootstrap,
-  mutateGameWallet,
   sendGift,
   placeSharedGameBets,
   settleGameRound,
@@ -110,6 +110,10 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     if (resource === "game-state") {
       const game = z.enum(["luck77", "greedy_lion", "greedy_king", "bounty_football"]).parse(new URL(request.url).searchParams.get("game"));
       return NextResponse.json(await gameSharedRoundState(identity, game), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "game-social") {
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(new URL(request.url).searchParams.get("game"));
+      return NextResponse.json(await gameSocialState(game), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-leaderboard") {
       const parameters = new URL(request.url).searchParams;
@@ -348,15 +352,10 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       return NextResponse.json(await sendGift(identity, parsed));
     }
     if (resource === "game-wallet") {
-      if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
-      const parsed = z.object({
-        clientTransactionId: z.string().uuid(),
-        direction: z.enum(["DEBIT", "CREDIT"]),
-        amount: z.number().int().positive().max(10_000_000),
-        game: z.string().trim().min(1).max(120),
-        reason: z.string().trim().min(1).max(240),
-      }).parse(body);
-      return NextResponse.json(await mutateGameWallet(identity, parsed), { status: 201 });
+      return errorResponse(
+        new Error("Direct game wallet changes are disabled. Use an authoritative game round."),
+        410,
+      );
     }
     if (resource === "game-rounds") {
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);

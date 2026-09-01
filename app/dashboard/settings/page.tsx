@@ -5,6 +5,7 @@ import {
   submitDiamondConversionRule,
   submitEconomySettings,
   submitHostRewardRules,
+  submitGameSettings,
   submitMobileAppSettings,
   submitMobileSocialSettings,
   submitRoomFeatureSettings,
@@ -14,6 +15,7 @@ import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
 import { getSystemSettings } from "@/lib/db/repositories/catalog";
 import { getCompletionAdminSettings } from "@/lib/db/repositories/completion-administration";
+import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +26,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
   const social = settings.find((item) => item.key === "mobile.social")?.value as { private_message_coin_cost?: number } | undefined;
+  const gameSettings = mobileGamesConfig(settings.find((item) => item.key === "mobile.games")?.value);
   const roomFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as {
     interactions?: { key: string; label: string; emoji: string; enabled?: boolean; visualUrl?: string }[];
     pkModes?: string[];
@@ -117,6 +120,47 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Coins per message<input name="privateMessageCoinCost" type="number" min="0" max="100000" required defaultValue={social?.private_message_coin_cost ?? 50} /></label>
         <label>Confirm<button className="primary-button" type="submit">Save message price</button></label>
       </form>
+    </Card>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>Game controls</h2><p>Server-owned availability, limits, timers, outcome weights, social history, and verified special-result controls. Saving never chooses a manual winner.</p></div></div>
+      <div className="stack-form full-width">
+        {configurableGameIds.map((gameId) => {
+          const game = gameSettings.games[gameId];
+          const name = ({ luck77: "Luck77", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
+          const greedy = gameId === "greedy_lion" || gameId === "greedy_king";
+          const availability = !game.enabled ? "DISABLED" : game.maintenance ? "MAINTENANCE" : "ACTIVE";
+          return <details key={gameId} className="scope-lock">
+            <summary><strong>{name}</strong> · {availability.toLowerCase()} · {game.bettingSeconds ? `${game.bettingSeconds}s shared betting` : "individual spin"}</summary>
+            <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>
+              <input name="game" type="hidden" value={gameId} />
+              <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
+              <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
+              <label>Minimum bet<input name="minimumBet" type="number" min="1" required defaultValue={game.minimumBet} /></label>
+              <label>Maximum per round<input name="maximumBet" type="number" min="1" required defaultValue={game.maximumBet} /></label>
+              <label className="span-two">Chip denominations<input name="denominations" required defaultValue={game.denominations.join(", ")} /><span>Comma separated. Existing app buttons refresh from server controls where supported.</span></label>
+              <label>Global history length<input name="historyLength" type="number" min="1" max="50" required defaultValue={game.historyLength} /></label>
+              <label>Big Winner threshold<input name="bigWinThreshold" type="number" min="1" required defaultValue={game.bigWinThreshold} /></label>
+              <label>Repeat Bet<select name="repeatBet" defaultValue={String(game.repeatBet)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <label>Auto Play<select name="autoPlay" defaultValue={String(game.autoPlay)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              {gameId === "luck77" || gameId === "bounty_football" ? <label className="span-two">Outcome weights<input name="outcomeWeights" required defaultValue={(game.outcomeWeights ?? []).join(", ")} /><span>{gameId === "luck77" ? "Lucky77, Watermelon, Plum" : "Ten teams in displayed order"}. Weight 0 disables an outcome.</span></label> : <input name="outcomeWeights" type="hidden" value="" />}
+              {greedy ? <>
+                <label>Salad weight<input name="saladWeight" type="number" min="0" required defaultValue={game.saladWeight ?? 0} /></label>
+                <label>Pizza weight<input name="pizzaWeight" type="number" min="0" required defaultValue={game.pizzaWeight ?? 0} /></label>
+                <label>Pool contribution (basis points)<input name="poolContributionBps" type="number" min="0" max="10000" required defaultValue={game.poolContributionBps ?? 0} /><span>100 = 1%. Current verified default is 0.</span></label>
+                <label>Pool minimum for special<input name="poolMinimumForSpecial" type="number" min="0" required defaultValue={game.poolMinimumForSpecial ?? 0} /></label>
+              </> : <>
+                <input name="saladWeight" type="hidden" value="0" />
+                <input name="pizzaWeight" type="hidden" value="0" />
+                <input name="poolContributionBps" type="hidden" value="0" />
+                <input name="poolMinimumForSpecial" type="hidden" value="0" />
+              </>}
+              <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is this game configuration changing?" /></label>
+              <label>Confirm<button className="primary-button" type="submit">Save {name}</button></label>
+            </form>
+          </details>;
+        })}
+      </div>
     </Card>
 
     <Card className="settings-card">

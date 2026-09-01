@@ -7,6 +7,7 @@ import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
 import type { PreparedPublicImage } from "@/lib/security/public-images";
 import { can } from "@/lib/auth/permissions";
+import { mobileGamesConfig, type ConfigurableGameId } from "@/lib/games/game-config";
 
 async function auditedMutation(input: { scope: Scope; action: string; module: string; targetType: string; targetId: string; reason: string; run: Parameters<typeof withTransaction>[0] }) {
   await withTransaction(async (connection) => {
@@ -182,6 +183,84 @@ export async function saveMobileSocialSettings(input: { scope: Scope; privateMes
       [JSON.stringify({ private_message_coin_cost: input.privateMessageCoinCost }), input.scope.account.id],
     );
   } });
+}
+
+export async function saveGameSettings(input: {
+  scope: Scope;
+  game: ConfigurableGameId;
+  enabled: boolean;
+  maintenance: boolean;
+  bettingSeconds: number;
+  minimumBet: number;
+  maximumBet: number;
+  denominations: number[];
+  historyLength: number;
+  bigWinThreshold: number;
+  repeatBet: boolean;
+  autoPlay: boolean;
+  outcomeWeights?: number[];
+  saladWeight?: number;
+  pizzaWeight?: number;
+  poolContributionBps?: number;
+  poolMinimumForSpecial?: number;
+  reason: string;
+}) {
+  if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");
+  if (!input.denominations.length || input.denominations.some((value) => value < 1 || value > input.maximumBet)) {
+    throw new Error("Add at least one valid denomination within the game limit.");
+  }
+  const expectedWeights = input.game === "luck77" ? 3 : input.game === "bounty_football" ? 10 : 0;
+  if (expectedWeights && input.outcomeWeights?.length !== expectedWeights) {
+    throw new Error(`This game requires exactly ${expectedWeights} outcome weights.`);
+  }
+  if (expectedWeights && input.outcomeWeights?.some((value) => value < 0)) {
+    throw new Error("Outcome weights cannot be negative.");
+  }
+  if (expectedWeights && !input.outcomeWeights?.some((value) => value > 0)) {
+    throw new Error("At least one outcome weight must be greater than zero.");
+  }
+  await auditedMutation({
+    scope: input.scope,
+    action: "settings.game_update",
+    module: "settings",
+    targetType: "system_setting",
+    targetId: `mobile.games:${input.game}`,
+    reason: input.reason,
+    run: async (connection) => {
+      const [rows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+        "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1 FOR UPDATE",
+      );
+      const current = mobileGamesConfig(rows[0]?.setting_value);
+      const previous = current.games[input.game];
+      current.games[input.game] = {
+        ...previous,
+        enabled: input.enabled,
+        maintenance: input.maintenance,
+        bettingSeconds: input.bettingSeconds,
+        minimumBet: input.minimumBet,
+        maximumBet: input.maximumBet,
+        denominations: [...new Set(input.denominations)].sort((left, right) => left - right),
+        historyLength: input.historyLength,
+        bigWinThreshold: input.bigWinThreshold,
+        repeatBet: input.repeatBet,
+        autoPlay: input.autoPlay,
+        outcomeWeights: expectedWeights ? input.outcomeWeights : previous.outcomeWeights,
+        saladWeight: input.saladWeight ?? previous.saladWeight,
+        pizzaWeight: input.pizzaWeight ?? previous.pizzaWeight,
+        poolContributionBps: input.poolContributionBps ?? previous.poolContributionBps,
+        poolMinimumForSpecial: input.poolMinimumForSpecial ?? previous.poolMinimumForSpecial,
+      };
+      await connection.execute(
+        `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.games', ?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+        [JSON.stringify({
+          targetWinRate: current.target_win_rate,
+          winningsDeductionRate: current.winnings_deduction_rate,
+          games: current.games,
+        }), input.scope.account.id],
+      );
+    },
+  });
 }
 
 export async function saveRoomFeatureSettings(input: {

@@ -16,7 +16,7 @@ import {
   updatePlatformAccount,
 } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
-import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
+import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
@@ -28,6 +28,7 @@ import { deleteBanner } from "@/lib/db/repositories/catalog";
 import { parseRoleChange } from "@/lib/auth/role-change-validation";
 import { roleLabel } from "@/lib/auth/role-hierarchy";
 import { isPanelCountry } from "@/lib/countries";
+import { configurableGameIds } from "@/lib/games/game-config";
 
 function destination(path: string, kind: "error" | "success", message: string) {
   return `${path}?${kind}=${encodeURIComponent(message)}`;
@@ -315,6 +316,46 @@ export async function submitMobileSocialSettings(formData: FormData) {
   await saveMobileSocialSettings({ scope, ...parsed.data });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Private-message pricing saved."));
+}
+
+export async function submitGameSettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    game: z.enum(configurableGameIds),
+    availability: z.enum(["ACTIVE", "MAINTENANCE", "DISABLED"]),
+    bettingSeconds: z.coerce.number().int().min(0).max(300),
+    minimumBet: z.coerce.number().int().min(1).max(50_000_000),
+    maximumBet: z.coerce.number().int().min(1).max(50_000_000),
+    denominations: z.string().trim().min(1).max(500),
+    historyLength: z.coerce.number().int().min(1).max(50),
+    bigWinThreshold: z.coerce.number().int().min(1).max(1_000_000_000),
+    repeatBet: z.enum(["true", "false"]),
+    autoPlay: z.enum(["true", "false"]),
+    outcomeWeights: z.string().trim().max(500).optional().or(z.literal("")),
+    saladWeight: z.coerce.number().int().min(0).max(1_000_000).default(0),
+    pizzaWeight: z.coerce.number().int().min(0).max(1_000_000).default(0),
+    poolContributionBps: z.coerce.number().int().min(0).max(10_000).default(0),
+    poolMinimumForSpecial: z.coerce.number().int().min(0).max(1_000_000_000).default(0),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the game limits, timing, weights, and change reason."));
+  const integers = (value: string) => value.split(",").map((item) => Number(item.trim())).filter((item) => Number.isSafeInteger(item));
+  try {
+    await saveGameSettings({
+      scope,
+      ...parsed.data,
+      enabled: parsed.data.availability !== "DISABLED",
+      maintenance: parsed.data.availability === "MAINTENANCE",
+      repeatBet: parsed.data.repeatBet === "true",
+      autoPlay: parsed.data.autoPlay === "true",
+      denominations: integers(parsed.data.denominations),
+      outcomeWeights: parsed.data.outcomeWeights ? integers(parsed.data.outcomeWeights) : undefined,
+    });
+  } catch (error) {
+    redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Game configuration could not be saved."));
+  }
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", `${parsed.data.game} controls saved and audited.`));
 }
 
 export async function submitRoomFeatureSettings(formData: FormData) {
