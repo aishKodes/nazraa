@@ -942,21 +942,29 @@ function threeCardRound(input: Record<string, number>): ServerGameOutcome {
   };
 }
 
-function greedyRound(input: Record<string, number>): ServerGameOutcome {
+function greedyRound(game: string, input: Record<string, number>): ServerGameOutcome {
   const keys = Array.from({ length: 8 }, (_, index) => String(index));
-  const checked = checkedBets(input, keys, 100, 100_000);
-  if (checked.total === 0) throw new Error("Choose at least one wheel zone.");
+  const lion = game === "greedy_lion";
+  const checked = checkedBets(input, keys, lion ? 500 : 100, lion ? 50_000_000 : 100_000);
+  if (checked.total === 0) throw new Error(lion ? "Choose at least one food house." : "Choose at least one wheel zone.");
   if (Object.values(checked.bets).filter((amount) => amount > 0).length > 6) {
     throw new Error("Choose no more than six wheel zones.");
   }
-  const multipliers = [5, 5, 5, 5, 10, 15, 25, 45] as const;
-  const winner = chooseWeighted([
-    { index: 0, weight: 20 }, { index: 1, weight: 20 }, { index: 2, weight: 20 }, { index: 3, weight: 20 },
-    { index: 4, weight: 10 }, { index: 5, weight: 6 }, { index: 6, weight: 3 }, { index: 7, weight: 1 },
-  ]).index;
+  const multipliers = lion
+    ? [5, 45, 25, 5, 15, 5, 5, 10] as const
+    : [5, 5, 5, 5, 10, 15, 25, 45] as const;
+  const labels = lion
+    ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Steak"] as const
+    : ["Berry", "Lemon", "Grape", "Cake", "Fish", "Honey", "Lobster", "Royal Feast"] as const;
+  const winner = chooseWeighted(multipliers.map((multiplier, index) => ({
+    index,
+    // Keep selection server-controlled and roughly inverse to the published
+    // multiplier instead of trusting any client-provided result.
+    weight: Math.max(1, Math.round(100 / multiplier)),
+  }))).index;
   const multiplier = multipliers[winner];
   return {
-    outcome: { winner, winningZone: winner + 1, multiplier, label: `Zone ${winner + 1}` },
+    outcome: { winner, winningZone: winner + 1, multiplier, label: labels[winner] },
     wager: checked.total,
     payout: checked.bets[String(winner)] * multiplier,
   };
@@ -969,7 +977,7 @@ function createServerGameOutcome(game: string, bets: Record<string, number>) {
   if (game === "jungle_hunt") return jungleRound(bets);
   if (goldenSingleGames.has(game)) return goldenSingleRound(game, bets);
   if (game === "three_card") return threeCardRound(bets);
-  if (goldenZoneGames.has(game)) return greedyRound(bets);
+  if (goldenZoneGames.has(game)) return greedyRound(game, bets);
   throw new Error("This game is unavailable.");
 }
 
