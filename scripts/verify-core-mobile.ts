@@ -107,6 +107,12 @@ async function main() {
     await social.sendPrivateMessage(stranger, { recipientPublicId: guest.publicId, body: "Second request", clientMessageId: randomUUID() });
     await social.respondToPrivateRequest(guest, { targetPublicId: stranger.publicId, accept: false });
     await assert.rejects(social.sendPrivateMessage(stranger, { recipientPublicId: guest.publicId, body: "Declined", clientMessageId: randomUUID() }));
+    assert.deepEqual((await social.searchPrivateMessageRecipients(owner, "Q")).people, []);
+    const recipientSearch = await social.searchPrivateMessageRecipients(owner, "Audience");
+    assert.deepEqual(recipientSearch.people.map((entry) => entry.id), [guest.publicId]);
+    const recipientIdSearch = await social.searchPrivateMessageRecipients(owner, guest.publicId);
+    assert.equal(recipientIdSearch.people[0]?.id, guest.publicId);
+    assert.equal(recipientIdSearch.people.some((entry) => entry.id === owner.publicId), false);
     console.log("PASS Inbox: pending/accepted/rejected, daily 20×10-coin allowance, free remainder, server counter, idempotent charge");
 
     const roomCode = `QA${Date.now()}`;
@@ -383,13 +389,18 @@ async function main() {
     assert.equal(Array.isArray(threeCardRound.outcome.hands) && threeCardRound.outcome.hands.length, 3);
     assert.ok([1, 2, 3].includes(Number(threeCardRound.outcome.winningSeat)));
     for (const game of ["greedy_king", "greedy_lion"] as const) {
+      const zoneCount = game === "greedy_king" ? 10 : 8;
       const round = await product.settleGameRound(owner, {
         clientRoundId: randomUUID(),
         game,
-        bets: { "0": 100, "1": 100, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0 },
+        bets: Object.fromEntries(Array.from({length: zoneCount}, (_, index) => [String(index), index < 2 ? 500 : 0])),
       });
       assert.ok(Number(round.outcome.winner) >= 0 && Number(round.outcome.winner) < 8);
       assert.ok([5, 10, 15, 25, 45].includes(Number(round.outcome.multiplier)));
+      if (game === "greedy_king") {
+        assert.ok([8, 9].includes(Number(round.outcome.secondaryWinner)));
+        assert.equal(Array.isArray(round.outcome.winners) && round.outcome.winners.length, 2);
+      }
     }
     assert.equal((await product.mobileBootstrap(owner)).wallet.diamonds, diamondsBeforeGame, "game results must never credit withdrawable host earnings");
     console.log("PASS games: all eleven server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
@@ -401,14 +412,24 @@ async function main() {
     for (const game of importedGames) {
       for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
         const before = (await product.mobileBootstrap(stranger)).wallet.coins;
-        const bets: Record<string, number> = game === "three_card" || game.startsWith("greedy_")
-          ? { "0": 100, "1": 100 } : { play: game === "deep_sea" ? 200 : 100 };
+        const bets: Record<string, number> = game === "three_card"
+          ? { "0": 100, "1": 100 }
+          : game.startsWith("greedy_")
+          ? Object.fromEntries(Array.from({length: game === "greedy_king" ? 10 : 8}, (_, index) => [String(index), index < 2 ? 500 : 0]))
+          : { play: game === "deep_sea" ? 200 : 100 };
         const round = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game, bets});
         const winner = game === "three_card" ? Number(round.outcome.winningSeat) - 1 : Number(round.outcome.winner);
-        const expected = "play" in bets
+        const gross = "play" in bets
           ? Math.floor(Number(bets.play) * Number(round.outcome.multiplier))
+          : game.startsWith("greedy_")
+          ? Math.floor(Number(bets[String(winner)] ?? 0) * Number(round.outcome.multiplier) +
+              Number(bets[String(round.outcome.secondaryWinner)] ?? 0) * Number(round.outcome.secondaryMultiplier ?? 0))
           : (winner === 0 || winner === 1 ? 100 * Number(round.outcome.multiplier) : 0);
+        const deduction = gross > round.wager ? Math.floor(gross * 0.01) : 0;
+        const expected = gross - deduction;
         assert.equal(round.payout, expected, `${game} payout must agree with visible result`);
+        assert.equal(Number(round.outcome.grossPayout), gross);
+        assert.equal(Number(round.outcome.winningsDeduction), deduction);
         assert.equal(round.coinBalance, before - round.wager + round.payout);
         assert.equal((await product.mobileBootstrap(stranger)).wallet.coins, round.coinBalance);
         const [ledger] = await root.query<RowDataPacket[]>(
@@ -416,6 +437,7 @@ async function main() {
         assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.amount), round.wager);
         assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.count), 1);
         assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_CREDIT')?.amount ?? 0), round.payout);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_WITHHOLDING')?.amount ?? 0), deduction);
       }
       assert.equal((await product.gameRoundHistory(stranger, game, 10)).rounds.length, 3);
     }
@@ -427,7 +449,21 @@ async function main() {
     assert.equal(oldRetry.coinBalance, laterRound.coinBalance, 'old retry must return CURRENT wallet, not historical balance');
     assert.deepEqual(oldRetry.outcome, concurrent[0].outcome);
     await assert.rejects(product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'luck77', bets: {watermelon: 500, seven: 500, plum: 500}}));
-    console.log('PASS imported games: 21 complete database rounds, payout formulas, paired ledger, history, 4 concurrent retries, current balance on replay');
+    await root.execute("UPDATE wallet_balances SET available_balance = 1000000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
+    let targetedWins = 0;
+    for (let sample = 0; sample < 100; sample += 1) {
+      const round = await product.settleGameRound(stranger, {
+        clientRoundId: randomUUID(), game: 'luck77',
+        bets: {watermelon: 500, seven: 0, plum: 0},
+      });
+      if (round.outcome.targetWin === true) targetedWins += 1;
+      const gross = Number(round.outcome.grossPayout);
+      const deduction = gross > round.wager ? Math.floor(gross * 0.01) : 0;
+      assert.equal(Number(round.outcome.winningsDeduction), deduction);
+      assert.equal(round.payout, gross - deduction);
+    }
+    assert.ok(targetedWins >= 45 && targetedWins <= 75, `100 server rounds should stay near the configured 60% target, got ${targetedWins}%`);
+    console.log(`PASS imported games: complete database rounds, exact 1% withholding, ${targetedWins}% sampled target wins, paired ledger, history, retries`);
 
     const rewardHost = await user("QA Reward Host");
     const liveRewardCode = `LIVEREWARD${Date.now()}`;

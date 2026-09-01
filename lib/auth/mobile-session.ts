@@ -86,12 +86,13 @@ export async function createGoogleMobileSession(input: {
   deviceId?: string;
 }) {
   const google = await verifyGoogleIdentity(input.idToken);
-  const [existingRows] = await db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number })[]>(
-    "SELECT id, public_id, onboarding_completed FROM application_users WHERE google_subject = ? LIMIT 1",
+  const [existingRows] = await db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null })[]>(
+    "SELECT id, public_id, onboarding_completed, whatsapp_e164 FROM application_users WHERE google_subject = ? LIMIT 1",
     [google.subject],
   );
   const existing = existingRows[0];
-  if ((!existing || !existing.onboarding_completed) && !input.profile) {
+  const profileRequired = !existing || !existing.onboarding_completed || !/^\+[1-9]\d{7,14}$/.test(existing.whatsapp_e164 ?? "");
+  if (profileRequired && !input.profile) {
     return { requiresProfile: true, prefill: { fullName: google.name, email: google.email, avatarUrl: google.picture ?? null } };
   }
 
@@ -133,7 +134,7 @@ export async function createGoogleMobileSession(input: {
         "UPDATE application_users SET email = ?, avatar_url = COALESCE(avatar_url, ?), last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
         [google.email, google.picture ?? null, userId],
       );
-      if (input.profile && !existing?.onboarding_completed) {
+      if (input.profile && profileRequired) {
         await connection.execute(
           `UPDATE application_users SET full_name = ?, avatar_url = COALESCE(?, avatar_url), country_code = ?,
              date_of_birth = ?, gender = ?, language_code = ?, whatsapp_e164 = ?, onboarding_completed = TRUE, is_host = TRUE

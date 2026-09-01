@@ -724,6 +724,41 @@ type ServerGameOutcome = {
   payout: number;
 };
 
+type GameEconomyRules = {
+  targetWinRate: number;
+  winningsDeductionRate: number;
+};
+
+const defaultGameEconomyRules: GameEconomyRules = {
+  targetWinRate: 0.6,
+  winningsDeductionRate: 0.01,
+};
+
+function gameEconomyRules(value: unknown): GameEconomyRules {
+  const setting = asObject(value);
+  const target = Number(setting.targetWinRate ?? defaultGameEconomyRules.targetWinRate);
+  const deduction = Number(setting.winningsDeductionRate ?? defaultGameEconomyRules.winningsDeductionRate);
+  return {
+    targetWinRate: Number.isFinite(target) ? Math.max(0, Math.min(1, target)) : defaultGameEconomyRules.targetWinRate,
+    winningsDeductionRate: Number.isFinite(deduction) ? Math.max(0, Math.min(0.25, deduction)) : defaultGameEconomyRules.winningsDeductionRate,
+  };
+}
+
+function targetPlayerWin(rate: number) {
+  return randomInt(1_000_000) < Math.round(rate * 1_000_000);
+}
+
+function chooseIndexForTarget(
+  values: readonly number[],
+  grossPayout: (index: number) => number,
+  wager: number,
+  targetWin: boolean,
+) {
+  const preferred = values.filter((index) => targetWin ? grossPayout(index) > wager : grossPayout(index) <= wager);
+  const candidates = preferred.length ? preferred : values;
+  return candidates[randomInt(candidates.length)];
+}
+
 function canonicalBets(bets: Record<string, number>) {
   return Object.fromEntries(Object.entries(bets).sort(([left], [right]) => left.localeCompare(right)));
 }
@@ -771,43 +806,60 @@ function teenPattiValue(cards: number[]) {
   return { category: "highCard", label: "High Card", multiplier: 0 };
 }
 
-function teenPattiRound(input: Record<string, number>): ServerGameOutcome {
-  const checked = checkedBets(input, ["0", "1", "2"], 10_000);
-  const deck = secureShuffle(Array.from({ length: 52 }, (_, index) => index));
-  const hands = [deck.slice(0, 3), deck.slice(3, 6), deck.slice(6, 9)].map((cards) => {
-    const value = teenPattiValue(cards);
-    return {
-      cards: cards.map((card) => ({ rank: card % 13 + 2, suit: Math.floor(card / 13) })),
-      ...value,
-    };
-  });
-  const payout = hands.reduce((sum, hand, lane) => sum + checked.bets[String(lane)] * hand.multiplier, 0);
-  return { outcome: { hands }, wager: checked.total, payout };
+function teenPattiRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+  const checked = checkedBets(input, ["0", "1", "2"], 500);
+  if (checked.total === 0) throw new Error("Choose at least one Teen Patti hand.");
+  let selectedHands: ReturnType<typeof buildTeenPattiHands> | null = null;
+  let selectedPayout = 0;
+  for (let attempt = 0; attempt < 512; attempt++) {
+    const hands = buildTeenPattiHands();
+    const payout = hands.reduce((sum, hand, lane) => sum + checked.bets[String(lane)] * hand.multiplier, 0);
+    selectedHands = hands;
+    selectedPayout = payout;
+    if (targetWin ? payout > checked.total : payout <= checked.total) break;
+  }
+  return { outcome: { hands: selectedHands, targetWin }, wager: checked.total, payout: selectedPayout };
 }
 
-function luck77Round(input: Record<string, number>): ServerGameOutcome {
-  const checked = checkedBets(input, ["watermelon", "seven", "plum"], 500);
+function buildTeenPattiHands() {
+  const deck = secureShuffle(Array.from({ length: 52 }, (_, index) => index));
+  return [deck.slice(0, 3), deck.slice(3, 6), deck.slice(6, 9)].map((cards) => ({
+    cards: cards.map((card) => ({ rank: card % 13 + 2, suit: Math.floor(card / 13) })),
+    ...teenPattiValue(cards),
+  }));
+}
+
+function luck77Round(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+  const keys = ["watermelon", "seven", "plum"] as const;
+  const checked = checkedBets(input, keys, 100);
+  if (checked.total === 0) throw new Error("Choose a Luck77 house.");
   if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
     throw new Error("Choose no more than two Luck77 houses.");
   }
-  const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "seven", "plum", "watermelon", "plum", "watermelon", "plum"];
-  const winner = segments[randomInt(segments.length)];
-  const multiplier = winner === "seven" ? 8 : 2;
-  return { outcome: { winner, multiplier }, wager: checked.total, payout: checked.bets[winner] * multiplier };
+  // Exact eight-sector order shown in the 2026-09-01 reference recording.
+  const segments = ["seven", "watermelon", "plum", "watermelon", "seven", "plum", "watermelon", "plum"] as const;
+  const winner = chooseIndexForTarget(
+    segments.map((_, index) => index),
+    (index) => checked.bets[segments[index]] * (segments[index] === "seven" ? 8 : 2),
+    checked.total,
+    targetWin,
+  );
+  const winningHouse = segments[winner];
+  const multiplier = winningHouse === "seven" ? 8 : 2;
+  return { outcome: { winner: winningHouse, winningSegment: winner, multiplier, targetWin }, wager: checked.total, payout: checked.bets[winningHouse] * multiplier };
 }
 
-function footballRound(input: Record<string, number>): ServerGameOutcome {
+function footballRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const checked = checkedBets(input, footballMultipliers.map((_, index) => String(index)), 500);
-  const weights = footballMultipliers.map((multiplier) => Math.round(100_000 / multiplier));
-  const ticket = randomInt(weights.reduce((sum, weight) => sum + weight, 0));
-  let cursor = 0;
-  let winner = 0;
-  for (let index = 0; index < weights.length; index++) {
-    cursor += weights[index];
-    if (ticket < cursor) { winner = index; break; }
-  }
+  if (checked.total === 0) throw new Error("Choose a Bounty Football zone.");
+  const winner = chooseIndexForTarget(
+    footballMultipliers.map((_, index) => index),
+    (index) => checked.bets[String(index)] * footballMultipliers[index],
+    checked.total,
+    targetWin,
+  );
   const multiplier = footballMultipliers[winner];
-  return { outcome: { winner, multiplier }, wager: checked.total, payout: checked.bets[String(winner)] * multiplier };
+  return { outcome: { winner, multiplier, targetWin }, wager: checked.total, payout: checked.bets[String(winner)] * multiplier };
 }
 
 function jungleMultiplier(symbol: typeof jungleSymbols[number], matches: number) {
@@ -818,13 +870,31 @@ function jungleMultiplier(symbol: typeof jungleSymbols[number], matches: number)
   return table[symbol][matches] ?? 0;
 }
 
-function jungleRound(input: Record<string, number>): ServerGameOutcome {
+function jungleRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const checked = checkedBets(input, ["spin"], 150, 3_000);
   if (checked.total === 0) throw new Error("Choose a spin amount.");
   if (checked.total % junglePaylines.length !== 0) throw new Error("The Jungle Hunt bet must cover all 15 lines.");
-  const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleSymbols[randomInt(jungleSymbols.length)]));
+  let result: ReturnType<typeof evaluateJungleGrid> | null = null;
+  for (let attempt = 0; attempt < 512; attempt++) {
+    const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleSymbols[randomInt(jungleSymbols.length)]));
+    const evaluated = evaluateJungleGrid(grid, checked.total);
+    result = evaluated;
+    if (targetWin ? evaluated.payout > checked.total : evaluated.payout <= checked.total) break;
+  }
+  if (targetWin && result!.payout <= checked.total) {
+    const grid: (typeof jungleSymbols[number])[][] = Array.from(
+      { length: 3 },
+      () => Array.from({ length: 5 }, () => "ten" as typeof jungleSymbols[number]),
+    );
+    grid[0] = Array.from({ length: 5 }, () => "elephant" as const);
+    result = evaluateJungleGrid(grid, checked.total);
+  }
+  return { outcome: { grid: result!.grid, winningLines: result!.winningLines, targetWin }, wager: checked.total, payout: result!.payout };
+}
+
+function evaluateJungleGrid(grid: (typeof jungleSymbols[number])[][], total: number) {
   const winningLines: number[] = [];
-  const lineBet = checked.total / junglePaylines.length;
+  const lineBet = total / junglePaylines.length;
   let payout = 0;
   for (let line = 0; line < junglePaylines.length; line++) {
     const path = junglePaylines[line];
@@ -835,7 +905,7 @@ function jungleRound(input: Record<string, number>): ServerGameOutcome {
     winningLines.push(line + 1);
     payout += lineBet * jungleMultiplier(first, matches);
   }
-  return { outcome: { grid, winningLines }, wager: checked.total, payout };
+  return { grid, winningLines, payout };
 }
 
 type WeightedGoldenOutcome = { label: string; multiplier: number; weight: number };
@@ -876,24 +946,25 @@ function chooseWeighted<T extends { weight: number }>(values: readonly T[]) {
   return values[values.length - 1];
 }
 
-function goldenSingleRound(game: string, input: Record<string, number>): ServerGameOutcome {
+function goldenSingleRound(game: string, input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const unit = game === "deep_sea" ? 200 : 100;
   const checked = checkedBets(input, ["play"], unit, 10_000);
   if (checked.total === 0) throw new Error("Choose a play amount.");
   if (game === "card_arena") {
-    const player = randomInt(1, 14);
-    const dealer = randomInt(1, 14);
+    const dealer = targetWin ? randomInt(1, 14) : randomInt(2, 15);
+    const player = targetWin ? dealer + 1 : dealer - 1;
     const multiplier = player > dealer ? 2 : player === dealer ? 1 : 0;
     const label = player > dealer ? "Win" : player === dealer ? "Push" : "Lose";
     return {
-      outcome: { label, multiplier, player, dealer },
+      outcome: { label, multiplier, player, dealer, targetWin },
       wager: checked.total,
       payout: checked.total * multiplier,
     };
   }
-  const selected = chooseWeighted(goldenWheelOutcomes[game]);
+  const available = goldenWheelOutcomes[game].filter((outcome) => targetWin ? outcome.multiplier > 1 : outcome.multiplier <= 1);
+  const selected = chooseWeighted(available.length ? available : goldenWheelOutcomes[game]);
   return {
-    outcome: { label: selected.label, multiplier: selected.multiplier },
+    outcome: { label: selected.label, multiplier: selected.multiplier, targetWin },
     wager: checked.total,
     payout: Math.floor(checked.total * selected.multiplier),
   };
@@ -919,7 +990,7 @@ function threeCardValue(cards: number[]) {
   return { class: 1, score: ranks[2] * 169 + ranks[1] * 13 + ranks[0], label: "High Card" };
 }
 
-function threeCardRound(input: Record<string, number>): ServerGameOutcome {
+function threeCardRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const checked = checkedBets(input, ["0", "1", "2"], 100, 500_000);
   if (checked.total === 0) throw new Error("Choose a Three Card seat.");
   if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
@@ -930,54 +1001,63 @@ function threeCardRound(input: Record<string, number>): ServerGameOutcome {
     cards,
     ...threeCardValue(cards),
   }));
-  let winner = 0;
+  let naturalWinner = 0;
   for (let index = 1; index < hands.length; index++) {
-    if (hands[index].class > hands[winner].class ||
-        (hands[index].class === hands[winner].class && hands[index].score > hands[winner].score)) winner = index;
+    if (hands[index].class > hands[naturalWinner].class ||
+        (hands[index].class === hands[naturalWinner].class && hands[index].score > hands[naturalWinner].score)) naturalWinner = index;
   }
+  const winner = chooseIndexForTarget([0, 1, 2], (index) => checked.bets[String(index)] * 3, checked.total, targetWin);
+  if (winner !== naturalWinner) [hands[winner], hands[naturalWinner]] = [hands[naturalWinner], hands[winner]];
   return {
-    outcome: { hands, winningSeat: winner + 1, multiplier: 3, label: `Seat ${winner + 1}` },
+    outcome: { hands, winningSeat: winner + 1, multiplier: 3, label: `Seat ${winner + 1}`, targetWin },
     wager: checked.total,
     payout: checked.bets[String(winner)] * 3,
   };
 }
 
-function greedyRound(game: string, input: Record<string, number>): ServerGameOutcome {
-  const keys = Array.from({ length: 8 }, (_, index) => String(index));
+function greedyRound(game: string, input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const lion = game === "greedy_lion";
-  const checked = checkedBets(input, keys, lion ? 500 : 100, lion ? 50_000_000 : 100_000);
+  const keys = Array.from({ length: lion ? 8 : 10 }, (_, index) => String(index));
+  const checked = checkedBets(input, keys, 500, 50_000_000);
   if (checked.total === 0) throw new Error(lion ? "Choose at least one food house." : "Choose at least one wheel zone.");
   if (Object.values(checked.bets).filter((amount) => amount > 0).length > 6) {
     throw new Error("Choose no more than six wheel zones.");
   }
   const multipliers = lion
     ? [5, 45, 25, 5, 15, 5, 5, 10] as const
-    : [5, 5, 5, 5, 10, 15, 25, 45] as const;
+    : [5, 10, 15, 25, 45, 5, 5, 5, 1.25, 4.37] as const;
   const labels = lion
     ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Steak"] as const
-    : ["Berry", "Lemon", "Grape", "Cake", "Fish", "Honey", "Lobster", "Royal Feast"] as const;
-  const winner = chooseWeighted(multipliers.map((multiplier, index) => ({
-    index,
-    // Keep selection server-controlled and roughly inverse to the published
-    // multiplier instead of trusting any client-provided result.
-    weight: Math.max(1, Math.round(100 / multiplier)),
-  }))).index;
+    : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce", "Salad", "Pizza"] as const;
+  const resultIndexes = Array.from({ length: 8 }, (_, index) => index);
+  const categoryFor = (index: number) => [0, 5, 6, 7].includes(index) ? 8 : 9;
+  const grossFor = (index: number) => checked.bets[String(index)] * multipliers[index] +
+    (lion ? 0 : checked.bets[String(categoryFor(index))] * (multipliers[categoryFor(index)] ?? 0));
+  const winner = chooseIndexForTarget(resultIndexes, grossFor, checked.total, targetWin);
   const multiplier = multipliers[winner];
+  const secondaryWinner = lion ? null : categoryFor(winner);
+  const payout = Math.floor(grossFor(winner));
   return {
-    outcome: { winner, winningZone: winner + 1, multiplier, label: labels[winner] },
+    outcome: {
+      winner, winningZone: winner + 1, multiplier, label: labels[winner], targetWin,
+      secondaryWinner,
+      secondaryLabel: secondaryWinner == null ? null : labels[secondaryWinner],
+      secondaryMultiplier: secondaryWinner == null ? null : multipliers[secondaryWinner],
+      winners: secondaryWinner == null ? [winner] : [winner, secondaryWinner],
+    },
     wager: checked.total,
-    payout: checked.bets[String(winner)] * multiplier,
+    payout,
   };
 }
 
-function createServerGameOutcome(game: string, bets: Record<string, number>) {
-  if (game === teenPattiGame) return teenPattiRound(bets);
-  if (game === "luck77") return luck77Round(bets);
-  if (game === "bounty_football") return footballRound(bets);
-  if (game === "jungle_hunt") return jungleRound(bets);
-  if (goldenSingleGames.has(game)) return goldenSingleRound(game, bets);
-  if (game === "three_card") return threeCardRound(bets);
-  if (goldenZoneGames.has(game)) return greedyRound(game, bets);
+function createServerGameOutcome(game: string, bets: Record<string, number>, targetWin: boolean) {
+  if (game === teenPattiGame) return teenPattiRound(bets, targetWin);
+  if (game === "luck77") return luck77Round(bets, targetWin);
+  if (game === "bounty_football") return footballRound(bets, targetWin);
+  if (game === "jungle_hunt") return jungleRound(bets, targetWin);
+  if (goldenSingleGames.has(game)) return goldenSingleRound(game, bets, targetWin);
+  if (game === "three_card") return threeCardRound(bets, targetWin);
+  if (goldenZoneGames.has(game)) return greedyRound(game, bets, targetWin);
   throw new Error("This game is unavailable.");
 }
 
@@ -1028,7 +1108,24 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       return { ...gameRoundResponse(existing), coinBalance: before };
     }
 
-    const result = createServerGameOutcome(input.game, bets);
+    const [gameSettingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
+    );
+    const rules = gameEconomyRules(gameSettingRows[0]?.setting_value);
+    const targetWin = targetPlayerWin(rules.targetWinRate);
+    const result = createServerGameOutcome(input.game, bets, targetWin);
+    const grossPayout = result.payout;
+    const winningsDeduction = grossPayout > result.wager
+      ? Math.floor(grossPayout * rules.winningsDeductionRate)
+      : 0;
+    result.payout = grossPayout - winningsDeduction;
+    result.outcome = {
+      ...result.outcome,
+      grossPayout,
+      winningsDeduction,
+      winningsDeductionRate: rules.winningsDeductionRate,
+      netPayout: result.payout,
+    };
     if (before < result.wager) throw new Error("Not enough coins.");
     const after = before - result.wager + result.payout;
     if (!Number.isSafeInteger(after) || after < 0) throw new Error("The game result could not be settled.");
@@ -1047,7 +1144,15 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
          VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
-        [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId })],
+        [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round net payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, winningsDeduction, winningsDeductionRate: rules.winningsDeductionRate })],
+      );
+    }
+    if (winningsDeduction > 0) {
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, amount, status, reason, metadata)
+         VALUES (?, ?, ?, 'COIN', 'GAME_WITHHOLDING', 'GAME', 'PLATFORM', ?, 'COMPLETED', ?, ?)`,
+        [randomUUID(), code("GMW"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:WITHHOLDING`, winningsDeduction, `${input.game} winnings deduction`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, netPayout: result.payout, rate: rules.winningsDeductionRate })],
       );
     }
 

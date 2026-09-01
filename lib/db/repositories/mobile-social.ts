@@ -357,6 +357,43 @@ function privateMessagePricing(value: unknown) {
   };
 }
 
+export async function searchPrivateMessageRecipients(identity: MobileIdentity, rawQuery: string) {
+  const query = rawQuery.trim();
+  if (query.length < 2) return { people: [] };
+  const numeric = /^\d+$/.test(query);
+  const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  const [rows] = await db().query<RowDataPacket[]>(
+    `SELECT user.public_id, user.full_name, user.country_code, user.language_code,
+            user.level_number, user.anchor_income_points, user.vip_tier, user.is_host,
+            user.bio,
+            CASE WHEN avatar.updated_at IS NOT NULL
+              THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id,
+                          '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+              ELSE user.avatar_url END avatar_url
+     FROM application_users user
+     LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+     WHERE user.id != ? AND user.account_status = 'ACTIVE'
+       AND (${numeric ? "user.public_id = ? OR " : ""}user.full_name LIKE ? ESCAPE '\\\\')
+     ORDER BY ${numeric ? "(user.public_id = ?) DESC," : ""} user.full_name ASC, user.public_id ASC
+     LIMIT 20`,
+    [identity.userId, ...(numeric ? [query] : []), like, ...(numeric ? [query] : [])],
+  );
+  return {
+    people: rows.map((row) => ({
+      id: String(row.public_id),
+      name: String(row.full_name),
+      avatarUrl: row.avatar_url,
+      country: row.country_code ?? "",
+      language: row.language_code ?? "en",
+      level: Number(row.level_number ?? 1),
+      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+      vip: Number(row.vip_tier ?? 0),
+      role: row.is_host ? "host" : "user",
+      bio: String(row.bio ?? ""),
+    })),
+  };
+}
+
 export async function privateMessagingForUser(identity: MobileIdentity, before?: string) {
   try {
     const [messages, settingRows, blocks, usageRows, clockRows] = await Promise.all([
