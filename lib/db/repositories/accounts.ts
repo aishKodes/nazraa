@@ -70,6 +70,24 @@ export async function createInitialMaster(input: { publicId: number; fullName: s
        WHERE NOT EXISTS (SELECT 1 FROM platform_accounts WHERE role = 'MASTER')`,
       [randomUUID(), input.publicId, roleCode, input.fullName, passwordHash],
     );
+    // Product migrations can run before the first Master is provisioned. Seed
+    // the current authoritative reward rule at that moment as well, otherwise
+    // a brand-new installation would have no eligible Live reward at all.
+    await connection.execute(
+      `INSERT INTO host_reward_rules
+        (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by)
+       SELECT UUID(), seed.room_type, seed.rate, 60, TRUE, CURRENT_TIMESTAMP(3), master.id
+       FROM (
+         SELECT 'LIVE' room_type, 3500 rate UNION ALL
+         SELECT 'FACE', 3500 UNION ALL
+         SELECT 'PARTY', 0
+       ) seed
+       INNER JOIN platform_accounts master ON master.role = 'MASTER' AND master.status = 'ACTIVE'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM host_reward_rules existing
+         WHERE existing.room_type = seed.room_type AND existing.enabled = TRUE
+       )`,
+    );
   });
   return true;
 }

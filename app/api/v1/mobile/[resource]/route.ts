@@ -74,7 +74,7 @@ function selectResource(resource: string, bootstrap: Awaited<ReturnType<typeof m
     levels: ["consumptionLevel", "anchorIncomeLevel"], gifts: ["gifts"],
     "coin-packages": ["coinPackages"], "coin-sellers": ["coinSellers"], "coin-orders": ["coinPurchaseRequests"],
     "daily-rewards": ["dailyRewards"], "diamond-exchange": ["diamondConversionRule", "diamondExchangeHistory"],
-    "host-rewards": ["hostRewardHistory", "policies", "accessPolicy"], policies: ["policies"],
+    "host-rewards": ["hostRewardRules", "hostRewardHistory", "policies", "accessPolicy"], policies: ["policies"],
     leaderboards: ["leaderboards"], discovery: ["discovery"], vip: ["vip"], pk: ["pkStreak"],
   };
   const selected = keys[resource];

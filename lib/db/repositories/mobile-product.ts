@@ -196,6 +196,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     hostRows,
     rankingRows,
     agencyRankingRows,
+    hostRewardRuleRows,
     settings,
     completion,
   ] = await Promise.all([
@@ -308,6 +309,12 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
        WHERE account.role = 'AGENCY' AND account.status = 'ACTIVE' GROUP BY account.id, account.public_id, account.full_name
        ORDER BY score DESC, account.created_at ASC LIMIT 50`,
     ),
+    db().query<RowDataPacket[]>(
+      `SELECT room_type, coins_per_hour, minimum_eligible_seconds
+       FROM host_reward_rules
+       WHERE enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3)
+       ORDER BY FIELD(room_type, 'LIVE', 'FACE', 'PARTY'), effective_from DESC`,
+    ),
     settingsMap(),
     mobileCompletionSnapshot(identity),
   ]);
@@ -390,6 +397,11 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
     agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
     hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: levelProgress(Number(currentHost.anchor_income_points), "anchorIncome", maximumActorLevel).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
+    hostRewardRules: [...new Map(hostRewardRuleRows[0].map((row) => [String(row.room_type), {
+      roomType: String(row.room_type).toLowerCase(),
+      coinsPerHour: Number(row.coins_per_hour),
+      minimumEligibleSeconds: Number(row.minimum_eligible_seconds),
+    }])).values()],
     consumptionLevel: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel),
     anchorIncomeLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel),
     rankings: rankingRows[0].map((row, index) => ({ rank: index + 1, user: { id: String(row.public_id), name: String(row.full_name), level: Number(row.level_number), vip: Number(row.vip_tier), role: "user" }, score: Number(row.consumption_points), label: "Consumption" })),

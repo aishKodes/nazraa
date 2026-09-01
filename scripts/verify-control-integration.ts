@@ -36,6 +36,15 @@ async function main() {
     const mobileSession = await import("@/lib/auth/mobile-session");
     const password = "Local-QA-Only-2026!";
     await accounts.createInitialMaster({ publicId: 100001, fullName: "QA Master", password });
+    const [seededHostRules] = await root.query<RowDataPacket[]>(
+      "SELECT room_type, coins_per_hour FROM host_reward_rules WHERE enabled = TRUE ORDER BY room_type",
+    );
+    assert.deepEqual(
+      Object.fromEntries(seededHostRules.map((rule) => [String(rule.room_type), Number(rule.coins_per_hour)])),
+      { FACE: 3500, LIVE: 3500, PARTY: 0 },
+      "freshly provisioned databases must never expose the obsolete 2,000/hour Host reward",
+    );
+    passed++;
     const masterAccount = await accounts.accountByManagementId("100001");
     assert.ok(masterAccount);
     const master = await accounts.scopeFor(masterAccount);

@@ -230,8 +230,8 @@ INSERT INTO host_reward_rules
   (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by)
 SELECT UUID(), seed.room_type, seed.rate, 60, TRUE, CURRENT_TIMESTAMP(3), @nazraa_master_id
 FROM (
-  SELECT 'LIVE' room_type, 2000 rate UNION ALL
-  SELECT 'FACE', 2000 UNION ALL
+  SELECT 'LIVE' room_type, 3500 rate UNION ALL
+  SELECT 'FACE', 3500 UNION ALL
   SELECT 'PARTY', 0
 ) seed
 WHERE @nazraa_master_id IS NOT NULL
@@ -325,7 +325,7 @@ SELECT UUID(), 'host-live-access', '1.0', 'Host Rules & Live Access Policy',
   JSON_OBJECT('sections', JSON_ARRAY(
     JSON_OBJECT('title','Account','rules',JSON_ARRAY('Sign in with Google/Gmail.','Complete name, date of birth, gender, country and WhatsApp number.','Duplicate account or face abuse is prohibited.')),
     JSON_OBJECT('title','Access','rules',JSON_ARRAY('Unverified users may browse and join other rooms.','Face verification is required to create Party Live and use hosting interaction.','Face Live requires face verification, approved Agency membership, Agency authorization and Super Admin authorization.')),
-    JSON_OBJECT('title','Rewards','rules',JSON_ARRAY('Eligible Video/Face Live time earns 2,000 coins per hour under the current server rule.','Party Board hourly reward is zero.','The server, not the phone clock, calculates eligible duration.')),
+    JSON_OBJECT('title','Rewards','rules',JSON_ARRAY('Eligible Video/Face Live time earns 3,500 coins per hour under the current server rule.','Party Board hourly reward is zero.','The server, not the phone clock, calculates eligible duration.')),
     JSON_OBJECT('title','Safety','rules',JSON_ARRAY('Use proper dress and behaviour.','No harassment, exploitation, fraud or prohibited activity.','Nazraa management and moderators may restrict rooms or accounts that breach policy.'))
   )), TRUE, CURRENT_TIMESTAMP(3), @nazraa_master_id
 WHERE @nazraa_master_id IS NOT NULL

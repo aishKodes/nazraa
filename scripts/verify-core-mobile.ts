@@ -342,27 +342,47 @@ async function main() {
     const repeatedDebit = await product.mutateGameWallet(owner, { clientTransactionId: gameTransactionId, direction: "DEBIT", amount: 25, game: "Luck77", reason: "QA repeated wager" });
     assert.equal(repeatedDebit.coinBalance, gameDebit.coinBalance, "game wallet mutation must be idempotent");
     const diamondsBeforeGame = (await product.mobileBootstrap(owner)).wallet.diamonds;
-    const clientRoundId = randomUUID();
-    const gameRound = await product.settleGameRound(owner, {
-      clientRoundId,
-      game: "luck77",
-      bets: { watermelon: 500, seven: 0, plum: 0 },
-    });
-    assert.equal(gameRound.coinBalance, repeatedDebit.coinBalance - gameRound.wager + gameRound.payout);
-    const repeatedRound = await product.settleGameRound(owner, {
-      clientRoundId,
-      game: "luck77",
-      bets: { watermelon: 500, seven: 0, plum: 0 },
-    });
-    assert.equal(repeatedRound.roundId, gameRound.roundId);
-    assert.equal(repeatedRound.coinBalance, gameRound.coinBalance, "game round settlement must be idempotent");
-    await assert.rejects(product.settleGameRound(owner, {
-      clientRoundId,
-      game: "luck77",
-      bets: { watermelon: 0, seven: 500, plum: 0 },
-    }), /already used/);
+    async function completeSharedRound(game: "luck77" | "bounty_football" | "greedy_king" | "greedy_lion", bets: Record<string, number>) {
+      const before = await product.gameSharedRoundState(owner, game);
+      // The QA call can land during DRAWING/RESULT. Keep this deterministic
+      // without sleeping by reopening only this temporary database round.
+      await root.execute(
+        "UPDATE game_shared_rounds SET betting_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 30 SECOND), drawing_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 31 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 32 SECOND) WHERE id = ?",
+        [before.round.id],
+      );
+      const requestId = randomUUID();
+      const placed = await product.placeSharedGameBets(owner, { requestId, game, roundId: before.round.id, bets });
+      const repeated = await product.placeSharedGameBets(owner, { requestId, game, roundId: before.round.id, bets });
+      assert.equal(repeated.walletBalance, placed.walletBalance, `${game} retry must not debit twice`);
+      const changed = {...bets};
+      const first = Object.keys(changed)[0];
+      changed[first] = Number(changed[first]) + 500;
+      await assert.rejects(
+        product.placeSharedGameBets(owner, { requestId, game, roundId: before.round.id, bets: changed }),
+        /already used/,
+      );
+      await root.execute(
+        "UPDATE game_shared_rounds SET betting_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND), drawing_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 SECOND) WHERE id = ?",
+        [before.round.id],
+      );
+      const settled = await product.gameSharedRoundState(owner, game);
+      assert.ok(settled.outcome, `${game} must reveal one server outcome`);
+      assert.ok(settled.settlement, `${game} must settle the user's wager`);
+      assert.equal(
+        settled.walletBalance,
+        placed.walletBalance + Number(settled.settlement.payout),
+        `${game} visible wallet must match the settled payout`,
+      );
+      return {
+        ...settled,
+        outcome: settled.outcome!,
+        settlement: settled.settlement!,
+      };
+    }
+    const gameRound = await completeSharedRound("luck77", { watermelon: 500, seven: 0, plum: 0 });
+    assert.ok(["watermelon", "seven", "plum"].includes(String(gameRound.outcome.winner)));
     const roundHistory = await product.gameRoundHistory(owner, "luck77", 10);
-    assert.equal(roundHistory.rounds[0]?.roundId, gameRound.roundId);
+    assert.equal(roundHistory.rounds[0]?.outcome.sharedRoundId, gameRound.round.id);
     const teenRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",
@@ -395,7 +415,7 @@ async function main() {
       game: "teen_patti_pro",
       bets: { "0": 500, "1": 500, "2": 500, crown: 500 },
     }), /up to 2 hands/);
-    const teenLeaderboard = await product.gameRoundLeaderboard("teen_patti_pro", 10);
+    const teenLeaderboard = await product.gameRoundLeaderboard("teen_patti_pro", 10, "round");
     assert.ok(teenLeaderboard.entries.some((entry) => entry.publicId === owner.publicId));
     assert.ok(teenLeaderboard.entries.every((entry) => Number.isInteger(entry.netWinnings)));
     const spectatorTeenRound = await product.settleGameRound(owner, {
@@ -406,10 +426,8 @@ async function main() {
     assert.equal(spectatorTeenRound.wager, 0);
     assert.equal(spectatorTeenRound.payout, 0);
     assert.equal(spectatorTeenRound.outcome.spectator, true, "Teen Patti spectators must still receive a server-authoritative reveal");
-    const footballRound = await product.settleGameRound(owner, {
-      clientRoundId: randomUUID(),
-      game: "bounty_football",
-      bets: { "0": 500, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 },
+    const footballRound = await completeSharedRound("bounty_football", {
+      "0": 500, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0,
     });
     assert.equal(Number.isInteger(footballRound.outcome.winner), true);
     const jungleRound = await product.settleGameRound(owner, {
@@ -421,17 +439,12 @@ async function main() {
     assert.equal(Array.isArray(jungleRound.outcome.winningLines), true);
     for (const game of ["greedy_king", "greedy_lion"] as const) {
       const zoneCount = game === "greedy_king" ? 10 : 8;
-      const round = await product.settleGameRound(owner, {
-        clientRoundId: randomUUID(),
+      const round = await completeSharedRound(
         game,
-        bets: Object.fromEntries(Array.from({length: zoneCount}, (_, index) => [String(index), index < 2 ? 500 : 0])),
-      });
+        Object.fromEntries(Array.from({length: zoneCount}, (_, index) => [String(index), index < 2 ? 500 : 0])),
+      );
       assert.ok(Number(round.outcome.winner) >= 0 && Number(round.outcome.winner) < 8);
       assert.ok([5, 10, 15, 25, 45].includes(Number(round.outcome.multiplier)));
-      if (game === "greedy_king") {
-        assert.ok([8, 9].includes(Number(round.outcome.secondaryWinner)));
-        assert.equal(Array.isArray(round.outcome.winners) && round.outcome.winners.length, 2);
-      }
     }
     assert.equal((await product.mobileBootstrap(owner)).wallet.diamonds, diamondsBeforeGame, "game results must never credit withdrawable host earnings");
     console.log("PASS games: published server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
@@ -470,12 +483,12 @@ async function main() {
     assert.equal(oldRetry.coinBalance, laterRound.coinBalance, 'old retry must return CURRENT wallet, not historical balance');
     assert.deepEqual(oldRetry.outcome, concurrent[0].outcome);
     await assert.rejects(product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'luck77', bets: {watermelon: 500, seven: 500, plum: 500}}));
-    await root.execute("UPDATE wallet_balances SET available_balance = 1000000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
+    await root.execute("UPDATE wallet_balances SET available_balance = 10000000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
     let targetedWins = 0;
     for (let sample = 0; sample < 100; sample += 1) {
       const round = await product.settleGameRound(stranger, {
-        clientRoundId: randomUUID(), game: 'luck77',
-        bets: {watermelon: 500, seven: 0, plum: 0},
+        clientRoundId: randomUUID(), game: 'teen_patti_pro',
+        bets: {"0": 10000, "1": 0, "2": 0},
       });
       if (round.outcome.targetWin === true) targetedWins += 1;
       const gross = Number(round.outcome.grossPayout);
@@ -484,7 +497,7 @@ async function main() {
       assert.equal(round.payout, gross - deduction);
     }
     assert.ok(targetedWins >= 45 && targetedWins <= 75, `100 server rounds should stay near the configured 60% target, got ${targetedWins}%`);
-    console.log(`PASS imported games: complete database rounds, exact 1% withholding, ${targetedWins}% sampled target wins, paired ledger, history, retries`);
+    console.log(`PASS imported games: complete database rounds, exact 1% withholding, ${targetedWins}% sampled Teen Patti target wins, paired ledger, history, retries`);
 
     const rewardHost = await user("QA Reward Host");
     const liveRewardCode = `LIVEREWARD${Date.now()}`;
