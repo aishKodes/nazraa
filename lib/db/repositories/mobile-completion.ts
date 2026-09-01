@@ -530,7 +530,7 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
     );
     const raw = settingRows[0]?.setting_value;
     const settings = typeof raw === "string" ? JSON.parse(raw) as { pkModes?: string[]; pkDurations?: number[] } : raw as { pkModes?: string[]; pkDurations?: number[] } | undefined;
-    const availableModes = settings?.pkModes ?? ["Classic", "Auto PK", "Individual", "Random"];
+    const availableModes = settings?.pkModes ?? ["Classic", "Auto PK", "Random", "Invite/Friends"];
     const availableDurations = (settings?.pkDurations ?? [2, 5, 10]).map(Number);
     if (!availableModes.includes(input.mode) || !availableDurations.includes(input.durationMinutes)) {
       throw new Error("That PK rule is not currently available.");

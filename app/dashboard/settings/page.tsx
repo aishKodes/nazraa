@@ -170,7 +170,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label className="span-two">Interactions — one per line<textarea name="interactionRows" rows={7} required defaultValue={interactions.map((item) => `${item.key} | ${item.label} | ${item.emoji} | ${item.enabled === false ? "disabled" : "enabled"}`).join("\n")} /><span>Format: key | label | emoji | enabled/disabled. Add, edit, disable, or remove rows; no APK update is required.</span></label>
         <label>Animation target key<input name="interactionAssetKey" placeholder="Example: kiss" /></label>
         <label>Upload/replace animation<input name="interactionAsset" type="file" accept="image/jpeg,image/png,image/webp" /><span>JPG, PNG, or animated WebP · max 1 MB. Existing artwork stays unless replaced.</span></label>
-        <label className="span-two">PK modes (comma separated)<input name="pkModes" required defaultValue={(roomFeatures?.pkModes ?? ["Classic", "Auto PK", "Individual", "Random"]).join(", ")} /></label>
+        <label className="span-two">PK modes (comma separated)<input name="pkModes" required defaultValue={(roomFeatures?.pkModes ?? ["Classic", "Auto PK", "Random", "Invite/Friends"]).join(", ")} /></label>
         <label>Presence failures before stop<input name="presenceWarningLimit" type="number" min="3" max="30" required defaultValue={roomFeatures?.presenceWarningLimit ?? 10} /></label>
         <label>Auto-stops before suspension<input name="presenceSuspensionLimit" type="number" min="1" max="20" required defaultValue={roomFeatures?.presenceSuspensionLimit ?? 5} /></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
