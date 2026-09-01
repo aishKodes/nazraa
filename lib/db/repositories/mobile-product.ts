@@ -874,7 +874,25 @@ function strongestTeenPattiLane(hands: ReturnType<typeof buildTeenPattiHands>) {
 
 function teenPattiRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
   const checked = checkedBets(input, ["0", "1", "2"], 500);
-  if (checked.total === 0) throw new Error("Choose at least one Teen Patti hand.");
+  if (checked.total === 0) {
+    const hands = buildTeenPattiHands();
+    const winnerLane = strongestTeenPattiLane(hands);
+    const winner = hands[winnerLane];
+    return {
+      outcome: {
+        hands,
+        winnerLane,
+        winningCategory: winner.category,
+        winningLabel: winner.label,
+        crownMultiplier: winner.multiplier,
+        payoutMultiplier: winner.multiplier || 3,
+        spectator: true,
+        targetWin: false,
+      },
+      wager: 0,
+      payout: 0,
+    };
+  }
   let selectedHands: ReturnType<typeof buildTeenPattiHands> | null = null;
   let selectedPayout = 0;
   let selectedWinner = 0;
@@ -1277,7 +1295,8 @@ export async function gameRoundLeaderboard(game: string, limit = 10) {
      FROM game_round_results result
      INNER JOIN application_users user ON user.id = result.application_user_id
      LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-     WHERE result.game_name = ? AND DATE(result.created_at) = CURRENT_DATE
+     WHERE result.game_name = ? AND result.wager_total > 0
+       AND DATE(result.created_at) = CURRENT_DATE
      GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
               avatar.updated_at, user.country_code
      ORDER BY net_winnings DESC, total_payout DESC, MIN(result.created_at), user.public_id

@@ -372,6 +372,14 @@ async function main() {
     const teenLeaderboard = await product.gameRoundLeaderboard("teen_patti_pro", 10);
     assert.ok(teenLeaderboard.entries.some((entry) => entry.publicId === owner.publicId));
     assert.ok(teenLeaderboard.entries.every((entry) => Number.isInteger(entry.netWinnings)));
+    const spectatorTeenRound = await product.settleGameRound(owner, {
+      clientRoundId: randomUUID(),
+      game: "teen_patti_pro",
+      bets: { "0": 0, "1": 0, "2": 0 },
+    });
+    assert.equal(spectatorTeenRound.wager, 0);
+    assert.equal(spectatorTeenRound.payout, 0);
+    assert.equal(spectatorTeenRound.outcome.spectator, true, "Teen Patti spectators must still receive a server-authoritative reveal");
     const footballRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "bounty_football",
