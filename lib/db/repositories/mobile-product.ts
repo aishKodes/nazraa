@@ -1511,7 +1511,7 @@ async function sharedRoundStatePayload(
     connection.query<RowDataPacket[]>(
       `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
               user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-              user.consumption_level
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level
        FROM game_big_winner_events event
        INNER JOIN application_users user ON user.id = event.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
@@ -1810,7 +1810,7 @@ export async function gameSocialState(game: string) {
       connection.query<RowDataPacket[]>(
         `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
                 user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-                user.consumption_level
+                LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level
          FROM game_big_winner_events event
          INNER JOIN application_users user ON user.id = event.application_user_id
          LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id

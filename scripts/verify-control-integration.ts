@@ -113,6 +113,13 @@ async function main() {
     const [hostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
     const hostId = String(hostRows[0].id);
     const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true };
+    const sharedGame = await product.gameSharedRoundState(identity, "luck77");
+    assert.equal(sharedGame.game, "luck77");
+    assert.equal(sharedGame.controls.enabled, true);
+    assert.deepEqual(Object.keys(sharedGame.targetTotals), ["watermelon", "seven", "plum"]);
+    const gameSocial = await product.gameSocialState("jungle_hunt");
+    assert.equal(gameSocial.game, "jungle_hunt");
+    assert.equal(gameSocial.controls?.enabled, true);
     const roomInput = (kind: string) => ({ roomCode: randomUUID(), kind, title: "QA suspension room", category: "chat", language: "en", privacy: "public" as const, seatCount: 8, themeIndex: 0, themeEnabled: true, countryCode: "IN" });
     const interruptedRoom = await product.createRoom(identity, roomInput("party"));
     // Unverified hosts must remain moderatable; verification is independent.
