@@ -11,7 +11,7 @@ export async function GET(_request: Request, context: { params: Promise<{ public
   return new NextResponse(new Uint8Array(avatar.image_data), {
     headers: {
       "Content-Type": avatar.mime_type,
-      "Cache-Control": "public, max-age=31536000, immutable",
+      "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
       "X-Content-Type-Options": "nosniff",
     },
   });

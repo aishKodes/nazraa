@@ -15,7 +15,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
        AND application.logo_data IS NOT NULL LIMIT 1`, [id, /^\d{6}$/.test(id) ? id : null]);
   if (!rows[0]) return new NextResponse("Not found", { status: 404 });
   return new NextResponse(new Uint8Array(rows[0].logo_data), { headers: {
-    "Content-Type": String(rows[0].logo_mime_type), "Cache-Control": "public, max-age=3600",
+    "Content-Type": String(rows[0].logo_mime_type), "Cache-Control": "public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400",
     "X-Content-Type-Options": "nosniff",
   } });
 }

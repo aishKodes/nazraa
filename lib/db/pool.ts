@@ -19,10 +19,19 @@ function databaseConfig(): PoolOptions {
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     waitForConnections: true,
-    connectionLimit: 8,
-    maxIdle: 4,
-    idleTimeout: 60_000,
-    queueLimit: 0,
+    // Hostinger is a remote shared MySQL service. A Vercel cold start opening
+    // eight sockets at once was intermittently timing out login and mobile
+    // bootstrap. Keep a small warm pool and queue the short queries instead.
+    connectionLimit: Math.min(2, Math.max(1, Number(process.env.DB_CONNECTION_LIMIT ?? 1))),
+    maxIdle: 1,
+    // Keep the single socket across warm Fluid-compute invocations. Hostinger
+    // limits new connections per hour, so rapidly discarding healthy sockets
+    // makes an otherwise healthy database appear offline.
+    idleTimeout: 10 * 60_000,
+    queueLimit: 100,
+    connectTimeout: 12_000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
     decimalNumbers: true,
     timezone: "Z",
     ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
@@ -34,4 +43,53 @@ export function db() {
     global.nazraaPool = mysql.createPool(databaseConfig());
   }
   return global.nazraaPool;
+}
+
+const transientCodes = new Set([
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "PROTOCOL_CONNECTION_LOST",
+  "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR",
+]);
+
+export function isTransientDatabaseError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code) : "";
+  const syscall = "syscall" in error ? String(error.syscall) : "";
+  return transientCodes.has(code) || (code === "ETIMEDOUT" && syscall === "connect");
+}
+
+export function isDatabaseAvailabilityError(error: unknown) {
+  if (isTransientDatabaseError(error)) return true;
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code) : "";
+  return code === "ER_USER_LIMIT_REACHED" || code === "ER_CON_COUNT_ERROR";
+}
+
+function discardPool() {
+  const pool = global.nazraaPool;
+  global.nazraaPool = undefined;
+  if (pool) void pool.end().catch(() => undefined);
+}
+
+/** Retry connection/read failures only. Never wrap a non-idempotent mutation. */
+export async function withDatabaseReadRetry<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDatabaseError(error) || attempt === attempts) throw error;
+      discardPool();
+      await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
+    }
+  }
+  throw lastError;
+}
+
+export async function getDatabaseConnection() {
+  return withDatabaseReadRetry(() => db().getConnection());
 }

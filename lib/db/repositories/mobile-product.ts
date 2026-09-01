@@ -3,7 +3,7 @@ import "server-only";
 import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
-import { db } from "@/lib/db/pool";
+import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
@@ -12,6 +12,7 @@ import { encryptPrivateText } from "@/lib/security/documents";
 import { mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
+import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -78,9 +79,9 @@ async function pruneInactiveRooms() {
       `SELECT room.id FROM live_rooms room
        WHERE room.status IN ('ACTIVE','LOCKED')
          AND NOT EXISTS (
-           SELECT 1 FROM live_room_members owner
-           WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL
-             AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+           SELECT 1 FROM live_room_members active_member
+           WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
+             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 10 MINUTE
          ) FOR UPDATE`,
     );
     if (!staleRows.length) return;
@@ -134,7 +135,7 @@ async function activeRoomRows(after?: string) {
        LEFT JOIN application_user_avatars top_avatar ON top_avatar.application_user_id = top_user.id
        LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
        WHERE room.status IN ('ACTIVE','LOCKED')
-         AND EXISTS (SELECT 1 FROM live_room_members owner WHERE owner.room_id = room.id AND owner.room_role = 'OWNER' AND owner.left_at IS NULL AND owner.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)
+         AND EXISTS (SELECT 1 FROM live_room_members active_member WHERE active_member.room_id = room.id AND active_member.left_at IS NULL AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 10 MINUTE)
        ${after ? "AND (room.started_at, room.id) < (SELECT started_at, id FROM live_rooms WHERE room_code = ?)" : ""}
        ORDER BY room.started_at DESC, room.id DESC LIMIT 30`, after ? [after] : [],
     );
@@ -165,11 +166,13 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
 }
 
 export async function activeRoomPage(after?: string) {
-  const [rows] = await activeRoomRows(after);
-  return rows.map((row) => mapActiveRoom(row));
+  return withDatabaseReadRetry(async () => {
+    const [rows] = await activeRoomRows(after);
+    return rows.map((row) => mapActiveRoom(row));
+  });
 }
 
-export async function mobileBootstrap(identity: MobileIdentity) {
+async function mobileBootstrapOnce(identity: MobileIdentity) {
   await pruneInactiveRooms();
   const [
     profileRows,
@@ -396,6 +399,13 @@ export async function mobileBootstrap(identity: MobileIdentity) {
   };
 }
 
+export async function mobileBootstrap(identity: MobileIdentity) {
+  // The bootstrap is read-only apart from idempotent stale-room pruning, so a
+  // cold Hostinger connection may safely be retried as one unit.
+  await runMonthlyHostEarningsReset();
+  return withDatabaseReadRetry(() => mobileBootstrapOnce(identity));
+}
+
 export async function createCoinPurchaseRequest(identity: MobileIdentity, packagePublicId: string, sellerPublicId: string) {
   return withTransaction(async (connection) => {
     const [packages] = await connection.query<(RowDataPacket & { id: string; public_id: number; coin_amount: number; display_price: number | null })[]>("SELECT id, public_id, coin_amount, display_price FROM coin_packages WHERE public_id = ? AND active = TRUE LIMIT 1", [packagePublicId]);
@@ -429,7 +439,7 @@ export async function createCoinPurchaseRequest(identity: MobileIdentity, packag
 
 export async function createWithdrawalRequest(identity: MobileIdentity, amount: number, payout: {
   type: "UPI"; accountHolderName: string; upiId: string;
-} | { type: "BANK"; accountHolderName: string; accountNumber: string; ifsc: string; bankName: string }) {
+} | { type: "BANK"; accountHolderName: string; accountNumber: string; ifsc: string; bankName: string } | { payoutMethodId: string }) {
   const settings = await settingsMap();
   const minimum = Number(settings["mobile.commerce"]?.minimumWithdrawal ?? 1000);
   if (!Number.isSafeInteger(amount) || amount < minimum) throw new Error(`Minimum withdrawal is ${minimum}.`);
@@ -442,21 +452,34 @@ export async function createWithdrawalRequest(identity: MobileIdentity, amount: 
       [identity.userId],
     );
     if (!eligibleRows[0]) throw new Error("Only an active Host or Agency Owner can withdraw earnings.");
-    const destination = payout.type === "UPI"
-      ? `UPI ID: ${payout.upiId}`
-      : `Account number: ${payout.accountNumber}\nIFSC: ${payout.ifsc}\nBank: ${payout.bankName}`;
-    const lastFour = (payout.type === "UPI" ? payout.upiId : payout.accountNumber).replace(/\s/g, "").slice(-4);
-    const masked = payout.type === "UPI"
-      ? `${payout.upiId.slice(0, 1)}•••${payout.upiId.slice(payout.upiId.indexOf("@"))}`
-      : `•••• ${lastFour} • ${payout.ifsc}`;
-    const protectedValue = encryptPrivateText(destination);
-    const payoutMethodId = randomUUID();
-    await connection.execute(
-      `INSERT INTO payout_methods
-        (id, application_user_id, method_type, display_name, masked_destination, destination_encrypted, destination_iv, destination_tag, active, verified)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, FALSE)`,
-      [payoutMethodId, identity.userId, payout.type, payout.accountHolderName, masked, protectedValue.encryptedData, protectedValue.iv, protectedValue.tag],
-    );
+    let payoutMethodId: string;
+    let masked: string;
+    if ("payoutMethodId" in payout) {
+      const [methodRows] = await connection.query<(RowDataPacket & { id: string; masked_destination: string })[]>(
+        "SELECT id, masked_destination FROM payout_methods WHERE id = ? AND application_user_id = ? AND active = TRUE LIMIT 1 FOR UPDATE",
+        [payout.payoutMethodId, identity.userId],
+      );
+      const method = methodRows[0];
+      if (!method) throw new Error("Choose one of your saved payout methods.");
+      payoutMethodId = method.id;
+      masked = String(method.masked_destination);
+    } else {
+      const destination = payout.type === "UPI"
+        ? `UPI ID: ${payout.upiId}`
+        : `Account number: ${payout.accountNumber}\nIFSC: ${payout.ifsc}\nBank: ${payout.bankName}`;
+      const lastFour = (payout.type === "UPI" ? payout.upiId : payout.accountNumber).replace(/\s/g, "").slice(-4);
+      masked = payout.type === "UPI"
+        ? `${payout.upiId.slice(0, 1)}•••${payout.upiId.slice(payout.upiId.indexOf("@"))}`
+        : `•••• ${lastFour} • ${payout.ifsc}`;
+      const protectedValue = encryptPrivateText(destination);
+      payoutMethodId = randomUUID();
+      await connection.execute(
+        `INSERT INTO payout_methods
+          (id, application_user_id, method_type, display_name, masked_destination, destination_encrypted, destination_iv, destination_tag, active, verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, FALSE)`,
+        [payoutMethodId, identity.userId, payout.type, payout.accountHolderName, masked, protectedValue.encryptedData, protectedValue.iv, protectedValue.tag],
+      );
+    }
     await connection.execute("INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND')", [randomUUID(), identity.userId]);
     const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number; reserved_balance: number })[]>("SELECT id, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [identity.userId]);
     const wallet = walletRows[0];
@@ -561,9 +584,26 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   return { id: roomId, roomCode: input.roomCode, status: "ACTIVE" };
 }
 
-export async function sendGift(identity: MobileIdentity, input: { roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
+export async function sendGift(identity: MobileIdentity, input: { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
+  const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
   return withTransaction(async (connection) => {
+    const [previousRows] = await connection.query<(RowDataPacket & { amount: number; metadata: unknown })[]>(
+      "SELECT amount, metadata FROM ledger_transactions WHERE idempotency_key = ? LIMIT 1 FOR UPDATE",
+      [idempotencyKey],
+    );
+    const previous = previousRows[0];
+    if (previous) {
+      const metadata = asObject(previous.metadata);
+      if (String(metadata.roomCode ?? "") !== input.roomCode || String(metadata.giftId ?? "") !== input.giftId || String(metadata.recipientPublicId ?? "") !== input.recipientPublicId || Number(metadata.quantity ?? 0) !== input.quantity) {
+        throw new Error("This gift request ID was already used.");
+      }
+      const [balanceRows] = await connection.query<(RowDataPacket & { available_balance: number })[]>(
+        "SELECT available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1",
+        [identity.userId],
+      );
+      return { success: true, remainingCoins: Number(balanceRows[0]?.available_balance ?? 0), message: "Gift already sent", rocket: null, event: null };
+    }
     const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; coin_price: number })[]>("SELECT id, name, emoji, visual_url, coin_price FROM gift_catalog WHERE gift_key = ? AND active = TRUE LIMIT 1", [input.giftId]);
     const [roomRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT room.id FROM live_rooms room
@@ -601,9 +641,9 @@ export async function sendGift(identity: MobileIdentity, input: { roomCode: stri
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [total, receiverRows[0].id]);
     const transferCode = code("GFT");
     await connection.execute(
-      `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason)
-       VALUES (?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
-      [randomUUID(), `${transferCode}-S`, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`],
+      `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, metadata)
+       VALUES (?, ?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, JSON_OBJECT('roomCode', ?, 'giftId', ?, 'recipientPublicId', ?, 'quantity', ?))`,
+      [randomUUID(), `${transferCode}-S`, idempotencyKey, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`, input.roomCode, input.giftId, input.recipientPublicId, input.quantity],
     );
     await connection.execute(
       `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason)

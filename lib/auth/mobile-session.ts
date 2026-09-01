@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash, randomBytes, randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
-import { db } from "@/lib/db/pool";
+import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { verifyGoogleIdentity } from "@/lib/auth/google-identity";
 
@@ -86,10 +86,10 @@ export async function createGoogleMobileSession(input: {
   deviceId?: string;
 }) {
   const google = await verifyGoogleIdentity(input.idToken);
-  const [existingRows] = await db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null })[]>(
+  const [existingRows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null })[]>(
     "SELECT id, public_id, onboarding_completed, whatsapp_e164 FROM application_users WHERE google_subject = ? LIMIT 1",
     [google.subject],
-  );
+  ));
   const existing = existingRows[0];
   const profileRequired = !existing || !existing.onboarding_completed || !/^\+[1-9]\d{7,14}$/.test(existing.whatsapp_e164 ?? "");
   if (profileRequired && !input.profile) {
@@ -205,7 +205,7 @@ export async function revokeMobileSession(request: Request) {
 export async function authenticateMobileRequest(request: Request): Promise<MobileIdentity | null> {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
-  const [rows] = await db().query<(RowDataPacket & {
+  const [rows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & {
     session_id: string;
     user_id: string;
     public_id: number;
@@ -237,13 +237,13 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
        )
      ORDER BY account.created_at ASC LIMIT 1`,
     [tokenHash(token)],
-  );
+  ));
   const row = rows[0];
   if (!row) return null;
-  await db().execute(
+  void withDatabaseReadRetry(() => db().execute(
     "UPDATE mobile_sessions SET last_used_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND last_used_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 5 MINUTE)",
     [row.session_id],
-  );
+  )).catch(() => undefined);
   return {
     userId: row.user_id,
     publicId: String(row.public_id),

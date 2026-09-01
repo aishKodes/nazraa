@@ -25,6 +25,7 @@ async function main() {
     const rooms = await import("@/lib/db/repositories/mobile-completion");
     const rewards = await import("@/lib/db/repositories/mobile-rewards");
     const completionAdmin = await import("@/lib/db/repositories/completion-administration");
+    const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
     const operations = await import("@/lib/db/repositories/operations");
     const seats = await import("@/lib/db/repositories/mobile-seats");
     const accounts = await import("@/lib/db/repositories/accounts");
@@ -159,12 +160,15 @@ async function main() {
     const guestBeforeGift = await product.mobileBootstrap(guest);
     const gift = ownerBeforeGift.gifts[0];
     assert.ok(gift && gift.cost > 0);
-    const giftResult = await product.sendGift(owner, {
+    const clientGiftId = randomUUID();
+    const giftInput = {
+      clientGiftId,
       roomCode,
       giftId: gift.id,
       recipientPublicId: guest.publicId,
       quantity: 2,
-    });
+    };
+    const giftResult = await product.sendGift(owner, giftInput);
     const giftValue = gift.cost * 2;
     assert.equal(giftResult.remainingCoins, ownerBeforeGift.wallet.coins - giftValue);
     const ownerAfterGift = await product.mobileBootstrap(owner);
@@ -182,13 +186,16 @@ async function main() {
       guestPresenceAfterGift.participants?.find((entry: { user: { id: string } }) => entry.user.id === guest.publicId)?.receivedGiftValue,
       giftValue,
     );
+    const duplicateGift = await product.sendGift(owner, giftInput);
+    assert.equal(duplicateGift.message, "Gift already sent");
+    assert.equal((await product.mobileBootstrap(owner)).wallet.coins, ownerAfterGift.wallet.coins, "gift transport retry must not charge twice");
     await assert.rejects(product.sendGift(owner, {
       roomCode,
       giftId: gift.id,
       recipientPublicId: stranger.publicId,
       quantity: 1,
     }));
-    console.log("PASS gifts: active receivers, atomic coin debit/diamond credit, wallet-specific ledger, room event and per-seat total");
+    console.log("PASS gifts: active receivers, atomic coin debit/diamond credit, retry idempotency, wallet-specific ledger, room event and per-seat total");
 
     const rocketAdminBefore = await completionAdmin.getCompletionAdminSettings();
     assert.deepEqual(rocketAdminBefore.rocket.tiers.map((tier) => tier.target), [5000, 35000, 100000, 250000, 500000, 1000000]);
@@ -492,13 +499,23 @@ async function main() {
     assert.equal(Boolean(verifiedMethod[0].verified), true);
     await operations.transitionWithdrawal({ scope: master, withdrawalId: String(upiRequestRows[0].id), nextStatus: "PROCESSING", reason: "QA payout processing" });
     await operations.transitionWithdrawal({ scope: master, withdrawalId: String(upiRequestRows[0].id), nextStatus: "COMPLETED", reason: "QA payout complete", providerReference: "QA-UPI-001" });
+    const savedWithdrawal = await product.createWithdrawalRequest(rewardHost, 1000, { payoutMethodId: String(upiRequestRows[0].payout_method_id) });
+    const [savedRows] = await root.query<RowDataPacket[]>("SELECT id, payout_method_id FROM withdrawal_requests WHERE withdrawal_code = ?", [savedWithdrawal.id]);
+    assert.equal(String(savedRows[0].payout_method_id), String(upiRequestRows[0].payout_method_id), "saved payout account must be reused");
+    await operations.transitionWithdrawal({ scope: master, withdrawalId: String(savedRows[0].id), nextStatus: "REJECTED", reason: "QA saved payout release test" });
     await root.execute("UPDATE wallet_balances SET available_balance = available_balance + 1000 WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
     const bankWithdrawal = await product.createWithdrawalRequest(rewardHost, 1000, { type: "BANK", accountHolderName: "QA Reward Host", accountNumber: "123456789012", ifsc: "HDFC0000123", bankName: "HDFC Bank" });
     const [bankRows] = await root.query<RowDataPacket[]>("SELECT id FROM withdrawal_requests WHERE withdrawal_code = ?", [bankWithdrawal.id]);
     await operations.transitionWithdrawal({ scope: master, withdrawalId: String(bankRows[0].id), nextStatus: "REJECTED", reason: "QA rejection release test" });
     const [releasedWallet] = await root.query<RowDataPacket[]>("SELECT available_balance, reserved_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
     assert.equal(Number(releasedWallet[0].reserved_balance), 0);
-    console.log("PASS Live rewards/withdrawals: 3,500 per valid Video/Face hour, idempotent finalization/history, encrypted UPI/Bank pending review, approval/completion, rejection release, DIAMOND-only reserve");
+    const resetResult = await monthlyReset.runMonthlyHostEarningsReset(new Date("2030-11-01T00:00:00.000Z"));
+    assert.equal(resetResult.status, "completed");
+    assert.ok(resetResult.expiredAmount > 0);
+    assert.equal((await monthlyReset.runMonthlyHostEarningsReset(new Date("2030-11-01T06:00:00.000Z"))).status, "already_completed");
+    const [resetWallet] = await root.query<RowDataPacket[]>("SELECT available_balance, reserved_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
+    assert.deepEqual([Number(resetWallet[0].available_balance), Number(resetWallet[0].reserved_balance)], [0, 0]);
+    console.log("PASS Live rewards/withdrawals: 3,500 per valid Video/Face hour, encrypted saved UPI/Bank, DIAMOND-only reserve, auditable idempotent monthly expiry");
 
     const ownerExit = await rooms.leaveLiveRoom(owner, roomCode);
     assert.equal(ownerExit.transferredTo, roomAdmin.publicId);

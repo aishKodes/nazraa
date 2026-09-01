@@ -1,6 +1,7 @@
 "use server";
 
 import bcrypt from "bcryptjs";
+import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
@@ -10,7 +11,7 @@ import { requirePermission } from "@/lib/auth/guard";
 import { accountByManagementId, createInitialMaster } from "@/lib/db/repositories/accounts";
 import { blockUserDevice, unblockUserDevice } from "@/lib/db/repositories/monitoring";
 import { adjustPlatformCoinInventory, allocatePlatformCoins, createTemporaryLiveRestriction, permanentlyBanUser, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
-import { db } from "@/lib/db/pool";
+import { withTransaction } from "@/lib/db/transaction";
 
 const loginInput = z.object({ managementId: z.string().trim().regex(/^\d{6}$/), password: z.string().min(1).max(200) });
 
@@ -18,7 +19,12 @@ export async function signIn(formData: FormData) {
   const parsed = loginInput.safeParse({ managementId: formData.get("managementId"), password: formData.get("password") });
   if (!parsed.success) redirect("/login?error=Enter+your+six-digit+management+ID+and+password.");
 
-  let account = await accountByManagementId(parsed.data.managementId);
+  let account: Awaited<ReturnType<typeof accountByManagementId>>;
+  try {
+    account = await accountByManagementId(parsed.data.managementId);
+  } catch {
+    redirect("/login?error=Nazraa+Control+is+reconnecting+to+the+database.+Please+try+signing+in+again.");
+  }
   const initialPublicId = process.env.INITIAL_MASTER_PUBLIC_ID?.trim();
   const initialPassword = process.env.INITIAL_MASTER_PASSWORD;
   const initialName = process.env.INITIAL_MASTER_NAME?.trim() || "Nazraa Master";
@@ -34,13 +40,20 @@ export async function signIn(formData: FormData) {
   }
   if (account.status === "SUSPENDED") redirect("/login?error=This+account+is+suspended.+Contact+your+manager+to+restore+access.");
   if (account.status !== "ACTIVE") redirect("/login?error=This+account+is+disabled.+Contact+the+platform+Master.");
-  await db().execute("UPDATE platform_accounts SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [account.id]);
   const requestHeaders = await headers();
-  await db().execute(
-    `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, ip_address, user_agent)
-     VALUES (UUID(), ?, ?, 'auth.login', 'authentication', 'platform_account', ?, ?, ?)`,
-    [account.id, account.role, account.id, requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, requestHeaders.get("user-agent")?.slice(0, 500) ?? null],
-  );
+  const loginAuditId = randomUUID();
+  try {
+    await withTransaction(async (connection) => {
+      await connection.execute("UPDATE platform_accounts SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [account.id]);
+      await connection.execute(
+        `INSERT IGNORE INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, ip_address, user_agent)
+         VALUES (?, ?, ?, 'auth.login', 'authentication', 'platform_account', ?, ?, ?)`,
+        [loginAuditId, account.id, account.role, account.id, requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null, requestHeaders.get("user-agent")?.slice(0, 500) ?? null],
+      );
+    });
+  } catch {
+    redirect("/login?error=Nazraa+Control+could+not+finish+the+secure+login.+Please+try+once+more.");
+  }
   await createSession({ id: account.id, publicId: account.publicId, role: account.role, fullName: account.fullName });
   redirect("/dashboard");
 }

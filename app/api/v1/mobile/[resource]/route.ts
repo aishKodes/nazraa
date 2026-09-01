@@ -43,11 +43,16 @@ import { actOnRoomSeat } from "@/lib/db/repositories/mobile-seats";
 import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, removeOwnAgencyHost, reportDiscoveryPost, reportPrivateMessage, reviewOwnAgencyJoin, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
 import { claimVipDailyReward, purchaseVipTier, rocketSnapshot } from "@/lib/db/repositories/mobile-rewards";
 import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
+import { isDatabaseAvailabilityError } from "@/lib/db/pool";
 
 export const dynamic = "force-dynamic";
 
 function errorResponse(error: unknown, status = 400) {
-  return NextResponse.json({ message: error instanceof Error ? error.message : "Request failed." }, { status, headers: { "Cache-Control": "no-store" } });
+  const transientDatabaseFailure = isDatabaseAvailabilityError(error);
+  return NextResponse.json(
+    { message: transientDatabaseFailure ? "Nazraa is reconnecting to the server. Please retry." : error instanceof Error ? error.message : "Request failed." },
+    { status: transientDatabaseFailure ? 503 : status, headers: { "Cache-Control": "no-store", ...(transientDatabaseFailure ? { "Retry-After": "2" } : {}) } },
+  );
 }
 
 function selectResource(resource: string, bootstrap: Awaited<ReturnType<typeof mobileBootstrap>>) {
@@ -74,9 +79,9 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     try { return NextResponse.json(await publicMobileConfig(), { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } }); }
     catch { return NextResponse.json({ gifts: [], banners: [], notifications: [], settings: {} }, { status: 503, headers: { "Cache-Control": "no-store" } }); }
   }
-  const identity = await authenticateMobileRequest(request);
-  if (!identity) return errorResponse(new Error("Unauthorized."), 401);
   try {
+    const identity = await authenticateMobileRequest(request);
+    if (!identity) return errorResponse(new Error("Unauthorized."), 401);
     if (resource === "rooms") {
       const after = z.string().min(3).max(80).optional().parse(new URL(request.url).searchParams.get("after") ?? undefined);
       return NextResponse.json({ rooms: await activeRoomPage(after) }, { headers: { "Cache-Control": "private, no-store" } });
@@ -110,9 +115,9 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
 
 export async function POST(request: Request, context: { params: Promise<{ resource: string }> }) {
   const { resource } = await context.params;
-  const identity = await authenticateMobileRequest(request);
-  if (!identity) return errorResponse(new Error("Unauthorized."), 401);
   try {
+    const identity = await authenticateMobileRequest(request);
+    if (!identity) return errorResponse(new Error("Unauthorized."), 401);
     const body = await request.json();
     if (resource === "room-seat") {
       const parsed = z.object({ roomCode: z.string().min(3).max(80), action: z.enum(["request", "accept", "reject", "assign", "leave", "lock", "unlock"]), seatIndex: z.number().int().min(0).max(19).optional(), targetPublicId: z.string().regex(/^\d+$/).optional() }).parse(body);
@@ -133,8 +138,11 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         z.object({ type: z.literal("UPI"), accountHolderName: z.string().trim().min(2).max(100), upiId: z.string().trim().regex(/^[a-zA-Z0-9._-]{2,}@[a-zA-Z0-9.-]{2,}$/) }),
         z.object({ type: z.literal("BANK"), accountHolderName: z.string().trim().min(2).max(100), accountNumber: z.string().regex(/^\d{6,24}$/), ifsc: z.string().trim().toUpperCase().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), bankName: z.string().trim().min(2).max(100) }),
       ]);
-      const parsed = z.object({ amount: z.number().int().positive(), payout }).parse(body);
-      return NextResponse.json(await createWithdrawalRequest(identity, parsed.amount, parsed.payout), { status: 201 });
+      const parsed = z.union([
+        z.object({ amount: z.number().int().positive(), payoutMethodId: z.string().uuid() }),
+        z.object({ amount: z.number().int().positive(), payout }),
+      ]).parse(body);
+      return NextResponse.json(await createWithdrawalRequest(identity, parsed.amount, "payoutMethodId" in parsed ? { payoutMethodId: parsed.payoutMethodId } : parsed.payout), { status: 201 });
     }
     if (resource === "payout-methods") {
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
@@ -322,7 +330,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     }
     if (resource === "gifts") {
       if (!mobileCan(identity, "gifts.send")) return errorResponse(new Error("Forbidden."), 403);
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), giftId: z.string().trim().min(1).max(80), recipientPublicId: z.string().regex(/^\d+$/), quantity: z.number().int().min(1).max(99) }).parse(body);
+      const parsed = z.object({ clientGiftId: z.string().uuid(), roomCode: z.string().trim().min(3).max(80), giftId: z.string().trim().min(1).max(80), recipientPublicId: z.string().regex(/^\d+$/), quantity: z.number().int().min(1).max(99) }).parse(body);
       return NextResponse.json(await sendGift(identity, parsed));
     }
     if (resource === "game-wallet") {

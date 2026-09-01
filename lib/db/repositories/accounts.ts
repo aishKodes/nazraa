@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import bcrypt from "bcryptjs";
 import { cache } from "react";
-import { db } from "@/lib/db/pool";
+import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { scopedAccountsSql } from "@/lib/db/queries/sql";
 import type { PlatformAccount, Role, Scope } from "@/types/platform";
@@ -36,20 +36,20 @@ function mapAccount(row: AccountRow): PlatformAccount {
 }
 
 export async function accountByManagementId(publicId: string) {
-  const [rows] = await db().execute<AccountRow[]>(
+  const [rows] = await withDatabaseReadRetry(() => db().execute<AccountRow[]>(
     `SELECT id, public_id, role, role_code, full_name, email, mobile, status, parent_account_id, password_hash
      FROM platform_accounts WHERE public_id = ? LIMIT 1`,
     [Number(publicId)],
-  );
+  ));
   return rows[0] ? { ...mapAccount(rows[0]), passwordHash: rows[0].password_hash! } : null;
 }
 
 export const accountById = cache(async (id: string) => {
-  const [rows] = await db().execute<AccountRow[]>(
+  const [rows] = await withDatabaseReadRetry(() => db().execute<AccountRow[]>(
     `SELECT id, public_id, role, role_code, full_name, email, mobile, status, parent_account_id
      FROM platform_accounts WHERE id = ? LIMIT 1`,
     [id],
-  );
+  ));
   return rows[0] ? mapAccount(rows[0]) : null;
 });
 
@@ -78,13 +78,13 @@ export const scopeFor = cache(async (account: Scope["account"]): Promise<Scope> 
   if (account.role === "MASTER") return { account, accountIds: [], isGlobal: true };
   let scopeRootId = account.id;
   if (account.role === "MONITORING_CS") {
-    const [parents] = await db().query<(RowDataPacket & { parent_account_id: string | null })[]>(
+    const [parents] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { parent_account_id: string | null })[]>(
       "SELECT parent_account_id FROM platform_accounts WHERE id = ? LIMIT 1",
       [account.id],
-    );
+    ));
     scopeRootId = parents[0]?.parent_account_id ?? account.id;
   }
-  const [rows] = await db().query<(RowDataPacket & { id: string })[]>(scopedAccountsSql, [scopeRootId]);
+  const [rows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string })[]>(scopedAccountsSql, [scopeRootId]));
   return { account, accountIds: rows.map((row) => row.id), isGlobal: false };
 });
 

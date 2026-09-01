@@ -15,6 +15,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const asset = rows[0];
   if (!asset) return NextResponse.json({ error: "Gift artwork not found." }, { status: 404 });
   return new NextResponse(new Uint8Array(asset.image_data), {
-    headers: { "Content-Type": asset.mime_type, "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff" },
+    headers: { "Content-Type": asset.mime_type, "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable", "X-Content-Type-Options": "nosniff" },
   });
 }

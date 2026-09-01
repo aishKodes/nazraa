@@ -36,6 +36,9 @@ export class ZegoTokenService {
     const expires = Buffer.alloc(8); expires.writeBigInt64BE(BigInt(expiresAt));
     const ivLength = Buffer.alloc(2); ivLength.writeUInt16BE(iv.length);
     const encryptedLength = Buffer.alloc(2); encryptedLength.writeUInt16BE(encrypted.length);
-    return { token: `04${Buffer.concat([expires, ivLength, iv, encryptedLength, encrypted]).toString("base64")}`, expiresAt };
+    // App ID is public SDK configuration, not a credential. Returning it with
+    // the token prevents a stale Android build from ever using a token signed
+    // for a different ZEGOCLOUD application.
+    return { appId: this.appId, token: `04${Buffer.concat([expires, ivLength, iv, encryptedLength, encrypted]).toString("base64")}`, expiresAt };
   }
 }

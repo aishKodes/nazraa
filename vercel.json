@@ -1,4 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "regions": ["bom1"],
+  "crons": [
+    { "path": "/api/cron/monthly-host-reset", "schedule": "35 18 * * *" }
+  ]
 }
