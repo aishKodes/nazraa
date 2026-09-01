@@ -346,6 +346,18 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        WHERE event.room_id = ? ORDER BY event.created_at DESC LIMIT 50`,
       [rows[0].id],
     );
+    const [interactions] = await connection.query<RowDataPacket[]>(
+      `SELECT event.id, event.interaction_key, event.created_at,
+              sender.public_id sender_public_id, sender.full_name sender_name,
+              target.public_id target_public_id, target.full_name target_name
+       FROM room_interaction_events event
+       INNER JOIN application_users sender ON sender.id = event.sender_application_user_id
+       INNER JOIN application_users target ON target.id = event.target_application_user_id
+       WHERE event.room_id = ?
+         AND event.created_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+       ORDER BY event.created_at ASC LIMIT 50`,
+      [rows[0].id],
+    );
     return {
       active: true,
       roomRole: String(rows[0].room_role).toLowerCase(), seatIndex: rows[0].seat_index,
@@ -364,6 +376,12 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         gift: { id: String(event.gift_key), name: String(event.gift_name), symbol: event.gift_emoji ?? "🎁", imageUrl: event.gift_visual_url },
         sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: event.sender_avatar_url, country: event.sender_country ?? "", language: event.sender_language ?? "", level: Number(event.sender_level), anchorLevel: Number(event.sender_anchor_level), vip: Number(event.sender_vip) },
         receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: event.receiver_avatar_url, country: event.receiver_country ?? "", language: event.receiver_language ?? "", level: Number(event.receiver_level), anchorLevel: Number(event.receiver_anchor_level), vip: Number(event.receiver_vip) },
+      })),
+      interactions: interactions.map((event) => ({
+        id: String(event.id), interactionKey: String(event.interaction_key),
+        senderPublicId: String(event.sender_public_id), senderName: String(event.sender_name),
+        targetPublicId: String(event.target_public_id), targetName: String(event.target_name),
+        createdAt: event.created_at,
       })),
     };
   });
@@ -495,7 +513,11 @@ export async function sendRoomInteraction(identity: MobileIdentity, input: { roo
     );
     const raw = settingRows[0]?.setting_value;
     const settings = typeof raw === "string" ? JSON.parse(raw) as { interactions?: { key?: string; enabled?: boolean }[] } : raw as { interactions?: { key?: string; enabled?: boolean }[] } | undefined;
-    const allowed = new Set((settings?.interactions ?? []).filter((item) => item.enabled !== false).map((item) => item.key).filter(Boolean));
+    const configured = settings?.interactions;
+    const available = configured?.length
+      ? configured
+      : ["kiss", "love", "hug", "heart", "cheer", "applause", "flower", "like", "smile", "star", "gift", "fire"].map((key) => ({ key, enabled: true }));
+    const allowed = new Set(available.filter((item) => item.enabled !== false).map((item) => item.key).filter(Boolean));
     if (!allowed.has(input.interactionKey)) throw new Error("That room interaction is not available.");
 
     const [rows] = await connection.query<(RowDataPacket & { room_id: string; target_id: string })[]>(

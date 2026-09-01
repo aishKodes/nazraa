@@ -746,6 +746,14 @@ export async function mutateGameWallet(identity: MobileIdentity, input: {
 }
 
 const teenPattiGame = "teen_patti_pro";
+// Reference table odds in tenths: left 2.7x, middle 2.9x, right 2.8x.
+// Integer arithmetic keeps wallet settlement exact for every supported chip.
+export const teenPattiLaneMultiplierTenths = [27, 29, 28] as const;
+export function teenPattiLanePayout(lane: number, bet: number) {
+  const multiplier = teenPattiLaneMultiplierTenths[lane];
+  if (multiplier == null || !Number.isSafeInteger(bet) || bet < 0) throw new Error("Invalid Teen Patti lane payout.");
+  return Math.floor(bet * multiplier / 10);
+}
 const goldenZoneGames = new Set(["greedy_king", "greedy_lion"]);
 const supportedRoundGames = new Set([
   teenPattiGame,
@@ -928,8 +936,9 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
         winningCategory: winner.category,
         winningLabel: winner.label,
         crownMultiplier: winner.multiplier,
-        normalMultiplier: 3,
-        payoutMultiplier: 3,
+        normalMultipliers: teenPattiLaneMultiplierTenths.map((value) => value / 10),
+        normalMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
+        payoutMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
         normalPayout: 0,
         crownPayout: 0,
         spectator: true,
@@ -946,14 +955,14 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
     const hands = buildTeenPattiHands();
     const winnerLane = strongestTeenPattiLane(hands);
     const crownMultiplier = hands[winnerLane].multiplier;
-    const payout = checked.bets[String(winnerLane)] * 3 + checked.bets.crown * crownMultiplier;
+    const payout = teenPattiLanePayout(winnerLane, checked.bets[String(winnerLane)]) + checked.bets.crown * crownMultiplier;
     selectedHands = hands;
     selectedPayout = payout;
     selectedWinner = winnerLane;
     if (targetWin ? payout > checked.total : payout <= checked.total) break;
   }
   const winner = selectedHands![selectedWinner];
-  const normalPayout = checked.bets[String(selectedWinner)] * 3;
+  const normalPayout = teenPattiLanePayout(selectedWinner, checked.bets[String(selectedWinner)]);
   const crownPayout = checked.bets.crown * winner.multiplier;
   return {
     outcome: {
@@ -962,8 +971,9 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
       winningCategory: winner.category,
       winningLabel: winner.label,
       crownMultiplier: winner.multiplier,
-      normalMultiplier: 3,
-      payoutMultiplier: 3,
+      normalMultipliers: teenPattiLaneMultiplierTenths.map((value) => value / 10),
+      normalMultiplier: teenPattiLaneMultiplierTenths[selectedWinner] / 10,
+      payoutMultiplier: teenPattiLaneMultiplierTenths[selectedWinner] / 10,
       normalPayout,
       crownPayout,
       crownWon: crownPayout > 0,

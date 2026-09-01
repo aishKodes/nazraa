@@ -21,6 +21,11 @@ async function main() {
   try {
     for (const file of (await readdir("db/migrations")).filter((file) => file.endsWith(".sql")).sort()) await root.query(await readFile(`db/migrations/${file}`, "utf8"));
     const product = await import("@/lib/db/repositories/mobile-product");
+    assert.deepEqual([...product.teenPattiLaneMultiplierTenths], [27, 29, 28]);
+    assert.deepEqual(
+      [0, 1, 2].map((lane) => product.teenPattiLanePayout(lane, 500)),
+      [1350, 1450, 1400],
+    );
     const social = await import("@/lib/db/repositories/mobile-social");
     const rooms = await import("@/lib/db/repositories/mobile-completion");
     const rewards = await import("@/lib/db/repositories/mobile-rewards");
@@ -324,6 +329,19 @@ async function main() {
     assert.equal((await rooms.refreshRoomPresence(owner, roomCode)).messages?.[0].body, "Unlocked message");
     await rooms.clearRoomChat(owner, roomCode);
     assert.equal((await rooms.refreshRoomPresence(guest, roomCode)).messages?.length, 0);
+    await rooms.sendRoomInteraction(guest, {
+      roomCode,
+      targetPublicId: owner.publicId,
+      interactionKey: "kiss",
+    });
+    const interactionPresence = await rooms.refreshRoomPresence(owner, roomCode);
+    assert.equal(interactionPresence.interactions?.at(-1)?.interactionKey, "kiss");
+    assert.equal(interactionPresence.interactions?.at(-1)?.senderPublicId, guest.publicId);
+    await assert.rejects(rooms.sendRoomInteraction(owner, {
+      roomCode,
+      targetPublicId: owner.publicId,
+      interactionKey: "kiss",
+    }));
     await root.execute("UPDATE application_users SET consumption_points = 12500, anchor_income_points = 500, level_number = 6 WHERE id = ?", [owner.userId]);
     const bootstrap = await product.mobileBootstrap(owner);
     assert.ok(bootstrap.posts.some((entry) => entry.id === photoPost.id), "Bootstrap must not overwrite published posts with an empty list");
@@ -390,20 +408,30 @@ async function main() {
     });
     assert.equal(Array.isArray(teenRound.outcome.hands) && teenRound.outcome.hands.length, 3);
     assert.ok([0, 1, 2].includes(Number(teenRound.outcome.winnerLane)), "Teen Patti Pro must settle exactly one of its three lanes");
-    assert.ok([2, 3, 4, 10, 25].includes(Number(teenRound.outcome.payoutMultiplier)));
+    const teenWinnerLane = Number(teenRound.outcome.winnerLane);
+    assert.equal(
+      Number(teenRound.outcome.payoutMultiplier),
+      [2.7, 2.9, 2.8][teenWinnerLane],
+    );
     assert.equal(
       Number(teenRound.outcome.grossPayout),
-      Number(teenRound.bets[String(teenRound.outcome.winnerLane)] ?? 0) * Number(teenRound.outcome.payoutMultiplier),
+      product.teenPattiLanePayout(
+        teenWinnerLane,
+        Number(teenRound.bets[String(teenWinnerLane)] ?? 0),
+      ),
       "Teen Patti Pro payout must come only from the strongest winning lane",
     );
-    assert.equal(Number(teenRound.outcome.payoutMultiplier), 3, "every normal Teen Patti hand must pay fixed x3");
     const crownRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",
       bets: { "0": 10000, "1": 10000, "2": 0, crown: 10000 },
     });
     const crownMultiplier = Number(crownRound.outcome.crownMultiplier);
-    const normalGross = Number(crownRound.bets[String(crownRound.outcome.winnerLane)] ?? 0) * 3;
+    const crownWinnerLane = Number(crownRound.outcome.winnerLane);
+    const normalGross = product.teenPattiLanePayout(
+      crownWinnerLane,
+      Number(crownRound.bets[String(crownWinnerLane)] ?? 0),
+    );
     assert.equal(
       Number(crownRound.outcome.grossPayout),
       normalGross + Number(crownRound.bets.crown) * crownMultiplier,
