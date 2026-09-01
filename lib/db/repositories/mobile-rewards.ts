@@ -27,11 +27,15 @@ function avatarUrl(row: RowDataPacket, prefix = "") {
 }
 
 export async function vipSnapshot(identity: MobileIdentity) {
+  await db().execute(
+    "UPDATE application_users SET vip_tier = 0, vip_expires_at = NULL WHERE id = ? AND vip_tier > 0 AND vip_expires_at <= CURRENT_TIMESTAMP(3)",
+    [identity.userId],
+  );
   const [tiers, currentRows, claimRows, clockRows] = await Promise.all([
     db().query<RowDataPacket[]>(
-      "SELECT tier, tier_key, name, price_coins, daily_reward_coins, frame_asset, entry_asset, perks FROM vip_tiers WHERE active = TRUE ORDER BY tier",
+      "SELECT tier, tier_key, name, price_coins, daily_reward_coins, validity_days, frame_asset, entry_asset, perks FROM vip_tiers WHERE active = TRUE ORDER BY tier",
     ),
-    db().query<RowDataPacket[]>("SELECT vip_tier FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
+    db().query<RowDataPacket[]>("SELECT vip_tier, vip_expires_at FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
     db().query<RowDataPacket[]>(
       "SELECT DATE_FORMAT(claim_date, '%Y-%m-%d') claim_date, reward_coins, claimed_at FROM vip_daily_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 31",
       [identity.userId],
@@ -44,6 +48,7 @@ export async function vipSnapshot(identity: MobileIdentity) {
   const mappedTiers = tiers[0].map((row) => ({
     tier: Number(row.tier), key: String(row.tier_key), name: String(row.name),
     priceCoins: Number(row.price_coins), dailyRewardCoins: Number(row.daily_reward_coins),
+    validityDays: Number(row.validity_days ?? 30),
     frameAsset: String(row.frame_asset), entryAsset: row.entry_asset == null ? null : String(row.entry_asset),
     perks: (typeof row.perks === "string" ? JSON.parse(row.perks) : row.perks) as string[],
   }));
@@ -54,6 +59,7 @@ export async function vipSnapshot(identity: MobileIdentity) {
     claimable: currentTier > 0 && lastClaimDate !== today,
     serverDate: today,
     lastClaimDate,
+    expiresAt: currentRows[0][0]?.vip_expires_at ?? null,
     history: claimRows[0].map((row) => ({
       date: String(row.claim_date).slice(0, 10), rewardCoins: Number(row.reward_coins), claimedAt: row.claimed_at,
     })),
@@ -62,15 +68,19 @@ export async function vipSnapshot(identity: MobileIdentity) {
 
 export async function purchaseVipTier(identity: MobileIdentity, targetTier: number) {
   return withTransaction(async (connection) => {
-    const [users] = await connection.query<(RowDataPacket & { vip_tier: number })[]>(
-      "SELECT vip_tier FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE",
+    await connection.execute(
+      "UPDATE application_users SET vip_tier = 0, vip_expires_at = NULL WHERE id = ? AND vip_tier > 0 AND vip_expires_at <= CURRENT_TIMESTAMP(3)",
+      [identity.userId],
+    );
+    const [users] = await connection.query<(RowDataPacket & { vip_tier: number; vip_expires_at: Date | null })[]>(
+      "SELECT vip_tier, vip_expires_at FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE",
       [identity.userId],
     );
     const currentTier = Number(users[0]?.vip_tier ?? 0);
     if (!users[0]) throw new Error("Your Nazraa account is unavailable.");
     if (targetTier <= currentTier) throw new Error("Choose a higher VIP tier.");
-    const [tiers] = await connection.query<(RowDataPacket & { tier: number; name: string; price_coins: number })[]>(
-      "SELECT tier, name, price_coins FROM vip_tiers WHERE active = TRUE AND tier IN (?, ?) ORDER BY tier FOR UPDATE",
+    const [tiers] = await connection.query<(RowDataPacket & { tier: number; name: string; price_coins: number; validity_days: number })[]>(
+      "SELECT tier, name, price_coins, validity_days FROM vip_tiers WHERE active = TRUE AND tier IN (?, ?) ORDER BY tier FOR UPDATE",
       [currentTier || targetTier, targetTier],
     );
     const target = tiers.find((row) => Number(row.tier) === targetTier);
@@ -94,27 +104,37 @@ export async function purchaseVipTier(identity: MobileIdentity, targetTier: numb
        VALUES (?, ?, 'COIN', 'VIP_PURCHASE', 'APPLICATION_USER', ?, 'SYSTEM', ?, 'COMPLETED', ?)`,
       [ledgerId, code, identity.userId, price, `${target.name} VIP upgrade`],
     );
-    await connection.execute("UPDATE application_users SET vip_tier = ? WHERE id = ?", [targetTier, identity.userId]);
+    const validityDays = Math.max(1, Number(target.validity_days ?? 30));
+    const [expiryRows] = await connection.query<(RowDataPacket & { expires_at: Date })[]>(
+      "SELECT DATE_ADD(GREATEST(CURRENT_TIMESTAMP(3), COALESCE(?, CURRENT_TIMESTAMP(3))), INTERVAL ? DAY) expires_at",
+      [users[0]?.vip_expires_at ?? null, validityDays],
+    );
+    const expiresAt = expiryRows[0].expires_at;
+    await connection.execute("UPDATE application_users SET vip_tier = ?, vip_expires_at = ? WHERE id = ?", [targetTier, expiresAt, identity.userId]);
     await connection.execute(
-      "INSERT INTO vip_purchases (id, application_user_id, from_tier, to_tier, price_coins, ledger_transaction_id) VALUES (?, ?, ?, ?, ?, ?)",
-      [randomUUID(), identity.userId, currentTier, targetTier, price, ledgerId],
+      "INSERT INTO vip_purchases (id, application_user_id, from_tier, to_tier, price_coins, ledger_transaction_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [randomUUID(), identity.userId, currentTier, targetTier, price, ledgerId, expiresAt],
     );
     await connection.execute(
       "INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'VIP', 'VIP upgraded', ?, 'vip')",
       [randomUUID(), identity.userId, `${target.name} VIP is now active.`],
     );
-    return { tier: targetTier, name: target.name, chargedCoins: price, newBalance: Number(wallet.available_balance) - price };
+    return { tier: targetTier, name: target.name, chargedCoins: price, validityDays, expiresAt, newBalance: Number(wallet.available_balance) - price };
   });
 }
 
 export async function claimVipDailyReward(identity: MobileIdentity) {
   return withTransaction(async (connection) => {
-    const [users] = await connection.query<(RowDataPacket & { vip_tier: number })[]>(
-      "SELECT vip_tier FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE",
+    const [users] = await connection.query<(RowDataPacket & { vip_tier: number; vip_expires_at: Date | null })[]>(
+      "SELECT vip_tier, vip_expires_at FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE",
       [identity.userId],
     );
     const tierNumber = Number(users[0]?.vip_tier ?? 0);
     if (tierNumber < 1) throw new Error("Activate VIP before claiming a VIP reward.");
+    if (!users[0]?.vip_expires_at || new Date(users[0].vip_expires_at).getTime() <= Date.now()) {
+      await connection.execute("UPDATE application_users SET vip_tier = 0, vip_expires_at = NULL WHERE id = ?", [identity.userId]);
+      throw new Error("Your VIP validity has ended. Activate VIP again to claim rewards.");
+    }
     const [tiers] = await connection.query<(RowDataPacket & { name: string; daily_reward_coins: number })[]>(
       "SELECT name, daily_reward_coins FROM vip_tiers WHERE tier = ? AND active = TRUE LIMIT 1",
       [tierNumber],

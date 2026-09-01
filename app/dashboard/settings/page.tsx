@@ -10,6 +10,7 @@ import {
   submitMobileSocialSettings,
   submitRoomFeatureSettings,
   submitRocketSettings,
+  submitVipValidity,
 } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
@@ -193,6 +194,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </div>)}
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the Rocket configuration changing?" /></label>
         <label>Confirm<button className="primary-button" type="submit">Save Rocket controls</button></label>
+      </form>
+    </Card>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>VIP validity</h2><p>Server-owned duration for each paid VIP tier. Existing active purchases keep their recorded expiry.</p></div></div>
+      <form action={submitVipValidity} className="form-grid">
+        {completion.vipTiers.map((tier) => <label key={tier.tier}>{tier.name} validity days<input name={`vip${tier.tier}`} type="number" min="1" max="3650" required defaultValue={tier.validityDays} /><span>{tier.priceCoins.toLocaleString("en-IN")} coins · daily {tier.dailyRewardCoins.toLocaleString("en-IN")}</span></label>)}
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is VIP validity changing?" /></label>
+        <label>Confirm<button className="primary-button" type="submit">Save VIP validity</button></label>
       </form>
     </Card>
 

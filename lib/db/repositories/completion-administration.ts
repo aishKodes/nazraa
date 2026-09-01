@@ -17,12 +17,13 @@ async function audit(connection: PoolConnection, scope: Scope, input: { action: 
 }
 
 export async function getCompletionAdminSettings() {
-  const [daily, conversion, hostRules, rocketTiers, rocketSetting] = await Promise.all([
+  const [daily, conversion, hostRules, rocketTiers, rocketSetting, vipTiers] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT day_number, reward_coins, label, enabled FROM daily_reward_rules ORDER BY day_number"),
     db().query<RowDataPacket[]>("SELECT diamonds, coins, minimum_diamonds, maximum_diamonds, enabled, effective_from FROM diamond_conversion_rules ORDER BY effective_from DESC LIMIT 1"),
     db().query<RowDataPacket[]>("SELECT room_type, coins_per_hour, minimum_eligible_seconds, enabled FROM host_reward_rules WHERE enabled = TRUE ORDER BY FIELD(room_type, 'LIVE','FACE','PARTY'), effective_from DESC"),
     db().query<RowDataPacket[]>("SELECT level, name, target_coins, top1_reward_coins, top2_reward_coins, top3_reward_coins, room_reward_coins, active FROM rocket_tiers ORDER BY level"),
     db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1"),
+    db().query<RowDataPacket[]>("SELECT tier, name, price_coins, daily_reward_coins, validity_days FROM vip_tiers WHERE active = TRUE ORDER BY tier"),
   ]);
   const rawRocket = rocketSetting[0][0]?.setting_value;
   const rocketPolicy = (typeof rawRocket === "string" ? JSON.parse(rawRocket) : rawRocket ?? {}) as Record<string, unknown>;
@@ -42,7 +43,29 @@ export async function getCompletionAdminSettings() {
         room: Number(row.room_reward_coins), active: Boolean(row.active),
       })),
     },
+    vipTiers: vipTiers[0].map((row) => ({
+      tier: Number(row.tier), name: String(row.name), priceCoins: Number(row.price_coins),
+      dailyRewardCoins: Number(row.daily_reward_coins), validityDays: Number(row.validity_days ?? 30),
+    })),
   };
+}
+
+export async function saveVipValidity(input: { scope: Scope; validityDays: number[]; reason: string }) {
+  if (input.validityDays.length !== 5 || input.validityDays.some((days) => !Number.isSafeInteger(days) || days < 1 || days > 3650)) {
+    throw new Error("Configure a valid duration for all five VIP tiers.");
+  }
+  await withTransaction(async (connection) => {
+    const [previous] = await connection.query<RowDataPacket[]>(
+      "SELECT tier, validity_days FROM vip_tiers ORDER BY tier FOR UPDATE",
+    );
+    for (let index = 0; index < input.validityDays.length; index += 1) {
+      await connection.execute("UPDATE vip_tiers SET validity_days = ? WHERE tier = ?", [input.validityDays[index], index + 1]);
+    }
+    await audit(connection, input.scope, {
+      action: "vip.validity_update", targetType: "VIP_CONFIGURATION", targetId: "vip", reason: input.reason,
+      previous: { tiers: previous }, next: { validityDays: input.validityDays },
+    });
+  });
 }
 
 export async function saveRocketSettings(input: {

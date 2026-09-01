@@ -19,7 +19,7 @@ import { createHostApplication, reviewHostApplication, updateHostStatus, uploadH
 import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
-import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
+import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, saveVipValidity, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { preparePublicImage } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
@@ -439,6 +439,26 @@ export async function submitRocketSettings(formData: FormData) {
   });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Rocket thresholds, rewards, and eligibility were saved and audited."));
+}
+
+export async function submitVipValidity(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    vip1: z.coerce.number().int().min(1).max(3650),
+    vip2: z.coerce.number().int().min(1).max(3650),
+    vip3: z.coerce.number().int().min(1).max(3650),
+    vip4: z.coerce.number().int().min(1).max(3650),
+    vip5: z.coerce.number().int().min(1).max(3650),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check all five VIP validity values and the change reason."));
+  await saveVipValidity({
+    scope,
+    validityDays: [parsed.data.vip1, parsed.data.vip2, parsed.data.vip3, parsed.data.vip4, parsed.data.vip5],
+    reason: parsed.data.reason,
+  });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "VIP validity was saved and audited."));
 }
 
 export async function submitRiskStatus(formData: FormData) {
