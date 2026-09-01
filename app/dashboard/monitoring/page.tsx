@@ -21,9 +21,10 @@ export default async function MonitoringPage({ searchParams }: {
   const mayRestrict = can(scope.account.role, "rooms.restrict");
   const mayPermanentlyBan = can(scope.account.role, "users.permanent");
   const mayManageDevices = can(scope.account.role, "devices.manage");
+  const isCs = scope.account.role === "MONITORING_CS";
 
   return <>
-    <SectionHeading title="Monitoring / CS" description="Search one User or Host ID, check their current status, and take only the permitted action." />
+    <SectionHeading title="Monitoring / CS" description={isCs ? "Search a User or Host and apply only a temporary Live restriction. Account bans and device blocks are not available to CS." : "Search one User or Host ID, check their current status, and take only the permitted action."} />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
     <Card className="monitor-search-card"><form className="filter-bar" action="/dashboard/monitoring"><label className="search-field"><Search size={18} /><input name="q" defaultValue={q} placeholder="User/Host ID, name, phone, or email" autoFocus /><button className="primary-button" type="submit">Search</button></label><span>{scope.isGlobal ? "Platform-wide" : "Your branch only"}</span></form></Card>
 

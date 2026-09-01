@@ -10,6 +10,7 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { permissionsForMobileRole } from "@/lib/auth/mobile-session";
 import { encryptPrivateText } from "@/lib/security/documents";
 import { mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
+import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 
 function code(prefix: string) {
@@ -23,7 +24,7 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
-function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome", maximumLevel = 120) {
+function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome", maximumLevel = track === "anchorIncome" ? 200 : 120) {
   const level = Math.min(maximumLevel, Math.floor(Math.sqrt(Math.max(0, totalPoints) / 500)) + 1);
   const start = (level - 1) * (level - 1) * 500;
   const end = level * level * 500;
@@ -139,7 +140,7 @@ async function activeRoomRows(after?: string) {
     );
 }
 
-function mapActiveRoom(row: RowDataPacket, maximumLevel = 120) {
+function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
   return {
     id: String(row.room_code), title: String(row.title), category: String(row.category),
     language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
@@ -202,8 +203,11 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     })[]>("SELECT public_id, full_name, avatar_url, country_code, date_of_birth, gender, bio, language_code, whatsapp_e164, level_number, vip_tier, consumption_points, anchor_income_points, face_verification_status, is_host FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
     db().query<(RowDataPacket & { asset_type: string; available_balance: number; reserved_balance: number })[]>("SELECT asset_type, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ?", [identity.userId]),
     db().query<RowDataPacket[]>(
-      `SELECT id, transaction_code, asset_type, transaction_type, source_id, destination_id, amount, reason, created_at
-       FROM ledger_transactions WHERE source_id = ? OR destination_id = ? ORDER BY created_at DESC LIMIT 100`,
+      `SELECT id, transaction_code, asset_type, transaction_type, source_id, destination_type, destination_id, amount, reason, created_at
+       FROM ledger_transactions
+       WHERE (source_type = 'APPLICATION_USER' AND source_id = ? AND transaction_type <> 'GIFT_RECEIVE')
+          OR (destination_type = 'APPLICATION_USER' AND destination_id = ? AND transaction_type <> 'GIFT_SPEND')
+       ORDER BY created_at DESC LIMIT 100`,
       [identity.userId, identity.userId],
     ),
     activeRoomRows(),
@@ -312,13 +316,14 @@ export async function mobileBootstrap(identity: MobileIdentity) {
   const diamonds = Number(diamondWallet?.available_balance ?? 0);
   const reservedDiamonds = Number(diamondWallet?.reserved_balance ?? 0);
   const levelConfig = settings["mobile.levels"] ?? {};
-  const maximumLevel = Number(levelConfig.maximumLevel ?? 120);
+  const maximumConsumptionLevel = Number(levelConfig.maximumConsumptionLevel ?? levelConfig.maximumLevel ?? 120);
+  const maximumActorLevel = Number(levelConfig.maximumActorLevel ?? 200);
   const commerce = settings["mobile.commerce"] ?? {};
 
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
 
-  const rooms = roomRows[0].map((row) => mapActiveRoom(row, maximumLevel));
+  const rooms = roomRows[0].map((row) => mapActiveRoom(row, maximumActorLevel));
 
   const currentAgency = agencyRows[0][0];
   const currentHost = hostRows[0][0];
@@ -334,7 +339,7 @@ export async function mobileBootstrap(identity: MobileIdentity) {
         : profile.avatar_url,
       country: profile.country_code ?? "", language: profile.language_code, bio: profile.bio,
       gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
-      whatsappE164: profile.whatsapp_e164, level: Number(profile.level_number), anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumLevel).level,
+      whatsappE164: profile.whatsapp_e164, level: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel).level,
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
       permissions: permissionsForMobileRole(identity.role),
     },
@@ -348,12 +353,13 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     wallet: { coins, diamonds, reservedDiamonds, gameCredits: coins },
     transactions: transactionRows[0].map((row) => ({
       id: String(row.transaction_code), title: String(row.reason || row.transaction_type), amount: Number(row.amount),
-      createdAt: row.created_at, currency: String(row.asset_type), isCredit: row.destination_id === identity.userId,
+      createdAt: row.created_at, currency: String(row.asset_type),
+      isCredit: row.transaction_type !== "GIFT_SPEND" && row.destination_type === "APPLICATION_USER" && row.destination_id === identity.userId,
       ledger: row.asset_type === "DIAMOND" ? "hostEarnings" : "socialCoins", type: String(row.transaction_type),
     })),
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
-      country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number), anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumLevel).level,
+      country: row.country_code ?? "", language: row.language_code ?? "", level: levelProgress(Number(row.consumption_points ?? 0), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumActorLevel).level,
       vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
     gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
@@ -379,9 +385,9 @@ export async function mobileBootstrap(identity: MobileIdentity) {
     followedAgencyIds: followAgencyRows[0].map((row) => String(row.public_id)),
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
     agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
-    hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: levelProgress(Number(currentHost.anchor_income_points), "anchorIncome", maximumLevel).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
-    consumptionLevel: levelProgress(Number(profile.consumption_points), "consumption", maximumLevel),
-    anchorIncomeLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumLevel),
+    hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: levelProgress(Number(currentHost.anchor_income_points), "anchorIncome", maximumActorLevel).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
+    consumptionLevel: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel),
+    anchorIncomeLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel),
     rankings: rankingRows[0].map((row, index) => ({ rank: index + 1, user: { id: String(row.public_id), name: String(row.full_name), level: Number(row.level_number), vip: Number(row.vip_tier), role: "user" }, score: Number(row.consumption_points), label: "Consumption" })),
     agencyRankings: agencyRankingRows[0].map((row, index) => ({ rank: index + 1, agency: { id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: "", ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0, estimatedEarnings: Number(row.score), totalLiveMinutes: 0 }, score: Number(row.score), label: "Agency" })),
     posts: completion.posts,
@@ -421,15 +427,36 @@ export async function createCoinPurchaseRequest(identity: MobileIdentity, packag
   });
 }
 
-export async function createWithdrawalRequest(identity: MobileIdentity, amount: number, payoutMethodId: string) {
+export async function createWithdrawalRequest(identity: MobileIdentity, amount: number, payout: {
+  type: "UPI"; accountHolderName: string; upiId: string;
+} | { type: "BANK"; accountHolderName: string; accountNumber: string; ifsc: string; bankName: string }) {
   const settings = await settingsMap();
   const minimum = Number(settings["mobile.commerce"]?.minimumWithdrawal ?? 1000);
   if (!Number.isSafeInteger(amount) || amount < minimum) throw new Error(`Minimum withdrawal is ${minimum}.`);
   return withTransaction(async (connection) => {
-    const [hostRows] = await connection.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ? AND status = 'ACTIVE' LIMIT 1", [identity.userId]);
-    if (!hostRows[0]) throw new Error("Only an active host can request a withdrawal.");
-    const [methodRows] = await connection.query<(RowDataPacket & { id: string; masked_destination: string })[]>("SELECT id, masked_destination FROM payout_methods WHERE id = ? AND application_user_id = ? AND active = TRUE AND verified = TRUE LIMIT 1", [payoutMethodId, identity.userId]);
-    if (!methodRows[0]) throw new Error("Choose a verified payout method.");
+    const [eligibleRows] = await connection.query<RowDataPacket[]>(
+      `SELECT user.id FROM application_users user WHERE user.id = ? AND (
+         EXISTS (SELECT 1 FROM host_profiles host WHERE host.application_user_id = user.id AND host.status = 'ACTIVE')
+         OR EXISTS (SELECT 1 FROM platform_accounts agency WHERE agency.application_user_id = user.id AND agency.role = 'AGENCY' AND agency.status = 'ACTIVE')
+       ) LIMIT 1`,
+      [identity.userId],
+    );
+    if (!eligibleRows[0]) throw new Error("Only an active Host or Agency Owner can withdraw earnings.");
+    const destination = payout.type === "UPI"
+      ? `UPI ID: ${payout.upiId}`
+      : `Account number: ${payout.accountNumber}\nIFSC: ${payout.ifsc}\nBank: ${payout.bankName}`;
+    const lastFour = (payout.type === "UPI" ? payout.upiId : payout.accountNumber).replace(/\s/g, "").slice(-4);
+    const masked = payout.type === "UPI"
+      ? `${payout.upiId.slice(0, 1)}•••${payout.upiId.slice(payout.upiId.indexOf("@"))}`
+      : `•••• ${lastFour} • ${payout.ifsc}`;
+    const protectedValue = encryptPrivateText(destination);
+    const payoutMethodId = randomUUID();
+    await connection.execute(
+      `INSERT INTO payout_methods
+        (id, application_user_id, method_type, display_name, masked_destination, destination_encrypted, destination_iv, destination_tag, active, verified)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, FALSE)`,
+      [payoutMethodId, identity.userId, payout.type, payout.accountHolderName, masked, protectedValue.encryptedData, protectedValue.iv, protectedValue.tag],
+    );
     await connection.execute("INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND')", [randomUUID(), identity.userId]);
     const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number; reserved_balance: number })[]>("SELECT id, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [identity.userId]);
     const wallet = walletRows[0];
@@ -439,7 +466,7 @@ export async function createWithdrawalRequest(identity: MobileIdentity, amount: 
     await connection.execute(
       `INSERT INTO withdrawal_requests (id, withdrawal_code, application_user_id, agency_account_id, amount, payout_method_masked, payout_method_id)
        SELECT ?, ?, id, agency_account_id, ?, ?, ? FROM application_users WHERE id = ?`,
-      [requestId, requestCode, amount, methodRows[0].masked_destination, payoutMethodId, identity.userId],
+      [requestId, requestCode, amount, masked, payoutMethodId, identity.userId],
     );
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'WITHDRAWAL', 'Withdrawal submitted', ?, 'wallet/withdrawals')", [randomUUID(), identity.userId, `${requestCode} is pending review.`]);
     return { id: requestCode, userId: identity.publicId, payoutMethodId, amount, status: "pending", createdAt: new Date().toISOString() };
@@ -546,8 +573,9 @@ export async function sendGift(identity: MobileIdentity, input: { roomCode: stri
     );
     const room = roomRows[0];
     if (!room) throw new Error("Join this room before sending a gift.");
-    const [recipientRows] = await connection.query<(RowDataPacket & { id: string; public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null })[]>(
-      `SELECT user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at
+    const [recipientRows] = await connection.query<(RowDataPacket & { id: string; public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null; country_code: string | null; language_code: string | null; vip_tier: number; consumption_points: number; anchor_income_points: number })[]>(
+      `SELECT user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
+              user.country_code, user.language_code, user.vip_tier, user.consumption_points, user.anchor_income_points
        FROM live_room_members member INNER JOIN application_users user ON user.id = member.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE member.room_id = ? AND member.left_at IS NULL
@@ -555,8 +583,9 @@ export async function sendGift(identity: MobileIdentity, input: { roomCode: stri
          AND user.public_id = ? AND user.account_status = 'ACTIVE' LIMIT 1 FOR UPDATE`,
       [room.id, input.recipientPublicId],
     );
-    const [senderProfileRows] = await connection.query<(RowDataPacket & { public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null })[]>(
-      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at
+    const [senderProfileRows] = await connection.query<(RowDataPacket & { public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null; country_code: string | null; language_code: string | null; vip_tier: number; consumption_points: number; anchor_income_points: number })[]>(
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
+              user.country_code, user.language_code, user.vip_tier, user.consumption_points, user.anchor_income_points
        FROM application_users user LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE user.id = ? LIMIT 1`,
       [identity.userId],
@@ -581,7 +610,13 @@ export async function sendGift(identity: MobileIdentity, input: { roomCode: stri
        VALUES (?, ?, 'DIAMOND', 'GIFT_RECEIVE', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
       [randomUUID(), `${transferCode}-R`, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`],
     );
-    await connection.execute("UPDATE application_users SET consumption_points = consumption_points + ? WHERE id = ?", [total, identity.userId]);
+    await connection.execute(
+      `UPDATE application_users
+       SET level_number = LEAST(120, FLOOR(SQRT(GREATEST(0, consumption_points + ?) / 500)) + 1),
+           consumption_points = consumption_points + ?
+       WHERE id = ?`,
+      [total, total, identity.userId],
+    );
     await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [total, recipient.id]);
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     const eventId = randomUUID();
@@ -591,15 +626,26 @@ export async function sendGift(identity: MobileIdentity, input: { roomCode: stri
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total],
     );
+    const rocket = await recordRocketGift(connection, {
+      roomId: room.id,
+      giftEventId: eventId,
+      senderUserId: identity.userId,
+      coinValue: total,
+    });
+    const [postRocketWalletRows] = await connection.query<(RowDataPacket & { available_balance: number })[]>(
+      "SELECT available_balance FROM wallet_balances WHERE id = ? LIMIT 1",
+      [senderRows[0].id],
+    );
     return {
       success: true,
-      remainingCoins: Number(senderRows[0].available_balance) - total,
+      remainingCoins: Number(postRocketWalletRows[0]?.available_balance ?? Number(senderRows[0].available_balance) - total),
       message: `Sent to ${recipient.full_name}`,
+      rocket,
       event: {
         id: eventId, quantity: input.quantity, value: total, createdAt: new Date().toISOString(),
         gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url },
-        sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender) },
-        receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient) },
+        sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
+        receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + total, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
     };
   });
@@ -647,7 +693,17 @@ export async function mutateGameWallet(identity: MobileIdentity, input: {
 }
 
 const teenPattiGame = "teen_patti_pro";
-const supportedRoundGames = new Set([teenPattiGame, "luck77", "bounty_football", "jungle_hunt"]);
+const goldenSingleGames = new Set(["food_wheel", "cat_wheel", "deep_sea", "card_arena"]);
+const goldenZoneGames = new Set(["greedy_king", "greedy_lion"]);
+const supportedRoundGames = new Set([
+  teenPattiGame,
+  "luck77",
+  "bounty_football",
+  "jungle_hunt",
+  ...goldenSingleGames,
+  "three_card",
+  ...goldenZoneGames,
+]);
 const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
 const junglePaylines = [
   [0, 0, 0, 0, 0], [1, 1, 1, 1, 1], [2, 2, 2, 2, 2], [0, 1, 2, 2, 1], [2, 1, 0, 0, 1],
@@ -731,6 +787,9 @@ function teenPattiRound(input: Record<string, number>): ServerGameOutcome {
 
 function luck77Round(input: Record<string, number>): ServerGameOutcome {
   const checked = checkedBets(input, ["watermelon", "seven", "plum"], 500);
+  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
+    throw new Error("Choose no more than two Luck77 houses.");
+  }
   const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "seven", "plum", "watermelon", "plum", "watermelon", "plum"];
   const winner = segments[randomInt(segments.length)];
   const multiplier = winner === "seven" ? 8 : 2;
@@ -779,11 +838,138 @@ function jungleRound(input: Record<string, number>): ServerGameOutcome {
   return { outcome: { grid, winningLines }, wager: checked.total, payout };
 }
 
+type WeightedGoldenOutcome = { label: string; multiplier: number; weight: number };
+
+const goldenWheelOutcomes: Record<string, readonly WeightedGoldenOutcome[]> = {
+  food_wheel: [
+    { label: "Empty Plate", multiplier: 0, weight: 400 },
+    { label: "Rice Bowl", multiplier: 1, weight: 300 },
+    { label: "Ramen", multiplier: 1.5, weight: 150 },
+    { label: "Sushi", multiplier: 2, weight: 90 },
+    { label: "Feast", multiplier: 5, weight: 45 },
+    { label: "Golden Wagyu", multiplier: 10, weight: 15 },
+  ],
+  cat_wheel: [
+    { label: "Sleeping Cat", multiplier: 0, weight: 500 },
+    { label: "Silver Coin", multiplier: 1, weight: 280 },
+    { label: "Gold Coin", multiplier: 2, weight: 140 },
+    { label: "Lucky Charm", multiplier: 5, weight: 60 },
+    { label: "Maneki Neko Jackpot", multiplier: 20, weight: 20 },
+  ],
+  deep_sea: [
+    { label: "Empty Net", multiplier: 0, weight: 450 },
+    { label: "Small Fish", multiplier: 1.2, weight: 300 },
+    { label: "Tuna", multiplier: 2, weight: 150 },
+    { label: "Shark", multiplier: 4, weight: 70 },
+    { label: "Golden Whale", multiplier: 15, weight: 30 },
+  ],
+};
+
+function chooseWeighted<T extends { weight: number }>(values: readonly T[]) {
+  const total = values.reduce((sum, value) => sum + value.weight, 0);
+  const ticket = randomInt(total);
+  let cursor = 0;
+  for (const value of values) {
+    cursor += value.weight;
+    if (ticket < cursor) return value;
+  }
+  return values[values.length - 1];
+}
+
+function goldenSingleRound(game: string, input: Record<string, number>): ServerGameOutcome {
+  const unit = game === "deep_sea" ? 200 : 100;
+  const checked = checkedBets(input, ["play"], unit, 10_000);
+  if (checked.total === 0) throw new Error("Choose a play amount.");
+  if (game === "card_arena") {
+    const player = randomInt(1, 14);
+    const dealer = randomInt(1, 14);
+    const multiplier = player > dealer ? 2 : player === dealer ? 1 : 0;
+    const label = player > dealer ? "Win" : player === dealer ? "Push" : "Lose";
+    return {
+      outcome: { label, multiplier, player, dealer },
+      wager: checked.total,
+      payout: checked.total * multiplier,
+    };
+  }
+  const selected = chooseWeighted(goldenWheelOutcomes[game]);
+  return {
+    outcome: { label: selected.label, multiplier: selected.multiplier },
+    wager: checked.total,
+    payout: Math.floor(checked.total * selected.multiplier),
+  };
+}
+
+function threeCardValue(cards: number[]) {
+  const ranks = cards.map((card) => card % 13 + 2).sort((a, b) => a - b);
+  const suits = cards.map((card) => Math.floor(card / 13));
+  const flush = new Set(suits).size === 1;
+  const straight = (ranks[2] - ranks[0] === 2 && ranks[1] - ranks[0] === 1) ||
+    (ranks[0] === 2 && ranks[1] === 3 && ranks[2] === 14);
+  const counts = new Map<number, number>();
+  for (const rank of ranks) counts.set(rank, (counts.get(rank) ?? 0) + 1);
+  if (counts.size === 1) return { class: 6, score: 100_000 + ranks[0], label: "Three of a Kind" };
+  if (straight && flush) return { class: 5, score: 80_000 + ranks[2], label: "Straight Flush" };
+  if (straight) return { class: 4, score: 60_000 + ranks[2], label: "Straight" };
+  if (flush) return { class: 3, score: 40_000 + ranks[2] * 169 + ranks[1] * 13 + ranks[0], label: "Flush" };
+  const pair = [...counts.entries()].find(([, count]) => count === 2);
+  if (pair) {
+    const kicker = [...counts.entries()].find(([, count]) => count === 1)?.[0] ?? 0;
+    return { class: 2, score: 20_000 + pair[0] * 20 + kicker, label: "Pair" };
+  }
+  return { class: 1, score: ranks[2] * 169 + ranks[1] * 13 + ranks[0], label: "High Card" };
+}
+
+function threeCardRound(input: Record<string, number>): ServerGameOutcome {
+  const checked = checkedBets(input, ["0", "1", "2"], 100, 500_000);
+  if (checked.total === 0) throw new Error("Choose a Three Card seat.");
+  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
+    throw new Error("Choose no more than two Three Card seats.");
+  }
+  const deck = secureShuffle(Array.from({ length: 52 }, (_, index) => index));
+  const hands = [deck.slice(0, 3), deck.slice(3, 6), deck.slice(6, 9)].map((cards) => ({
+    cards,
+    ...threeCardValue(cards),
+  }));
+  let winner = 0;
+  for (let index = 1; index < hands.length; index++) {
+    if (hands[index].class > hands[winner].class ||
+        (hands[index].class === hands[winner].class && hands[index].score > hands[winner].score)) winner = index;
+  }
+  return {
+    outcome: { hands, winningSeat: winner + 1, multiplier: 3, label: `Seat ${winner + 1}` },
+    wager: checked.total,
+    payout: checked.bets[String(winner)] * 3,
+  };
+}
+
+function greedyRound(input: Record<string, number>): ServerGameOutcome {
+  const keys = Array.from({ length: 8 }, (_, index) => String(index));
+  const checked = checkedBets(input, keys, 100, 100_000);
+  if (checked.total === 0) throw new Error("Choose at least one wheel zone.");
+  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 6) {
+    throw new Error("Choose no more than six wheel zones.");
+  }
+  const multipliers = [5, 5, 5, 5, 10, 15, 25, 45] as const;
+  const winner = chooseWeighted([
+    { index: 0, weight: 20 }, { index: 1, weight: 20 }, { index: 2, weight: 20 }, { index: 3, weight: 20 },
+    { index: 4, weight: 10 }, { index: 5, weight: 6 }, { index: 6, weight: 3 }, { index: 7, weight: 1 },
+  ]).index;
+  const multiplier = multipliers[winner];
+  return {
+    outcome: { winner, winningZone: winner + 1, multiplier, label: `Zone ${winner + 1}` },
+    wager: checked.total,
+    payout: checked.bets[String(winner)] * multiplier,
+  };
+}
+
 function createServerGameOutcome(game: string, bets: Record<string, number>) {
   if (game === teenPattiGame) return teenPattiRound(bets);
   if (game === "luck77") return luck77Round(bets);
   if (game === "bounty_football") return footballRound(bets);
   if (game === "jungle_hunt") return jungleRound(bets);
+  if (goldenSingleGames.has(game)) return goldenSingleRound(game, bets);
+  if (game === "three_card") return threeCardRound(bets);
+  if (goldenZoneGames.has(game)) return greedyRound(bets);
   throw new Error("This game is unavailable.");
 }
 
@@ -806,6 +992,20 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
   if (!supportedRoundGames.has(input.game)) throw new Error("This game is unavailable.");
   const bets = canonicalBets(input.bets);
   return withTransaction(async (connection) => {
+    // Lock the existing wallet first for every round. Concurrent retries must
+    // wait here BEFORE checking the idempotency record, not race on a missing
+    // result-row gap lock and deadlock at the debit.
+    // INSERT IGNORE takes a shared duplicate-key lock; concurrent calls then
+    // deadlock upgrading it. This no-op upsert acquires the exclusive lock.
+    await connection.execute(
+      "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN') ON DUPLICATE KEY UPDATE available_balance = available_balance",
+      [randomUUID(), identity.userId],
+    );
+    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
+      [identity.userId],
+    );
+    const before = Number(walletRows[0].available_balance);
     const [existingRows] = await connection.query<RowDataPacket[]>(
       "SELECT * FROM game_round_results WHERE application_user_id = ? AND client_round_id = ? LIMIT 1 FOR UPDATE",
       [identity.userId, input.clientRoundId],
@@ -815,16 +1015,12 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       if (String(existing.game_name) !== input.game || JSON.stringify(canonicalBets(asObject(existing.bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
         throw new Error("This game round ID was already used.");
       }
-      return gameRoundResponse(existing);
+      // The result is immutable, but a retry after another gift/round must
+      // never roll the app's visible wallet back to the old balance_after.
+      return { ...gameRoundResponse(existing), coinBalance: before };
     }
 
     const result = createServerGameOutcome(input.game, bets);
-    await ensureWallet(connection, identity.userId, "COIN");
-    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
-      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
-      [identity.userId],
-    );
-    const before = Number(walletRows[0].available_balance);
     if (before < result.wager) throw new Error("Not enough coins.");
     const after = before - result.wager + result.payout;
     if (!Number.isSafeInteger(after) || after < 0) throw new Error("The game result could not be settled.");
@@ -835,7 +1031,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
          VALUES (?, ?, ?, 'COIN', 'GAME_DEBIT', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
-        [randomUUID(), code("GMD"), `GAME_ROUND:${input.clientRoundId}:DEBIT`, identity.userId, result.wager, `${input.game} round wager`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, bets })],
+        [randomUUID(), code("GMD"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:DEBIT`, identity.userId, result.wager, `${input.game} round wager`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, bets })],
       );
     }
     if (result.payout > 0) {
@@ -843,7 +1039,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
          VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
-        [randomUUID(), code("GMC"), `GAME_ROUND:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId })],
+        [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId })],
       );
     }
 

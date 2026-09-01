@@ -19,7 +19,7 @@ import { createHostApplication, reviewHostApplication, updateHostStatus, uploadH
 import { createBanner, createGift, createNotification, saveEconomySettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
-import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
+import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { preparePublicImage } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
@@ -323,10 +323,6 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     interactionRows: z.string().trim().min(1).max(4000),
     interactionAssetKey: z.string().trim().regex(/^[a-z0-9_-]{2,40}$/).optional().or(z.literal("")),
     pkModes: z.string().trim().min(1).max(200),
-    rocket1Required: z.coerce.number().int().positive(), rocket1Reward: z.coerce.number().int().min(0),
-    rocket2Required: z.coerce.number().int().positive(), rocket2Reward: z.coerce.number().int().min(0),
-    rocket3Required: z.coerce.number().int().positive(), rocket3Reward: z.coerce.number().int().min(0),
-    rocketEnabled: z.enum(["true", "false"]),
     presenceWarningLimit: z.coerce.number().int().min(3).max(30),
     presenceSuspensionLimit: z.coerce.number().int().min(1).max(20),
   }).safeParse(Object.fromEntries(formData));
@@ -366,17 +362,42 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     interactionAsset,
     pkDurations: [2, 5, 10],
     pkModes,
-    rocketLevels: [
-      { level: 1, requiredCoins: parsed.data.rocket1Required, rewardCoins: parsed.data.rocket1Reward },
-      { level: 2, requiredCoins: parsed.data.rocket2Required, rewardCoins: parsed.data.rocket2Reward },
-      { level: 3, requiredCoins: parsed.data.rocket3Required, rewardCoins: parsed.data.rocket3Reward },
-    ],
-    rocketEnabled: parsed.data.rocketEnabled === "true",
     presenceWarningLimit: parsed.data.presenceWarningLimit,
     presenceSuspensionLimit: parsed.data.presenceSuspensionLimit,
   });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Room feature configuration published to the app."));
+}
+
+export async function submitRocketSettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const tierSchema = z.object({
+    target: z.coerce.number().int().positive(), top1: z.coerce.number().int().nonnegative(),
+    top2: z.coerce.number().int().nonnegative(), top3: z.coerce.number().int().nonnegative(), room: z.coerce.number().int().nonnegative(),
+  });
+  const common = z.object({
+    rocketEnabled: z.enum(["true", "false"]), energyPerCoin: z.coerce.number().int().min(1).max(100),
+    minimumUserLevel: z.coerce.number().int().min(1).max(120), minimumVipTier: z.coerce.number().int().min(0).max(5),
+    vipEnergyBonusPercent: z.coerce.number().int().min(0).max(500), reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  const tiers = Array.from({ length: 6 }, (_, index) => {
+    const level = index + 1;
+    const parsed = tierSchema.safeParse({
+      target: formData.get(`rocket${level}Target`), top1: formData.get(`rocket${level}Top1`),
+      top2: formData.get(`rocket${level}Top2`), top3: formData.get(`rocket${level}Top3`), room: formData.get(`rocket${level}Room`),
+    });
+    return parsed.success ? { level, ...parsed.data } : null;
+  });
+  if (!common.success || tiers.some((tier) => tier == null)) redirect(destination("/dashboard/settings", "error", "Check all six Rocket thresholds, rewards, eligibility values, and reason."));
+  const validTiers = tiers.filter((tier): tier is NonNullable<typeof tier> => tier != null);
+  if (validTiers.some((tier, index) => index > 0 && tier.target <= validTiers[index - 1].target)) redirect(destination("/dashboard/settings", "error", "Rocket thresholds must increase from LV1 through LV6."));
+  await saveRocketSettings({
+    scope, enabled: common.data.rocketEnabled === "true", energyPerCoin: common.data.energyPerCoin,
+    minimumUserLevel: common.data.minimumUserLevel, minimumVipTier: common.data.minimumVipTier,
+    vipEnergyBonusPercent: common.data.vipEnergyBonusPercent, reason: common.data.reason, tiers: validTiers,
+  });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Rocket thresholds, rewards, and eligibility were saved and audited."));
 }
 
 export async function submitRiskStatus(formData: FormData) {

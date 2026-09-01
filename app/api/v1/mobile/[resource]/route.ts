@@ -41,6 +41,8 @@ import { ZegoTokenService } from "@/lib/services/zego-token-service";
 import { discoveryPosts, privateMessagingForUser, respondToPrivateRequest } from "@/lib/db/repositories/mobile-social";
 import { actOnRoomSeat } from "@/lib/db/repositories/mobile-seats";
 import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, removeOwnAgencyHost, reportDiscoveryPost, reportPrivateMessage, reviewOwnAgencyJoin, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
+import { claimVipDailyReward, purchaseVipTier, rocketSnapshot } from "@/lib/db/repositories/mobile-rewards";
+import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +61,7 @@ function selectResource(resource: string, bootstrap: Awaited<ReturnType<typeof m
     "coin-packages": ["coinPackages"], "coin-sellers": ["coinSellers"], "coin-orders": ["coinPurchaseRequests"],
     "daily-rewards": ["dailyRewards"], "diamond-exchange": ["diamondConversionRule", "diamondExchangeHistory"],
     "host-rewards": ["hostRewardHistory", "policies", "accessPolicy"], policies: ["policies"],
-    leaderboards: ["leaderboards"], discovery: ["discovery"],
+    leaderboards: ["leaderboards"], discovery: ["discovery"], vip: ["vip"], pk: ["pkStreak"],
   };
   const selected = keys[resource];
   if (!selected) return null;
@@ -89,9 +91,13 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     }
     if (resource === "game-rounds") {
       const parameters = new URL(request.url).searchParams;
-      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt"]).parse(parameters.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "rocket") {
+      const roomCode = z.string().trim().min(3).max(80).parse(new URL(request.url).searchParams.get("roomCode"));
+      return NextResponse.json(await rocketSnapshot(identity, roomCode), { headers: { "Cache-Control": "private, no-store" } });
     }
     const payload = selectResource(resource, await mobileBootstrap(identity));
     return payload ? NextResponse.json(payload, { headers: { "Cache-Control": "private, no-store" } }) : errorResponse(new Error("Mobile resource not found."), 404);
@@ -105,7 +111,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
   try {
     const body = await request.json();
     if (resource === "room-seat") {
-      const parsed = z.object({ roomCode: z.string().min(3).max(80), action: z.enum(["request", "accept", "reject", "assign", "leave"]), seatIndex: z.number().int().min(0).max(19).optional(), targetPublicId: z.string().regex(/^\d+$/).optional() }).parse(body);
+      const parsed = z.object({ roomCode: z.string().min(3).max(80), action: z.enum(["request", "accept", "reject", "assign", "leave", "lock", "unlock"]), seatIndex: z.number().int().min(0).max(19).optional(), targetPublicId: z.string().regex(/^\d+$/).optional() }).parse(body);
       return NextResponse.json(await actOnRoomSeat(identity, parsed));
     }
     if (resource === "private-message-request") {
@@ -119,8 +125,12 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     }
     if (resource === "withdrawals") {
       if (!mobileCan(identity, "withdrawals.create")) return errorResponse(new Error("Forbidden."), 403);
-      const parsed = z.object({ amount: z.number().int().positive(), payoutMethodId: z.string().uuid() }).parse(body);
-      return NextResponse.json(await createWithdrawalRequest(identity, parsed.amount, parsed.payoutMethodId), { status: 201 });
+      const payout = z.discriminatedUnion("type", [
+        z.object({ type: z.literal("UPI"), accountHolderName: z.string().trim().min(2).max(100), upiId: z.string().trim().regex(/^[a-zA-Z0-9._-]{2,}@[a-zA-Z0-9.-]{2,}$/) }),
+        z.object({ type: z.literal("BANK"), accountHolderName: z.string().trim().min(2).max(100), accountNumber: z.string().regex(/^\d{6,24}$/), ifsc: z.string().trim().toUpperCase().regex(/^[A-Z]{4}0[A-Z0-9]{6}$/), bankName: z.string().trim().min(2).max(100) }),
+      ]);
+      const parsed = z.object({ amount: z.number().int().positive(), payout }).parse(body);
+      return NextResponse.json(await createWithdrawalRequest(identity, parsed.amount, parsed.payout), { status: 201 });
     }
     if (resource === "payout-methods") {
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
@@ -137,7 +147,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         displayName: z.string().trim().min(2).max(120),
         bio: z.string().trim().max(280).default(""),
         gender: z.enum(["FEMALE", "MALE", "NON_BINARY", "PREFER_NOT_TO_SAY"]),
-        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+        countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema),
         languageCode: z.string().trim().min(2).max(16),
         whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
         avatarDataUrl: z.string().max(1_500_000).optional(),
@@ -147,6 +157,13 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "daily-rewards") {
       if (!mobileCan(identity, "daily_rewards.claim")) return errorResponse(new Error("Forbidden."), 403);
       return NextResponse.json(await claimDailyReward(identity), { status: 201 });
+    }
+    if (resource === "vip-purchase") {
+      const parsed = z.object({ tier: z.number().int().min(1).max(5) }).parse(body);
+      return NextResponse.json(await purchaseVipTier(identity, parsed.tier), { status: 201 });
+    }
+    if (resource === "vip-claim") {
+      return NextResponse.json(await claimVipDailyReward(identity), { status: 201 });
     }
     if (resource === "notifications-read") {
       return NextResponse.json(await markMobileNotificationsRead(identity));
@@ -180,7 +197,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({
         name: z.string().trim().min(3).max(120),
         ownerName: z.string().trim().min(2).max(120),
-        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+        countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema),
         whatsappE164: z.string().trim().regex(/^\+[1-9]\d{7,14}$/),
         aadhaar: z.string().transform((value) => value.replace(/\D/g, "")).pipe(z.string().regex(/^\d{12}$/)),
         parentCode: z.string().regex(/^\d{6}$/),
@@ -230,7 +247,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         seatCount: z.number().int().min(0).max(20),
         themeIndex: z.number().int().min(0).max(20),
         themeEnabled: z.boolean().default(false),
-        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()).optional(),
+        countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema).optional(),
         photoDataUrl: z.string().max(2_100_000).optional(),
         password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(),
       }).refine((value) => value.kind !== "party" || Boolean(value.photoDataUrl), "Add a room photo before starting a Party.").parse(body);
@@ -319,7 +336,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({
         clientRoundId: z.string().uuid(),
-        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt"]),
+        game: z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"]),
         bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
       }).parse(body);
       return NextResponse.json(await settleGameRound(identity, parsed), { status: 201 });

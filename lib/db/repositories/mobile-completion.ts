@@ -11,6 +11,12 @@ import { FaceBiometricService } from "@/lib/services/face-biometric-service";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import { agencyApplicationsForUser, agencyOwnerSnapshot, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
+import {
+  finalizePkSession,
+  pkStreakSnapshot,
+  settlePreviousWeeklyGifterRewards,
+  vipSnapshot,
+} from "@/lib/db/repositories/mobile-rewards";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -63,10 +69,10 @@ export async function avatarForPublicId(publicId: string) {
 
 export async function claimDailyReward(identity: MobileIdentity) {
   return withTransaction(async (connection) => {
-    const [clockRows] = await connection.query<(RowDataPacket & { today: string })[]>("SELECT CURRENT_DATE today");
+    const [clockRows] = await connection.query<(RowDataPacket & { today: string })[]>("SELECT DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') today");
     const today = String(clockRows[0].today);
     const [lastRows] = await connection.query<(RowDataPacket & { claim_date: string; streak_day: number })[]>(
-      "SELECT claim_date, streak_day FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 1 FOR UPDATE",
+      "SELECT DATE_FORMAT(claim_date, '%Y-%m-%d') claim_date, streak_day FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 1 FOR UPDATE",
       [identity.userId],
     );
     const last = lastRows[0];
@@ -217,17 +223,34 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
 
 export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
-    const [rooms] = await connection.query<(RowDataPacket & { id: string; host_application_user_id: string })[]>(
-      "SELECT id, host_application_user_id FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; host_application_user_id: string; room_type: string })[]>(
+      "SELECT id, host_application_user_id, room_type FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
       [roomCode],
     );
     const room = rooms[0];
     if (!room) return { left: true };
     if (room.host_application_user_id === identity.userId) {
-      await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE, seat_index = NULL WHERE room_id = ?", [room.id]);
-      await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), audience_count = 0 WHERE id = ?", [room.id]);
-      await connection.execute("UPDATE live_session_accounting SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), status = IF(status = 'ACTIVE', 'VOID', status) WHERE room_id = ?", [room.id]);
-      return { left: true, closed: true };
+      if (room.room_type !== "PARTY") throw new Error("Use Close Room to end a Video or Face Live session.");
+      const [admins] = await connection.query<(RowDataPacket & { application_user_id: string; public_id: number })[]>(
+        `SELECT member.application_user_id, user.public_id FROM live_room_members member
+         INNER JOIN application_users user ON user.id = member.application_user_id AND user.account_status = 'ACTIVE'
+         WHERE member.room_id = ? AND member.room_role = 'ADMIN' AND member.left_at IS NULL
+           AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         ORDER BY member.joined_at LIMIT 1 FOR UPDATE`,
+        [room.id],
+      );
+      const successor = admins[0];
+      if (!successor) throw new Error("Appoint a Room Admin to keep this Party open, or choose Close Room.");
+      await connection.execute("UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_room_members SET room_role = 'OWNER' WHERE room_id = ? AND application_user_id = ?", [room.id, successor.application_user_id]);
+      await connection.execute(
+        `UPDATE live_rooms SET host_application_user_id = ?, audience_count = (
+          SELECT COUNT(*) FROM live_room_members WHERE room_id = ? AND left_at IS NULL
+        ) WHERE id = ?`,
+        [successor.application_user_id, room.id, room.id],
+      );
+      await connection.execute("UPDATE live_session_accounting SET host_application_user_id = ? WHERE room_id = ? AND status = 'ACTIVE'", [successor.application_user_id, room.id]);
+      return { left: true, transferredTo: String(successor.public_id) };
     }
     await connection.execute(
       "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?",
@@ -265,15 +288,22 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
          AND (request.application_user_id = ? OR (? IN ('OWNER','ADMIN') AND request.status = 'PENDING'))
        ORDER BY request.requested_at LIMIT 50`, [rows[0].id, identity.userId, rows[0].room_role]);
     const [messages] = await connection.query<RowDataPacket[]>(
-      `SELECT message.id, user.full_name, message.body, message.created_at FROM live_room_messages message
+      `SELECT message.id, user.full_name, user.vip_tier, message.body, message.created_at FROM live_room_messages message
        INNER JOIN application_users user ON user.id = message.sender_application_user_id
        WHERE message.room_id = ? AND message.visible = TRUE ORDER BY message.created_at DESC LIMIT 60`, [rows[0].id]);
+    const [seatLocks] = await connection.query<RowDataPacket[]>(
+      "SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? ORDER BY seat_index",
+      [rows[0].id],
+    );
     await connection.execute(
       "UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [rows[0].id, identity.userId],
     );
     const [participants] = await connection.query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, user.level_number, LEAST(120, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level, member.room_role, member.seat_index, member.muted,
+      `SELECT user.public_id, user.full_name,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level,
+              user.vip_tier, user.country_code, user.language_code, member.room_role, member.seat_index, member.muted,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url,
@@ -293,11 +323,17 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     const [giftEvents] = await connection.query<RowDataPacket[]>(
       `SELECT event.id, event.quantity, event.coin_value, event.created_at,
               gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
-              sender.public_id sender_public_id, sender.full_name sender_name,
+              sender.public_id sender_public_id, sender.full_name sender_name, sender.vip_tier sender_vip,
+              sender.country_code sender_country, sender.language_code sender_language,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, sender.consumption_points) / 500)) + 1) sender_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, sender.anchor_income_points) / 500)) + 1) sender_anchor_level,
               CASE WHEN sender_avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', sender.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(sender_avatar.updated_at) * 1000))
                 ELSE sender.avatar_url END sender_avatar_url,
-              receiver.public_id receiver_public_id, receiver.full_name receiver_name,
+              receiver.public_id receiver_public_id, receiver.full_name receiver_name, receiver.vip_tier receiver_vip,
+              receiver.country_code receiver_country, receiver.language_code receiver_language,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, receiver.consumption_points) / 500)) + 1) receiver_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, receiver.anchor_income_points) / 500)) + 1) receiver_anchor_level,
               CASE WHEN receiver_avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
                 ELSE receiver.avatar_url END receiver_avatar_url
@@ -316,17 +352,18 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       muted: Boolean(rows[0].muted), chatLocked: Boolean(rows[0].chat_locked),
       themeIndex: Number(rows[0].theme_index), themeEnabled: Boolean(rows[0].theme_enabled),
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
+      lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
-      messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), body: String(row.body), createdAt: row.created_at })),
+      messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), actorVip: Number(row.vip_tier), body: String(row.body), createdAt: row.created_at })),
       participants: participants.map((member) => ({
-        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, level: Number(member.level_number), anchorLevel: Number(member.anchor_level) },
+        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, country: member.country_code ?? "", language: member.language_code ?? "", level: Number(member.consumption_level), anchorLevel: Number(member.anchor_level), vip: Number(member.vip_tier) },
         roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
         gift: { id: String(event.gift_key), name: String(event.gift_name), symbol: event.gift_emoji ?? "🎁", imageUrl: event.gift_visual_url },
-        sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: event.sender_avatar_url },
-        receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: event.receiver_avatar_url },
+        sender: { id: String(event.sender_public_id), name: String(event.sender_name), avatarUrl: event.sender_avatar_url, country: event.sender_country ?? "", language: event.sender_language ?? "", level: Number(event.sender_level), anchorLevel: Number(event.sender_anchor_level), vip: Number(event.sender_vip) },
+        receiver: { id: String(event.receiver_public_id), name: String(event.receiver_name), avatarUrl: event.receiver_avatar_url, country: event.receiver_country ?? "", language: event.receiver_language ?? "", level: Number(event.receiver_level), anchorLevel: Number(event.receiver_anchor_level), vip: Number(event.receiver_vip) },
       })),
     };
   });
@@ -493,7 +530,9 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
     );
     const raw = settingRows[0]?.setting_value;
     const settings = typeof raw === "string" ? JSON.parse(raw) as { pkModes?: string[]; pkDurations?: number[] } : raw as { pkModes?: string[]; pkDurations?: number[] } | undefined;
-    if (!(settings?.pkModes ?? []).includes(input.mode) || !(settings?.pkDurations ?? []).map(Number).includes(input.durationMinutes)) {
+    const availableModes = settings?.pkModes ?? ["Classic", "Auto PK", "Individual", "Random"];
+    const availableDurations = (settings?.pkDurations ?? [2, 5, 10]).map(Number);
+    if (!availableModes.includes(input.mode) || !availableDurations.includes(input.durationMinutes)) {
       throw new Error("That PK rule is not currently available.");
     }
     const [rooms] = await connection.query<(RowDataPacket & { source_id: string; source_host_id: string; source_type: string; source_pk_enabled: number; target_id: string; target_type: string; target_pk_enabled: number })[]>(
@@ -524,16 +563,7 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
 }
 
 export async function closePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {
-  const [result] = await db().execute(
-    `UPDATE live_pk_sessions session
-     INNER JOIN live_rooms room ON room.id = session.source_room_id
-     SET session.status = ?, session.ended_at = CURRENT_TIMESTAMP(3)
-     WHERE session.id = ? AND room.host_application_user_id = ?
-       AND session.status IN ('REQUESTED','ACTIVE')`,
-    [input.completed ? "COMPLETED" : "CANCELLED", input.sessionId, identity.userId],
-  );
-  if ((result as { affectedRows?: number }).affectedRows !== 1) throw new Error("The PK session could not be closed.");
-  return { id: input.sessionId, status: input.completed ? "completed" : "cancelled" };
+  return finalizePkSession(identity, input);
 }
 
 export async function recordFacePresenceAutoStop(
@@ -740,18 +770,31 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
       accounting_id: string; room_id: string; room_type: "LIVE" | "PARTY" | "FACE"; started_at: Date; ended_at: Date;
-      status: string; host_application_user_id: string; reward_rule_id: string | null;
+      status: string; host_application_user_id: string; reward_rule_id: string | null; valid_duration_seconds: number;
+      eligible_duration_seconds: number; reward_coins: number; transaction_code: string | null;
     })[]>(
       `SELECT accounting.id accounting_id, room.id room_id, accounting.room_type, accounting.started_at,
               accounting.status, accounting.host_application_user_id, accounting.reward_rule_id,
+              accounting.valid_duration_seconds, accounting.eligible_duration_seconds, accounting.reward_coins,
+              ledger.transaction_code,
               COALESCE(room.ended_at, accounting.ended_at, CURRENT_TIMESTAMP(3)) ended_at
        FROM live_session_accounting accounting INNER JOIN live_rooms room ON room.id = accounting.room_id
+       LEFT JOIN ledger_transactions ledger ON ledger.id = accounting.reward_ledger_id
        WHERE room.room_code = ? LIMIT 1 FOR UPDATE`,
       [roomCode],
     );
     const session = rows[0];
     if (!session || session.host_application_user_id !== identity.userId) throw new Error("Only the room owner can finalize this Live session.");
-    if (session.status !== "ACTIVE") throw new Error("This Live session was already finalized.");
+    if (session.status !== "ACTIVE") {
+      return {
+        transactionId: session.transaction_code,
+        roomType: session.room_type.toLowerCase(),
+        validSeconds: Number(session.valid_duration_seconds ?? 0),
+        eligibleSeconds: Number(session.eligible_duration_seconds ?? 0),
+        rewardCoins: Number(session.reward_coins ?? 0),
+        alreadyFinalized: true,
+      };
+    }
     const [durationRows] = await connection.query<(RowDataPacket & { seconds: number })[]>("SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, LEAST(?, CURRENT_TIMESTAMP(3)))) seconds", [session.started_at, session.ended_at]);
     const validSeconds = Number(durationRows[0].seconds);
     const [ruleRows] = await connection.query<(RowDataPacket & { id: string; coins_per_hour: number; minimum_eligible_seconds: number })[]>(
@@ -834,45 +877,84 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
 }
 
 function periodStart(period: "daily" | "weekly" | "monthly") {
-  return period === "daily" ? "DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 DAY)"
-    : period === "weekly" ? "DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 7 DAY)"
-      : "DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 30 DAY)";
+  return period === "daily" ? "CURRENT_DATE"
+    : period === "weekly" ? "DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
+      : "DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')";
 }
 
 async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
   const start = periodStart(period);
   const [gifters, hosts, agencies] = await Promise.all([
     db().query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, user.level_number, user.vip_tier, SUM(ledger.amount) score
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
+              user.country_code, user.language_code, user.consumption_points, user.anchor_income_points,
+              user.vip_tier, user.is_host, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.source_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE ledger.transaction_type = 'GIFT_SPEND' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
-       GROUP BY user.id, user.public_id, user.full_name, user.level_number, user.vip_tier ORDER BY score DESC, user.public_id LIMIT 50`,
+       GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at,
+                user.country_code, user.language_code, user.consumption_points, user.anchor_income_points, user.vip_tier, user.is_host
+       ORDER BY score DESC, user.public_id LIMIT 50`,
     ),
     db().query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, user.level_number, user.vip_tier, SUM(ledger.amount) score
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
+              user.country_code, user.language_code, user.consumption_points, user.anchor_income_points,
+              user.vip_tier, user.is_host, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.destination_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
-       GROUP BY user.id, user.public_id, user.full_name, user.level_number, user.vip_tier ORDER BY score DESC, user.public_id LIMIT 50`,
+       GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at,
+                user.country_code, user.language_code, user.consumption_points, user.anchor_income_points, user.vip_tier, user.is_host
+       ORDER BY score DESC, user.public_id LIMIT 50`,
     ),
     db().query<RowDataPacket[]>(
-      `SELECT agency.public_id, agency.full_name, SUM(ledger.amount) score
+      `SELECT agency.public_id, agency.full_name, agency.country_code, creation.id logo_id, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.destination_id
        INNER JOIN platform_accounts agency ON agency.id = user.agency_account_id
+       LEFT JOIN agency_creation_applications creation ON creation.approved_agency_account_id = agency.id AND creation.status = 'APPROVED'
        WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
-       GROUP BY agency.id, agency.public_id, agency.full_name ORDER BY score DESC, agency.public_id LIMIT 50`,
+       GROUP BY agency.id, agency.public_id, agency.full_name, agency.country_code, creation.id
+       ORDER BY score DESC, agency.public_id LIMIT 50`,
     ),
   ]);
-  const users = (rows: RowDataPacket[]) => rows.map((row, index) => ({ rank: index + 1, user: { id: String(row.public_id), name: String(row.full_name), level: Number(row.level_number), vip: Number(row.vip_tier), role: "host" }, score: Number(row.score), label: period }));
+  const users = (rows: RowDataPacket[], role: "user" | "host") => rows.map((row, index) => {
+    const score = Number(row.score);
+    const weeklyRewardRate = period === "weekly" && index < 3 ? [0.025, 0.015, 0.01][index] : 0;
+    return {
+      rank: index + 1,
+      user: {
+        id: String(row.public_id), name: String(row.full_name),
+        avatarUrl: row.avatar_updated_at == null ? row.avatar_url : `https://nazraa.vercel.app/api/v1/mobile/avatar/${row.public_id}?v=${new Date(row.avatar_updated_at as Date).getTime()}`,
+        country: row.country_code ?? "", language: row.language_code ?? "", level: Math.max(1, Math.min(120, Math.floor(Math.sqrt(Number(row.consumption_points ?? 0) / 500)) + 1)),
+        anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 500)) + 1)),
+        vip: Number(row.vip_tier), role,
+      },
+      score, label: period,
+      rewardCoins: weeklyRewardRate === 0 ? 0 : Math.floor(score * weeklyRewardRate),
+    };
+  });
   return {
-    topGifters: users(gifters[0]), topHosts: users(hosts[0]),
-    topAgencies: agencies[0].map((row, index) => ({ rank: index + 1, agency: { id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: "", ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0, estimatedEarnings: Number(row.score), totalLiveMinutes: 0 }, score: Number(row.score), label: period })),
+    topGifters: users(gifters[0], "user"), topHosts: users(hosts[0], "host"),
+    topAgencies: agencies[0].map((row, index) => ({
+      rank: index + 1,
+      agency: {
+        id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: row.country_code ?? "",
+        logoUrl: row.logo_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/agencies/${row.public_id}`,
+        ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0,
+        estimatedEarnings: Number(row.score), totalLiveMinutes: 0,
+      },
+      score: Number(row.score), label: period,
+    })),
   };
 }
 
 export async function mobileCompletionSnapshot(identity: MobileIdentity) {
-  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards, agencyApplications, agencyManagement, posts, privateMessaging] = await Promise.all([
+  // This lightweight, idempotent settlement makes the previous calendar
+  // week's payout automatic even on deployments without a separate cron.
+  await settlePreviousWeeklyGifterRewards();
+  const [rewardRules, claimRows, conversionRows, exchangeRows, rewardHistoryRows, policyRows, discoveryRows, avatarRows, leaderboards, agencyApplications, agencyManagement, posts, privateMessaging, vip, pkStreak] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT day_number, reward_coins, label FROM daily_reward_rules WHERE enabled = TRUE ORDER BY day_number"),
-    db().query<RowDataPacket[]>("SELECT claim_date, streak_day, reward_coins, claim_code, claimed_at FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 31", [identity.userId]),
+    db().query<RowDataPacket[]>("SELECT DATE_FORMAT(claim_date, '%Y-%m-%d') claim_date, streak_day, reward_coins, claim_code, claimed_at FROM daily_reward_claims WHERE application_user_id = ? ORDER BY claim_date DESC LIMIT 31", [identity.userId]),
     db().query<RowDataPacket[]>("SELECT id, diamonds, coins, minimum_diamonds, maximum_diamonds, effective_from FROM diamond_conversion_rules WHERE enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3) ORDER BY effective_from DESC LIMIT 1"),
     db().query<RowDataPacket[]>("SELECT exchange_code, diamonds_debited, coins_credited, created_at FROM diamond_coin_exchanges WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 50", [identity.userId]),
     db().query<RowDataPacket[]>("SELECT room_type, started_at, ended_at, valid_duration_seconds, eligible_duration_seconds, reward_coins, status FROM live_session_accounting WHERE host_application_user_id = ? ORDER BY started_at DESC LIMIT 50", [identity.userId]),
@@ -884,10 +966,12 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     agencyOwnerSnapshot(identity),
     discoveryPosts(),
     privateMessagingForUser(identity),
+    vipSnapshot(identity),
+    pkStreakSnapshot(identity),
   ]);
   const claims = claimRows[0];
   const lastClaimDate = claims[0]?.claim_date ? String(claims[0].claim_date).slice(0, 10) : null;
-  const [clockRows] = await db().query<(RowDataPacket & { today: string })[]>("SELECT CURRENT_DATE today");
+  const [clockRows] = await db().query<(RowDataPacket & { today: string })[]>("SELECT DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') today");
   const today = String(clockRows[0].today).slice(0, 10);
   const discoveryRaw = discoveryRows[0][0]?.setting_value;
   const discovery = typeof discoveryRaw === "string" ? JSON.parse(discoveryRaw) : (discoveryRaw ?? {});
@@ -910,6 +994,8 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     discovery,
     profileAvatarVersion: avatarRows[0][0]?.updated_at ? new Date(avatarRows[0][0].updated_at).getTime() : null,
     leaderboards: { daily: leaderboards[0], weekly: leaderboards[1], monthly: leaderboards[2] },
+    vip,
+    pkStreak,
     agencyApplications,
     agencyManagement,
     posts,

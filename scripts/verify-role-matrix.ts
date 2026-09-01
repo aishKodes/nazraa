@@ -27,6 +27,7 @@ assert.equal(can("AGENCY", "withdrawals.review"), false);
 assert.equal(can("AGENCY", "agencies.review"), true);
 assert.equal(can("AGENCY", "accounts.read"), false);
 assert.equal(can("COIN_SELLER", "users.read"), false);
+assert.equal(can("COIN_SELLER", "coins.transfer"), true);
 assert.equal(can("COIN_SELLER", "coin_orders.manage"), true);
 assert.equal(can("MONITORING_CS", "monitoring.read"), true);
 assert.equal(can("MONITORING_CS", "rooms.restrict"), true);

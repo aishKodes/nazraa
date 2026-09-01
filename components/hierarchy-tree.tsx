@@ -39,7 +39,13 @@ export function HierarchyTree({ nodes: initialNodes }: { nodes: HierarchyTreeNod
     }
     return result;
   }, [nodes]);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(roots.map((node) => node.id)));
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    const isMasterView = roots.some((node) => node.role === "MASTER");
+    return new Set(
+      (isMasterView ? roots : initialNodes.filter((node) => node.role !== "AGENCY"))
+        .map((node) => node.id),
+    );
+  });
   const [query, setQuery] = useState("");
   const visibleForSearch = useMemo(() => {
     const cleaned = query.trim().toLowerCase();

@@ -23,6 +23,9 @@ async function main() {
     const product = await import("@/lib/db/repositories/mobile-product");
     const social = await import("@/lib/db/repositories/mobile-social");
     const rooms = await import("@/lib/db/repositories/mobile-completion");
+    const rewards = await import("@/lib/db/repositories/mobile-rewards");
+    const completionAdmin = await import("@/lib/db/repositories/completion-administration");
+    const operations = await import("@/lib/db/repositories/operations");
     const seats = await import("@/lib/db/repositories/mobile-seats");
     const accounts = await import("@/lib/db/repositories/accounts");
     const admin = await import("@/lib/db/repositories/administration");
@@ -35,7 +38,7 @@ async function main() {
     const parent = await admin.createPlatformAccount({ scope: master, role: "ADMIN", requestedParentId: superAdmin.accountId, fullName: "QA Parent Admin", countryCode: "IN", password: "Local-QA-Only-2026!", documents: [] });
     const parentAccount = (await accounts.accountByManagementId(String(parent.publicId)))!;
     const parentScope = await accounts.scopeFor(parentAccount);
-    for (const kind of ["PARTY", "LIVE", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, 0, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, master.account.id]);
+    for (const kind of ["PARTY", "LIVE", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, ?, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, kind === "PARTY" ? 0 : 3500, master.account.id]);
     for (let day = 1; day <= 7; day += 1) await root.execute("INSERT INTO daily_reward_rules (id, day_number, reward_coins, label, updated_by) VALUES (?, ?, ?, ?, ?)", [randomUUID(), day, day * 10, `Day ${day}`, master.account.id]);
     await root.execute("INSERT INTO gift_catalog (id, gift_key, name, category, coin_price, animation_key, created_by) VALUES (?, 'qa_rose', 'QA Rose', 'Popular', 10, 'gift.qa_rose', ?)", [randomUUID(), master.account.id]);
     async function user(name: string): Promise<MobileIdentity> {
@@ -65,7 +68,9 @@ async function main() {
     console.log("PASS photos: compressed small image, MIME validation, text-only/photo posts, ownership");
 
     const clientMessageId = randomUUID();
-    await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: "QA request", clientMessageId });
+    const ownerCoinsBeforeMessages = (await product.mobileBootstrap(owner)).wallet.coins;
+    const firstMessage = await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: "QA request", clientMessageId });
+    assert.equal(firstMessage.coinCost, 10);
     assert.equal((await social.privateMessagingForUser(guest)).messages[0].conversationStatus, "pending");
     await assert.rejects(social.respondToPrivateRequest(owner, { targetPublicId: guest.publicId, accept: true }));
     await assert.rejects(social.respondToPrivateRequest(stranger, { targetPublicId: owner.publicId, accept: true }));
@@ -74,11 +79,35 @@ async function main() {
     await social.sendPrivateMessage(guest, { recipientPublicId: owner.publicId, body: "Accepted reply", clientMessageId: randomUUID() });
     assert.ok((await social.privateMessagingForUser(owner)).messages.every((message) => message.conversationStatus === "accepted"));
     assert.equal((await social.privateMessagingForUser(stranger)).messages.length, 0);
-    assert.equal((await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: "QA request", clientMessageId })).alreadySent, true);
+    const duplicateMessage = await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: "QA request", clientMessageId });
+    assert.equal(duplicateMessage.alreadySent, true);
+    assert.equal(duplicateMessage.paidMessagesToday, 1);
+    for (let index = 2; index <= 20; index += 1) {
+      const paid = await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: `Paid DM ${index}`, clientMessageId: randomUUID() });
+      assert.equal(paid.coinCost, 10);
+      assert.equal(paid.paidMessagesToday, index);
+    }
+    const freeMessage = await social.sendPrivateMessage(owner, { recipientPublicId: guest.publicId, body: "Free DM 21", clientMessageId: randomUUID() });
+    assert.equal(freeMessage.coinCost, 0);
+    assert.equal(freeMessage.remainingPaidMessages, 0);
+    assert.equal(freeMessage.nextMessageCoinCost, 0);
+    const ownerMessaging = await social.privateMessagingForUser(owner);
+    assert.equal(ownerMessaging.dailyPaidLimit, 20);
+    assert.equal(ownerMessaging.paidMessagesToday, 20);
+    assert.equal(ownerMessaging.totalMessagesToday, 21);
+    assert.equal(ownerMessaging.remainingPaidMessages, 0);
+    assert.equal(ownerMessaging.nextMessageCoinCost, 0);
+    assert.equal((await product.mobileBootstrap(owner)).wallet.coins, ownerCoinsBeforeMessages - 200);
+    const [messageLedger] = await root.query<RowDataPacket[]>(
+      "SELECT transaction_type, COUNT(*) count FROM ledger_transactions WHERE source_id = ? AND transaction_type IN ('PRIVATE_MESSAGE','PRIVATE_MESSAGE_FREE') GROUP BY transaction_type",
+      [owner.userId],
+    );
+    assert.equal(Number(messageLedger.find((row) => row.transaction_type === "PRIVATE_MESSAGE")?.count), 20);
+    assert.equal(Number(messageLedger.find((row) => row.transaction_type === "PRIVATE_MESSAGE_FREE")?.count), 1);
     await social.sendPrivateMessage(stranger, { recipientPublicId: guest.publicId, body: "Second request", clientMessageId: randomUUID() });
     await social.respondToPrivateRequest(guest, { targetPublicId: stranger.publicId, accept: false });
     await assert.rejects(social.sendPrivateMessage(stranger, { recipientPublicId: guest.publicId, body: "Declined", clientMessageId: randomUUID() }));
-    console.log("PASS Inbox: pending/accepted/rejected, recipient-only decision, no directory rows, idempotent charge");
+    console.log("PASS Inbox: pending/accepted/rejected, daily 20×10-coin allowance, free remainder, server counter, idempotent charge");
 
     const roomCode = `QA${Date.now()}`;
     await product.createRoom(owner, { roomCode, kind: "party", title: "QA Manual Room", category: "Talk", language: "Hindi", privacy: "public", seatCount: 10, themeIndex: 0, themeEnabled: false, photoDataUrl: photo, countryCode: "IN" });
@@ -112,7 +141,13 @@ async function main() {
     await seats.actOnRoomSeat(guest, { roomCode, action: "request", seatIndex: 2 });
     await seats.actOnRoomSeat(owner, { roomCode, action: "reject", targetPublicId: guest.publicId });
     assert.equal((await rooms.refreshRoomPresence(guest, roomCode)).seatRequests?.[0].status, "rejected");
-    console.log("PASS seat permissions: Couple Seats stay empty on join; explicit request/accept or staff assignment only; conflicts, rejection, leave, foreign denial");
+    await seats.actOnRoomSeat(owner, { roomCode, action: "lock", seatIndex: 2 });
+    assert.deepEqual((await rooms.refreshRoomPresence(guest, roomCode)).lockedSeatIndexes, [2]);
+    await assert.rejects(seats.actOnRoomSeat(guest, { roomCode, action: "request", seatIndex: 2 }), /locked/);
+    await assert.rejects(seats.actOnRoomSeat(guest, { roomCode, action: "unlock", seatIndex: 2 }), /Only the Room Owner/);
+    await seats.actOnRoomSeat(roomAdmin, { roomCode, action: "unlock", seatIndex: 2 });
+    assert.deepEqual((await rooms.refreshRoomPresence(owner, roomCode)).lockedSeatIndexes, []);
+    console.log("PASS seat permissions: Couple Seats stay empty; per-seat Lock/Unlock persists server-side; request/accept, assignment, rejection, leave and foreign denial");
 
     const ownerBeforeGift = await product.mobileBootstrap(owner);
     const guestBeforeGift = await product.mobileBootstrap(guest);
@@ -126,6 +161,14 @@ async function main() {
     });
     const giftValue = gift.cost * 2;
     assert.equal(giftResult.remainingCoins, ownerBeforeGift.wallet.coins - giftValue);
+    const ownerAfterGift = await product.mobileBootstrap(owner);
+    const guestAfterGift = await product.mobileBootstrap(guest);
+    assert.equal(ownerAfterGift.wallet.diamonds, ownerBeforeGift.wallet.diamonds, "Sending a gift must not debit diamonds");
+    assert.equal(guestAfterGift.wallet.coins, guestBeforeGift.wallet.coins, "Receiving a gift must not credit social coins");
+    const senderGiftLedger = ownerAfterGift.transactions.filter((entry) => entry.type.startsWith("GIFT_"));
+    const receiverGiftLedger = guestAfterGift.transactions.filter((entry) => entry.type.startsWith("GIFT_"));
+    assert.deepEqual(senderGiftLedger.map((entry) => [entry.type, entry.currency, entry.isCredit, entry.amount]), [["GIFT_SPEND", "COIN", false, giftValue]]);
+    assert.deepEqual(receiverGiftLedger.map((entry) => [entry.type, entry.currency, entry.isCredit, entry.amount]), [["GIFT_RECEIVE", "DIAMOND", true, giftValue]]);
     const guestPresenceAfterGift = await rooms.refreshRoomPresence(guest, roomCode);
     assert.equal(guestPresenceAfterGift.wallet?.diamonds, guestBeforeGift.wallet.diamonds + giftValue);
     assert.equal(guestPresenceAfterGift.giftEvents?.at(-1)?.receiver.id, guest.publicId);
@@ -139,7 +182,108 @@ async function main() {
       recipientPublicId: stranger.publicId,
       quantity: 1,
     }));
-    console.log("PASS gifts: active receivers only, atomic coin debit/diamond credit, room event and per-seat total");
+    console.log("PASS gifts: active receivers, atomic coin debit/diamond credit, wallet-specific ledger, room event and per-seat total");
+
+    const rocketAdminBefore = await completionAdmin.getCompletionAdminSettings();
+    assert.deepEqual(rocketAdminBefore.rocket.tiers.map((tier) => tier.target), [5000, 35000, 100000, 250000, 500000, 1000000]);
+    const rocketInput = {
+      scope: master, energyPerCoin: 1, minimumUserLevel: 1, minimumVipTier: 0, vipEnergyBonusPercent: 0,
+      reason: "QA Rocket control wiring", tiers: rocketAdminBefore.rocket.tiers.map((tier) => ({
+        level: tier.level, target: tier.target, top1: tier.top1, top2: tier.top2, top3: tier.top3, room: tier.room,
+      })),
+    };
+    await completionAdmin.saveRocketSettings({ ...rocketInput, enabled: false });
+    const [rocketBeforeDisabledGift] = await root.query<RowDataPacket[]>("SELECT COALESCE(SUM(coin_value), 0) total FROM rocket_contributions");
+    const disabledGift = await product.sendGift(owner, { roomCode, giftId: gift.id, recipientPublicId: guest.publicId, quantity: 1 });
+    assert.equal(disabledGift.rocket, null);
+    const [rocketAfterDisabledGift] = await root.query<RowDataPacket[]>("SELECT COALESCE(SUM(coin_value), 0) total FROM rocket_contributions");
+    assert.equal(Number(rocketAfterDisabledGift[0].total), Number(rocketBeforeDisabledGift[0].total));
+    await completionAdmin.saveRocketSettings({ ...rocketInput, enabled: true });
+    await root.execute(
+      `UPDATE rocket_cycles SET target_coins = contributed_coins + 10
+       WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?) AND status = 'ACTIVE'`,
+      [roomCode],
+    );
+    const beforeLaunch = (await product.mobileBootstrap(owner)).wallet.coins;
+    const rocketLaunch = await product.sendGift(owner, {
+      roomCode,
+      giftId: gift.id,
+      recipientPublicId: guest.publicId,
+      quantity: 1,
+    });
+    assert.ok(rocketLaunch.rocket, "Enabled Rocket must return authoritative progress");
+    assert.equal(rocketLaunch.rocket.launched, true);
+    assert.equal(rocketLaunch.remainingCoins, beforeLaunch - gift.cost + 500, "Rocket Top 1 reward must be in the immediate wallet response");
+    const rocketState = await rewards.rocketSnapshot(owner, roomCode);
+    assert.equal(rocketState.history.some((cycle) => cycle.status === "completed"), true);
+    const [rocketRewards] = await root.query<RowDataPacket[]>("SELECT reward_group, reward_coins FROM rocket_rewards WHERE application_user_id = ?", [owner.userId]);
+    assert.equal(rocketRewards[0]?.reward_group, "TOP1");
+    console.log("PASS Rocket: Master enable/disable, six thresholds/rewards, eligible gift progress, target launch, rewards, history, immediate wallet and restart snapshot");
+
+    await root.execute("UPDATE wallet_balances SET available_balance = 2000000 WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [owner.userId]);
+    const vipBefore = await rewards.vipSnapshot(owner);
+    assert.deepEqual(vipBefore.tiers.map((tier) => [tier.name, tier.priceCoins, tier.dailyRewardCoins]), [
+      ["Gold", 100000, 2500], ["Platinum", 300000, 7500], ["Diamond", 500000, 12500],
+      ["Master", 700000, 17500], ["Legend", 1000000, 25000],
+    ]);
+    const vipPurchase = await rewards.purchaseVipTier(owner, 5);
+    assert.equal(vipPurchase.chargedCoins, 1000000);
+    const vipClaim = await rewards.claimVipDailyReward(owner);
+    assert.equal(vipClaim.rewardCoins, 25000);
+    await assert.rejects(rewards.claimVipDailyReward(owner), /already claimed/);
+    assert.equal((await rewards.vipSnapshot(owner)).claimable, false);
+    console.log("PASS VIP: exact configurable tiers, cumulative purchase, Legend reward, server-day persistence, duplicate claim denial");
+
+    const sourceLiveCode = `PKS${Date.now()}`;
+    const targetLiveCode = `PKT${Date.now()}`;
+    for (const [code, host, title] of [[sourceLiveCode, owner, "QA PK Source"], [targetLiveCode, roomAdmin, "QA PK Target"]] as const) {
+      const roomId = randomUUID();
+      await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', ?, 'PK', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, code, host.userId, title]);
+      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [roomId, host.userId]);
+    }
+    const [pkRooms] = await root.query<RowDataPacket[]>("SELECT id, room_code FROM live_rooms WHERE room_code IN (?, ?)", [sourceLiveCode, targetLiveCode]);
+    const sourceRoomId = String(pkRooms.find((row) => row.room_code === sourceLiveCode)?.id);
+    const targetRoomId = String(pkRooms.find((row) => row.room_code === targetLiveCode)?.id);
+    const [giftCatalog] = await root.query<RowDataPacket[]>("SELECT id FROM gift_catalog WHERE gift_key = 'qa_rose' LIMIT 1");
+    for (let round = 1; round <= 3; round += 1) {
+      const session = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+      const eventId = randomUUID();
+      await root.execute("INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 6000)", [eventId, sourceRoomId, owner.userId, owner.userId, giftCatalog[0].id]);
+      const result = await rooms.closePkSession(owner, { sessionId: session.id, completed: true });
+      assert.equal(result.qualifyingWin, true);
+      assert.equal(result.streak, round === 3 ? 0 : round);
+      assert.equal(result.bonusCoins, round === 3 ? 10000 : 0);
+      await root.execute("UPDATE live_room_gift_events SET created_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 5 SECOND) WHERE id = ?", [eventId]);
+    }
+    const streakAfterBonus = await rewards.pkStreakSnapshot(owner);
+    assert.equal(streakAfterBonus.currentStreak, 0);
+    assert.equal(streakAfterBonus.bonusesAwarded, 1);
+    const losingSession = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+    await root.execute("INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 6000)", [randomUUID(), targetRoomId, roomAdmin.userId, roomAdmin.userId, giftCatalog[0].id]);
+    const loss = await rooms.closePkSession(owner, { sessionId: losingSession.id, completed: true });
+    assert.equal(loss.result, "loss");
+    assert.equal(loss.streak, 0);
+    console.log("PASS PK Battle Royal: 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset");
+
+    const identities = [owner, guest, roomAdmin];
+    const gifted = [5000000, 4000000, 3000000];
+    await root.execute("DELETE FROM weekly_gifter_reward_runs WHERE week_start = DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 7 DAY)");
+    for (let index = 0; index < identities.length; index += 1) {
+      await root.execute(
+        `INSERT INTO ledger_transactions
+          (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, created_at)
+         VALUES (?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) + 1 DAY))`,
+        [randomUUID(), `QAWK-${randomUUID()}`, identities[index].userId, stranger.userId, gifted[index]],
+      );
+    }
+    const weekly = await rewards.settlePreviousWeeklyGifterRewards();
+    assert.equal(weekly.settled, true);
+    const [weeklyRows] = await root.query<RowDataPacket[]>("SELECT rank_number, reward_coins FROM weekly_gifter_rewards ORDER BY rank_number");
+    assert.deepEqual(weeklyRows.map((row) => Number(row.reward_coins)), [125000, 60000, 30000]);
+    assert.equal((await rewards.settlePreviousWeeklyGifterRewards()).settled, false);
+    const [weeklyCount] = await root.query<RowDataPacket[]>("SELECT COUNT(*) total FROM weekly_gifter_rewards");
+    assert.equal(Number(weeklyCount[0].total), 3);
+    console.log("PASS weekly Top Gifters: real calendar-week ranking, 2.5/1.5/1%, auditable transactions, duplicate payout prevention");
 
     const beforeReward = (await product.mobileBootstrap(owner)).wallet.coins;
     const reward = await rooms.claimDailyReward(owner);
@@ -165,7 +309,7 @@ async function main() {
     assert.ok(bootstrap.posts.some((entry) => entry.id === photoPost.id), "Bootstrap must not overwrite published posts with an empty list");
     assert.notEqual(bootstrap.consumptionLevel.level, bootstrap.anchorIncomeLevel.level);
     assert.notEqual(bootstrap.profile.level, bootstrap.profile.anchorLevel);
-    assert.equal(bootstrap.rooms[0].photoUrl?.includes("/assets/rooms/"), true);
+    assert.equal(bootstrap.rooms.find((entry) => entry.id === roomCode)?.photoUrl?.includes("/assets/rooms/"), true);
     console.log("PASS room state: chat lock/unlock/clear, separate levels, uploaded cover URL");
 
     await root.execute("UPDATE wallet_balances SET available_balance = 100000 WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [owner.userId]);
@@ -218,8 +362,117 @@ async function main() {
     });
     assert.equal(Array.isArray(jungleRound.outcome.grid) && jungleRound.outcome.grid.length, 3);
     assert.equal(Array.isArray(jungleRound.outcome.winningLines), true);
+    for (const game of ["food_wheel", "cat_wheel", "deep_sea", "card_arena"] as const) {
+      const round = await product.settleGameRound(owner, {
+        clientRoundId: randomUUID(),
+        game,
+        bets: { play: game === "deep_sea" ? 200 : 100 },
+      });
+      assert.equal(typeof round.outcome.label, "string");
+      assert.equal(typeof round.outcome.multiplier, "number");
+      if (game === "card_arena") {
+        assert.equal(Number.isInteger(round.outcome.player), true);
+        assert.equal(Number.isInteger(round.outcome.dealer), true);
+      }
+    }
+    const threeCardRound = await product.settleGameRound(owner, {
+      clientRoundId: randomUUID(),
+      game: "three_card",
+      bets: { "0": 100, "1": 100, "2": 0 },
+    });
+    assert.equal(Array.isArray(threeCardRound.outcome.hands) && threeCardRound.outcome.hands.length, 3);
+    assert.ok([1, 2, 3].includes(Number(threeCardRound.outcome.winningSeat)));
+    for (const game of ["greedy_king", "greedy_lion"] as const) {
+      const round = await product.settleGameRound(owner, {
+        clientRoundId: randomUUID(),
+        game,
+        bets: { "0": 100, "1": 100, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0 },
+      });
+      assert.ok(Number(round.outcome.winner) >= 0 && Number(round.outcome.winner) < 8);
+      assert.ok([5, 10, 15, 25, 45].includes(Number(round.outcome.multiplier)));
+    }
     assert.equal((await product.mobileBootstrap(owner)).wallet.diamonds, diamondsBeforeGame, "game results must never credit withdrawable host earnings");
-    console.log("PASS games: all four server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
+    console.log("PASS games: all eleven server result schemas, real balance, atomic wager/payout, immutable idempotency key, history, no DIAMOND credit");
+
+    // Repeated real database rounds, not mocked Flutter results. Validate each
+    // server payout against the returned result, the wallet and paired ledgers.
+    await root.execute("UPDATE wallet_balances SET available_balance = 100000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
+    const importedGames = ["food_wheel", "cat_wheel", "deep_sea", "card_arena", "three_card", "greedy_king", "greedy_lion"] as const;
+    for (const game of importedGames) {
+      for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
+        const before = (await product.mobileBootstrap(stranger)).wallet.coins;
+        const bets: Record<string, number> = game === "three_card" || game.startsWith("greedy_")
+          ? { "0": 100, "1": 100 } : { play: game === "deep_sea" ? 200 : 100 };
+        const round = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game, bets});
+        const winner = game === "three_card" ? Number(round.outcome.winningSeat) - 1 : Number(round.outcome.winner);
+        const expected = "play" in bets
+          ? Math.floor(Number(bets.play) * Number(round.outcome.multiplier))
+          : (winner === 0 || winner === 1 ? 100 * Number(round.outcome.multiplier) : 0);
+        assert.equal(round.payout, expected, `${game} payout must agree with visible result`);
+        assert.equal(round.coinBalance, before - round.wager + round.payout);
+        assert.equal((await product.mobileBootstrap(stranger)).wallet.coins, round.coinBalance);
+        const [ledger] = await root.query<RowDataPacket[]>(
+          "SELECT transaction_type, SUM(amount) amount, COUNT(*) count FROM ledger_transactions WHERE metadata->>'$.clientRoundId' = ? GROUP BY transaction_type", [round.clientRoundId]);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.amount), round.wager);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.count), 1);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_CREDIT')?.amount ?? 0), round.payout);
+      }
+      assert.equal((await product.gameRoundHistory(stranger, game, 10)).rounds.length, 3);
+    }
+    const concurrentInput = {clientRoundId: randomUUID(), game: 'food_wheel', bets: {play: 100}};
+    const concurrent = await Promise.all(Array.from({length: 4}, () => product.settleGameRound(stranger, concurrentInput)));
+    assert.equal(new Set(concurrent.map((round) => round.roundId)).size, 1);
+    const laterRound = await product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'cat_wheel', bets: {play: 100}});
+    const oldRetry = await product.settleGameRound(stranger, concurrentInput);
+    assert.equal(oldRetry.coinBalance, laterRound.coinBalance, 'old retry must return CURRENT wallet, not historical balance');
+    assert.deepEqual(oldRetry.outcome, concurrent[0].outcome);
+    await assert.rejects(product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'luck77', bets: {watermelon: 500, seven: 500, plum: 500}}));
+    console.log('PASS imported games: 21 complete database rounds, payout formulas, paired ledger, history, 4 concurrent retries, current balance on replay');
+
+    const rewardHost = await user("QA Reward Host");
+    const liveRewardCode = `LIVEREWARD${Date.now()}`;
+    const liveRewardRoomId = randomUUID();
+    await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [liveRewardRoomId, liveRewardCode, rewardHost.userId]);
+    await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [liveRewardRoomId, rewardHost.userId]);
+    await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
+    await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
+    const rewardCoinsBefore = (await product.mobileBootstrap(rewardHost)).wallet.coins;
+    const finalizedLive = await rooms.finalizeLiveSession(rewardHost, liveRewardCode);
+    assert.equal(finalizedLive.rewardCoins, 3500);
+    assert.equal((await rooms.finalizeLiveSession(rewardHost, liveRewardCode)).alreadyFinalized, true, "finalization retry must be idempotent");
+    const rewardBootstrap = await product.mobileBootstrap(rewardHost);
+    assert.equal(rewardBootstrap.wallet.coins, rewardCoinsBefore + 3500);
+    assert.equal(rewardBootstrap.hostRewardHistory[0].rewardCoins, 3500);
+
+    await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 6000) ON DUPLICATE KEY UPDATE available_balance = 6000, reserved_balance = 0", [randomUUID(), rewardHost.userId]);
+    const socialCoinsBeforeWithdrawal = (await product.mobileBootstrap(rewardHost)).wallet.coins;
+    const upiWithdrawal = await product.createWithdrawalRequest(rewardHost, 1000, { type: "UPI", accountHolderName: "QA Reward Host", upiId: "qareward@upi" });
+    const [upiRequestRows] = await root.query<RowDataPacket[]>("SELECT id, payout_method_id FROM withdrawal_requests WHERE withdrawal_code = ?", [upiWithdrawal.id]);
+    const [reservedWallet] = await root.query<RowDataPacket[]>("SELECT available_balance, reserved_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
+    assert.deepEqual([Number(reservedWallet[0].available_balance), Number(reservedWallet[0].reserved_balance)], [5000, 1000]);
+    assert.equal((await product.mobileBootstrap(rewardHost)).wallet.coins, socialCoinsBeforeWithdrawal, "withdrawal must not touch social/game coins");
+    await operations.transitionWithdrawal({ scope: master, withdrawalId: String(upiRequestRows[0].id), nextStatus: "APPROVED", reason: "QA verified UPI payout" });
+    const [verifiedMethod] = await root.query<RowDataPacket[]>("SELECT verified FROM payout_methods WHERE id = ?", [upiRequestRows[0].payout_method_id]);
+    assert.equal(Boolean(verifiedMethod[0].verified), true);
+    await operations.transitionWithdrawal({ scope: master, withdrawalId: String(upiRequestRows[0].id), nextStatus: "PROCESSING", reason: "QA payout processing" });
+    await operations.transitionWithdrawal({ scope: master, withdrawalId: String(upiRequestRows[0].id), nextStatus: "COMPLETED", reason: "QA payout complete", providerReference: "QA-UPI-001" });
+    await root.execute("UPDATE wallet_balances SET available_balance = available_balance + 1000 WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
+    const bankWithdrawal = await product.createWithdrawalRequest(rewardHost, 1000, { type: "BANK", accountHolderName: "QA Reward Host", accountNumber: "123456789012", ifsc: "HDFC0000123", bankName: "HDFC Bank" });
+    const [bankRows] = await root.query<RowDataPacket[]>("SELECT id FROM withdrawal_requests WHERE withdrawal_code = ?", [bankWithdrawal.id]);
+    await operations.transitionWithdrawal({ scope: master, withdrawalId: String(bankRows[0].id), nextStatus: "REJECTED", reason: "QA rejection release test" });
+    const [releasedWallet] = await root.query<RowDataPacket[]>("SELECT available_balance, reserved_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
+    assert.equal(Number(releasedWallet[0].reserved_balance), 0);
+    console.log("PASS Live rewards/withdrawals: 3,500 per valid Video/Face hour, idempotent finalization/history, encrypted UPI/Bank pending review, approval/completion, rejection release, DIAMOND-only reserve");
+
+    const ownerExit = await rooms.leaveLiveRoom(owner, roomCode);
+    assert.equal(ownerExit.transferredTo, roomAdmin.publicId);
+    const [transferredRoom] = await root.query<RowDataPacket[]>("SELECT host_application_user_id FROM live_rooms WHERE room_code = ?", [roomCode]);
+    assert.equal(String(transferredRoom[0].host_application_user_id), roomAdmin.userId);
+    await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [roomCode]);
+    const partyFinalized = await rooms.finalizeLiveSession(roomAdmin, roomCode);
+    assert.equal(partyFinalized.rewardCoins, 0);
+    assert.equal((await rooms.finalizeLiveSession(roomAdmin, roomCode)).alreadyFinalized, true);
+    console.log("PASS room lifecycle: Owner Exit transfers an active Party to an authorized Room Admin; Close finalizes once, removes discovery, Party hourly reward stays zero");
 
     const agencyInput = { name: "QA Uploaded Agency", ownerName: "QA Applicant", countryCode: "IN", whatsappE164: "+919000000001", aadhaar: "123456789012", parentCode: String(parent.publicId), documentDataUrl: photo, documentName: "proof-1.png", additionalDocuments: [{ dataUrl: photo, name: "proof-2.png" }, { dataUrl: photo, name: "proof-3.png" }], logoDataUrl: photo };
     await assert.rejects(social.applyToCreateAgency(stranger, { ...agencyInput, additionalDocuments: [] }));
@@ -228,15 +481,17 @@ async function main() {
     const application = (await social.agencyApplicationsForUser(stranger)).find((entry) => entry.type === "create")!;
     const [agenciesBeforeReview] = await root.query<RowDataPacket[]>("SELECT id FROM platform_accounts WHERE role = 'AGENCY' AND application_user_id = ?", [stranger.userId]);
     assert.equal(agenciesBeforeReview.length, 0, "submitting must not create an Agency");
-    const [rows] = await root.query<RowDataPacket[]>("SELECT pan_encrypted, logo_byte_size FROM agency_creation_applications WHERE id = ?", [application.id]);
-    assert.equal(rows[0].pan_encrypted, null);
+    const [rows] = await root.query<RowDataPacket[]>("SELECT aadhaar_encrypted, aadhaar_last4, logo_byte_size FROM agency_creation_applications WHERE id = ?", [application.id]);
+    assert.ok(rows[0].aadhaar_encrypted);
+    assert.equal(rows[0].aadhaar_last4, "9012");
     assert.ok(rows[0].logo_byte_size > 0);
     const pending = (await agencies.listAgencyApplications(parentScope)).find((entry) => entry.id === application.id)!;
     assert.equal(pending.documentCount, 3);
     await assert.rejects(agencies.reviewAgencyCreation({ scope: parentScope, applicationId: application.id, decision: "APPROVED", reason: "QA non-Master cannot approve" }), /Only Master/);
     await agencies.reviewAgencyCreation({ scope: master, applicationId: application.id, decision: "APPROVED", reason: "QA Master verified three protected documents" });
-    const [documents] = await root.query<RowDataPacket[]>("SELECT document.id FROM private_documents document JOIN agency_creation_applications application ON application.approved_agency_account_id = document.owner_id WHERE application.id = ?", [application.id]);
+    const [documents] = await root.query<RowDataPacket[]>("SELECT document.id, document.document_type FROM private_documents document JOIN agency_creation_applications application ON application.approved_agency_account_id = document.owner_id WHERE application.id = ? ORDER BY document.document_type", [application.id]);
     assert.equal(documents.length, 3);
+    assert.deepEqual(documents.map((document) => document.document_type), ["AADHAAR_BACK", "AADHAAR_FRONT", "AADHAAR_SELFIE"]);
     const [createdAgencyRows] = await root.query<RowDataPacket[]>("SELECT id, public_id FROM platform_accounts WHERE role = 'AGENCY' AND application_user_id = ?", [stranger.userId]);
     assert.equal(createdAgencyRows.length, 1);
     assert.match(String(createdAgencyRows[0].public_id), /^\d{6}$/);

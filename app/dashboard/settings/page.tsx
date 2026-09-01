@@ -8,6 +8,7 @@ import {
   submitMobileAppSettings,
   submitMobileSocialSettings,
   submitRoomFeatureSettings,
+  submitRocketSettings,
 } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
@@ -26,8 +27,6 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const roomFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as {
     interactions?: { key: string; label: string; emoji: string; enabled?: boolean; visualUrl?: string }[];
     pkModes?: string[];
-    rocketLevels?: { level: number; requiredCoins: number; rewardCoins: number }[];
-    rocketEnabled?: boolean;
     presenceWarningLimit?: number;
     presenceSuspensionLimit?: number;
   } | undefined;
@@ -36,8 +35,6 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     { key: "love", label: "Love", emoji: "💖", enabled: true },
     { key: "hug", label: "Hug", emoji: "🤗", enabled: true },
   ];
-  const rocket = (level: number, requiredCoins: number, rewardCoins: number) =>
-    roomFeatures?.rocketLevels?.find((item) => item.level === level) ?? { level, requiredCoins, rewardCoins };
   const reward = (day: number, fallback: number) => completion.dailyRewards.find((item) => item.dayNumber === day)?.coins ?? fallback;
   const host = (roomType: string, fallback: number) => completion.hostRules.find((item) => item.roomType === roomType)?.coinsPerHour ?? fallback;
   const minimumEligible = completion.hostRules[0]?.minimumEligibleSeconds ?? 60;
@@ -91,9 +88,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     <Card className="settings-card">
       <div className="card-title"><div><h2>Server-timed host rewards</h2><p>Party, Video Live, and Face Live use independent hourly rules. The phone clock is never trusted.</p></div></div>
       <form action={submitHostRewardRules} className="form-grid">
-        <label>Video Live coins/hour<input name="live" type="number" min="0" required defaultValue={host("LIVE", 2000)} /></label>
-        <label>Face Live coins/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 2000)} /></label>
-        <label>Party coins/hour<input name="party" type="number" min="0" required defaultValue={host("PARTY", 0)} /></label>
+        <label>Video Live coins/hour<input name="live" type="number" min="0" required defaultValue={host("LIVE", 3500)} /></label>
+        <label>Face Live coins/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 3500)} /></label>
+        <label>Party coins/hour<input name="party" type="number" value="0" readOnly aria-readonly="true" /><span>Audio Party hourly reward remains disabled.</span></label>
         <label>Minimum eligible seconds<input name="minimumEligibleSeconds" type="number" min="1" max="3600" required defaultValue={minimumEligible} /></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} /></label>
         <label>Confirm<button className="primary-button" type="submit">Save host rewards</button></label>
@@ -123,20 +120,35 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </Card>
 
     <Card className="settings-card">
-      <div className="card-title"><div><h2>Party &amp; Live room features</h2><p>Published interaction labels, PK modes, Rocket thresholds, and Face Live safety limits. Mobile clients receive changes during silent refresh.</p></div></div>
+      <div className="card-title"><div><h2>Party &amp; Live room features</h2><p>Published interaction labels, PK modes, and Face Live safety limits. Mobile clients receive changes during silent refresh.</p></div></div>
       <form action={submitRoomFeatureSettings} className="form-grid">
         <label className="span-two">Interactions — one per line<textarea name="interactionRows" rows={7} required defaultValue={interactions.map((item) => `${item.key} | ${item.label} | ${item.emoji} | ${item.enabled === false ? "disabled" : "enabled"}`).join("\n")} /><span>Format: key | label | emoji | enabled/disabled. Add, edit, disable, or remove rows; no APK update is required.</span></label>
         <label>Animation target key<input name="interactionAssetKey" placeholder="Example: kiss" /></label>
         <label>Upload/replace animation<input name="interactionAsset" type="file" accept="image/jpeg,image/png,image/webp" /><span>JPG, PNG, or animated WebP · max 1 MB. Existing artwork stays unless replaced.</span></label>
         <label className="span-two">PK modes (comma separated)<input name="pkModes" required defaultValue={(roomFeatures?.pkModes ?? ["Classic", "Auto PK", "Individual", "Random"]).join(", ")} /></label>
-        {[1,2,3].map((level) => <div className="form-grid span-two" key={level}>
-          <label>Rocket LV{level} required coins<input name={`rocket${level}Required`} type="number" min="1" required defaultValue={rocket(level, [10000,50000,100000][level - 1], [500,3000,7500][level - 1]).requiredCoins} /></label>
-          <label>Rocket LV{level} reward coins<input name={`rocket${level}Reward`} type="number" min="0" required defaultValue={rocket(level, [10000,50000,100000][level - 1], [500,3000,7500][level - 1]).rewardCoins} /></label>
-        </div>)}
-        <label>Rocket availability<select name="rocketEnabled" defaultValue={roomFeatures?.rocketEnabled === false ? "false" : "true"}><option value="true">Enabled in Party rooms</option><option value="false">Disabled</option></select></label>
         <label>Presence failures before stop<input name="presenceWarningLimit" type="number" min="3" max="30" required defaultValue={roomFeatures?.presenceWarningLimit ?? 10} /></label>
         <label>Auto-stops before suspension<input name="presenceSuspensionLimit" type="number" min="1" max="20" required defaultValue={roomFeatures?.presenceSuspensionLimit ?? 5} /></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
+      </form>
+    </Card>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>Rocket controls</h2><p>Authoritative gifting energy, six progression thresholds, reward groups, level/VIP eligibility, and status used immediately by Party rooms.</p></div></div>
+      <form action={submitRocketSettings} className="form-grid">
+        <label>Availability<select name="rocketEnabled" defaultValue={completion.rocket.enabled ? "true" : "false"}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+        <label>Energy per gifted coin<input name="energyPerCoin" type="number" min="1" max="100" required defaultValue={completion.rocket.energyPerCoin} /></label>
+        <label>Minimum User Level<input name="minimumUserLevel" type="number" min="1" max="120" required defaultValue={completion.rocket.minimumUserLevel} /></label>
+        <label>Minimum VIP tier<input name="minimumVipTier" type="number" min="0" max="5" required defaultValue={completion.rocket.minimumVipTier} /></label>
+        <label>VIP energy bonus %<input name="vipEnergyBonusPercent" type="number" min="0" max="500" required defaultValue={completion.rocket.vipEnergyBonusPercent} /></label>
+        {completion.rocket.tiers.map((tier) => <div className="form-grid span-two" key={tier.level}>
+          <label>LV{tier.level} threshold<input name={`rocket${tier.level}Target`} type="number" min="1" required defaultValue={tier.target} /></label>
+          <label>Top 1 reward<input name={`rocket${tier.level}Top1`} type="number" min="0" required defaultValue={tier.top1} /></label>
+          <label>Top 2 reward<input name={`rocket${tier.level}Top2`} type="number" min="0" required defaultValue={tier.top2} /></label>
+          <label>Top 3 reward<input name={`rocket${tier.level}Top3`} type="number" min="0" required defaultValue={tier.top3} /></label>
+          <label>In-room reward<input name={`rocket${tier.level}Room`} type="number" min="0" required defaultValue={tier.room} /></label>
+        </div>)}
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the Rocket configuration changing?" /></label>
+        <label>Confirm<button className="primary-button" type="submit">Save Rocket controls</button></label>
       </form>
     </Card>
 

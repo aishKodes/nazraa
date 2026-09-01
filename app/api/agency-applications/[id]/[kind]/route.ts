@@ -10,9 +10,6 @@ export const dynamic = "force-dynamic";
 
 type KycRow = RowDataPacket & {
   parent_account_id: string | null;
-  pan_encrypted: Buffer | null;
-  pan_iv: Buffer | null;
-  pan_tag: Buffer | null;
   aadhaar_encrypted: Buffer | null;
   aadhaar_iv: Buffer | null;
   aadhaar_tag: Buffer | null;
@@ -25,12 +22,12 @@ type KycRow = RowDataPacket & {
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
   const account = await getSession();
-  if (!account || !can(account.role, "documents.read")) return new NextResponse("Unauthorized", { status: 401 });
+  if (!account || !can(account.role, "documents.read") || !["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(account.role)) return new NextResponse("Unauthorized", { status: 401 });
   const scope = await scopeFor(account);
   const { id, kind } = await params;
-  if (!["pan", "aadhaar", "document", "document-1", "document-2", "document-3"].includes(kind)) return new NextResponse("Not found", { status: 404 });
+  if (!["aadhaar", "document", "document-1", "document-2", "document-3"].includes(kind)) return new NextResponse("Not found", { status: 404 });
   const [rows] = await db().query<KycRow[]>(
-    `SELECT parent_account_id, pan_encrypted, pan_iv, pan_tag, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
+    `SELECT parent_account_id, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
             document_original_name, document_mime_type, document_encrypted_data, document_encryption_iv, document_encryption_tag
      FROM agency_creation_applications WHERE id = ? LIMIT 1`, [id],
   );
@@ -51,9 +48,9 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     const name = (application.document_original_name ?? "agency-proof").replaceAll('"', "");
     return new NextResponse(new Uint8Array(plain), { headers: { ...headers, "Content-Type": application.document_mime_type ?? "application/octet-stream", "Content-Disposition": `attachment; filename="${name}"` } });
   }
-  const encryptedData = kind === "pan" ? application.pan_encrypted : application.aadhaar_encrypted;
-  const iv = kind === "pan" ? application.pan_iv : application.aadhaar_iv;
-  const tag = kind === "pan" ? application.pan_tag : application.aadhaar_tag;
+  const encryptedData = application.aadhaar_encrypted;
+  const iv = application.aadhaar_iv;
+  const tag = application.aadhaar_tag;
   if (!encryptedData || !iv || !tag) return new NextResponse("Not found", { status: 404 });
   const value = decryptPrivateText({ encryptedData, iv, tag });
   return new NextResponse(value, { headers: { ...headers, "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": `attachment; filename="agency-${kind}.txt"` } });

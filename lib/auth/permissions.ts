@@ -115,7 +115,7 @@ const grants: Record<Role, Permission[]> = {
     "documents.upload", "face_verification.read", "face_live.authorize", "support.read", "reports.export",
   ],
   COIN_SELLER: [
-    "dashboard.read", "wallet.read", "coin_orders.read", "coin_orders.manage", "transactions.read",
+    "dashboard.read", "wallet.read", "coins.transfer", "coin_orders.read", "coin_orders.manage", "transactions.read",
   ],
   MONITORING_CS: [
     "dashboard.read", "users.read", "hosts.read", "monitoring.read", "rooms.read", "rooms.restrict",

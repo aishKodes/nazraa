@@ -191,8 +191,6 @@ export async function saveRoomFeatureSettings(input: {
   interactionAsset?: PreparedPublicImage;
   pkDurations: number[];
   pkModes: string[];
-  rocketLevels: { level: number; requiredCoins: number; rewardCoins: number }[];
-  rocketEnabled: boolean;
   presenceWarningLimit: number;
   presenceSuspensionLimit: number;
 }) {
@@ -208,9 +206,9 @@ export async function saveRoomFeatureSettings(input: {
         "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1 FOR UPDATE",
       );
       const raw = currentRows[0]?.setting_value;
-      const current: { interactions?: { key?: string; visualUrl?: string }[] } | undefined = typeof raw === "string"
-        ? JSON.parse(raw) as { interactions?: { key?: string; visualUrl?: string }[] }
-        : raw as { interactions?: { key?: string; visualUrl?: string }[] } | undefined;
+      const current: Record<string, unknown> & { interactions?: { key?: string; visualUrl?: string }[] } = (typeof raw === "string"
+        ? JSON.parse(raw) as Record<string, unknown> & { interactions?: { key?: string; visualUrl?: string }[] }
+        : raw as Record<string, unknown> & { interactions?: { key?: string; visualUrl?: string }[] } | undefined) ?? {};
       const existingAssets = new Map((current?.interactions ?? []).map((item) => [item.key, item.visualUrl]));
       let uploadedUrl: string | undefined;
       if (input.interactionAsset && input.interactionAssetKey) {
@@ -229,13 +227,12 @@ export async function saveRoomFeatureSettings(input: {
       }));
       await connection.execute(
         `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.room_features', ?, ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
         [JSON.stringify({
+          ...current,
           interactions,
           pkDurations: input.pkDurations,
           pkModes: input.pkModes,
-          rocketLevels: input.rocketLevels,
-          rocketEnabled: input.rocketEnabled,
           presenceWarningLimit: input.presenceWarningLimit,
           presenceSuspensionLimit: input.presenceSuspensionLimit,
         }), input.scope.account.id],

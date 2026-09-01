@@ -34,13 +34,18 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
   if (input.reason.trim().length < 5) throw new Error("A clear transfer reason is required.");
 
   return withTransaction(async (connection) => {
-    const recipientScope = scopeWhere(input.scope, "agency_account_id");
+    const recipientScope = input.scope.account.role === "COIN_SELLER"
+      ? { clause: "1=1", values: [] as string[] }
+      : scopeWhere(input.scope, "agency_account_id");
     const [recipients] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
-      `SELECT id, full_name FROM application_users WHERE id = ? AND ${recipientScope.clause} LIMIT 1`,
+      `SELECT id, full_name FROM application_users
+       WHERE id = ? AND account_status = 'ACTIVE' AND ${recipientScope.clause} LIMIT 1`,
       [input.recipientId, ...recipientScope.values],
     );
     const recipient = recipients[0];
-    if (!recipient) throw new Error("Recipient was not found in your permitted hierarchy.");
+    if (!recipient) throw new Error(input.scope.account.role === "COIN_SELLER"
+      ? "An active user matching this recipient was not found."
+      : "Recipient was not found in your permitted hierarchy.");
 
     // Ensure both wallet rows exist before locking them. The unique owner/asset index makes this idempotent.
     await connection.execute(
@@ -195,7 +200,7 @@ export async function allocatePlatformCoins(input: { scope: Scope; accountId: st
 }
 
 const withdrawalTransitions: Record<string, string[]> = {
-  PENDING: ["UNDER_REVIEW", "REJECTED", "CANCELLED"],
+  PENDING: ["UNDER_REVIEW", "APPROVED", "REJECTED", "CANCELLED"],
   UNDER_REVIEW: ["APPROVED", "REJECTED", "CANCELLED"],
   APPROVED: ["PROCESSING", "CANCELLED"],
   PROCESSING: ["COMPLETED", "CANCELLED"],
@@ -207,14 +212,20 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
   if (input.nextStatus === "COMPLETED" && (input.providerReference?.trim().length ?? 0) < 3) throw new Error("A payout provider reference is required before completion.");
   return withTransaction(async (connection) => {
     const filter = scopeWhere(input.scope, "agency_account_id");
-    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; withdrawal_code: string })[]>(
-      `SELECT id, status, amount, application_user_id, withdrawal_code FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; withdrawal_code: string; payout_method_id: string | null })[]>(
+      `SELECT id, status, amount, application_user_id, withdrawal_code, payout_method_id FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
     );
     const request = rows[0];
     if (!request) throw new Error("Withdrawal was not found in your permitted hierarchy.");
     if (!withdrawalTransitions[request.status]?.includes(input.nextStatus)) {
       throw new Error(`Cannot move a ${request.status.toLowerCase()} withdrawal to ${input.nextStatus.toLowerCase()}.`);
+    }
+    if (input.nextStatus === "APPROVED" && request.payout_method_id) {
+      await connection.execute(
+        "UPDATE payout_methods SET verified = TRUE, active = TRUE WHERE id = ? AND application_user_id = ?",
+        [request.payout_method_id, request.application_user_id],
+      );
     }
     const terminal = ["COMPLETED", "REJECTED", "CANCELLED"].includes(input.nextStatus);
     let walletBefore: { available: number; reserved: number } | undefined;

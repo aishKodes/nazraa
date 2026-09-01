@@ -77,6 +77,11 @@ async function main() {
       passed++;
     }
     assert.equal((await directory.hierarchy(master)).some((node) => node.id === agencyOther.account.id), true);
+    const superAdminHierarchy = await directory.hierarchy(await refresh(sa));
+    for (const account of [sa, branchAdmin, bd, agency, seller, cs]) {
+      assert.equal(superAdminHierarchy.some((node) => node.id === account.account.id), true, `Super Admin must see ${account.account.role} downline`);
+    }
+    assert.equal(superAdminHierarchy.some((node) => node.id === agencyOther.account.id), false, "Super Admin must not see another branch");
     assert.equal((await admin.getPlatformAccountDetail(await refresh(cm), agencyOther.account.id)), null);
     await assert.rejects(admin.createPlatformAccount({ scope: await refresh(cm), role: "ADMIN", fullName: "Escape branch", countryCode: "IN", requestedParentId: saOther.account.id, password, documents: [] }));
     passed++;
@@ -252,6 +257,7 @@ async function main() {
     await root.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, 'QA device', ?, DATE_ADD(NOW(), INTERVAL 1 DAY))", [sessionId, ownUser.id, createHash("sha256").update(token).digest("hex"), createHash("sha256").update("qa-device").digest("hex")]);
     const request = new Request("http://localhost/api/test", { headers: { authorization: `Bearer ${token}` } });
     assert.ok(await mobileSession.authenticateMobileRequest(request));
+    await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS cannot block devices" }), /Only Master or the assigned Country Manager/);
     await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cmOther), sessionId, reason: "QA foreign device denied" }));
     await monitoring.blockUserDevice({ scope: await refresh(cm), sessionId, reason: "QA own device blocked" });
     assert.equal(await mobileSession.authenticateMobileRequest(request), null);
@@ -264,13 +270,19 @@ async function main() {
     await assert.rejects(ops.adjustPlatformCoinInventory({ scope: cm, accountId: cm.account.id, direction: "ADD", amount: 1, reason: "QA prevent non-Master mint", idempotencyKey: randomUUID() }));
     for (const [sender, receiver] of [[master, cm], [cm, sa], [sa, branchAdmin], [branchAdmin, agency]]) await ops.allocatePlatformCoins({ scope: await refresh(sender), accountId: receiver.account.id, amount: 500, reason: "QA inventory distribution", idempotencyKey: randomUUID() });
     await assert.rejects(ops.allocatePlatformCoins({ scope: await refresh(cm), accountId: adminOther.account.id, amount: 1, reason: "QA reject foreign allocation", idempotencyKey: randomUUID() }));
+    await ops.allocatePlatformCoins({ scope: master, accountId: seller.account.id, amount: 200, reason: "QA fund Coin Seller inventory", idempotencyKey: randomUUID() });
+    assert.equal((await directory.searchCoinTransferRecipients(await refresh(seller), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Coin Seller can find a user outside its branch");
+    assert.equal((await directory.searchCoinTransferRecipients(await refresh(agency), "QA Other Host")).some((user) => user.id === otherUser.id), false, "Agency transfer search stays scoped");
+    await ops.transferCoins({ scope: await refresh(seller), recipientId: otherUser.id, amount: 50, reason: "QA Coin Seller cross-platform sale", idempotencyKey: randomUUID() });
+    const [sellerWallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [seller.account.id]);
+    assert.equal(Number(sellerWallet[0].available_balance), 150);
     const key = randomUUID();
     await ops.transferCoins({ scope: agency, recipientId: ownUser.id, amount: 100, reason: "QA own host coin transfer", idempotencyKey: key });
     await assert.rejects(ops.transferCoins({ scope: agency, recipientId: ownUser.id, amount: 100, reason: "QA repeated transfer denied", idempotencyKey: key }));
     await assert.rejects(ops.transferCoins({ scope: agency, recipientId: otherUser.id, amount: 1, reason: "QA foreign transfer denied", idempotencyKey: randomUUID() }));
     const [wallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [agency.account.id]);
     assert.equal(Number(wallet[0].available_balance), 400);
-    assert.equal((await dashboard.getDashboardMetrics(master)).coinInventory, 500);
+    assert.equal((await dashboard.getDashboardMetrics(master)).coinInventory, 300);
     assert.equal((await dashboard.getRecentLedger(agency)).some((entry) => entry.transactionType === "ACCOUNT_ALLOCATION"), true, "Agency must see inventory received from its Admin");
     passed++;
 
@@ -291,6 +303,7 @@ async function main() {
     assert.equal(audit.length, 1);
     assert.equal((await catalog.listBanners()).some((banner) => banner.id === bannerId), false);
     await assert.rejects(ops.permanentlyBanUser({ scope: cm, applicationUserId: ownUser.id, reason: "QA deny non-Master ban", confirmed: true }));
+    await assert.rejects(ops.permanentlyBanUser({ scope: await refresh(cs), applicationUserId: ownUser.id, reason: "QA CS cannot permanently ban", confirmed: true }));
     await ops.permanentlyBanUser({ scope: master, applicationUserId: otherUser.id, reason: "QA Master permanent ban", confirmed: true });
     assert.equal((await monitoring.searchMonitoring(master, otherUser.publicId))[0].status, "BANNED");
     const removable = await create("COIN_SELLER", branchAdmin, "Unused team account");

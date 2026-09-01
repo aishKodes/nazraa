@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createDevelopmentMobileSession, createGoogleMobileSession, revokeMobileSession } from "@/lib/auth/mobile-session";
+import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
       deviceId: z.string().trim().min(8).max(200).optional(),
       profile: z.object({
         fullName: z.string().trim().min(2).max(120),
-        countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+        countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema),
         dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
           const date = new Date(`${value}T00:00:00.000Z`);
           return !Number.isNaN(date.getTime()) && date < new Date();
@@ -31,7 +32,7 @@ export async function POST(request: Request) {
     const development = z.object({
       developmentProfile: z.literal(true),
       fullName: z.string().trim().min(2).max(120),
-      countryCode: z.string().trim().length(2).transform((value) => value.toUpperCase()),
+      countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema),
       deviceLabel: z.string().trim().max(120).optional(),
       deviceId: z.string().trim().min(8).max(200).optional(),
     }).safeParse(body);

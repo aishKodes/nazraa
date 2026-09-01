@@ -81,7 +81,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     <main className="main-area">
       <header className="topbar">
         <button className="mobile-menu" type="button" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
-        {!['COIN_SELLER'].includes(account.role) ? <form className="quick-search" action="/dashboard/monitoring"><Search size={18} /><input ref={searchRef} name="q" aria-label="Scoped user or host search" placeholder="Search user or host ID" /><kbd>⌘ K</kbd></form> : <span />}
+        <form className="quick-search" action={account.role === "COIN_SELLER" ? "/dashboard/wallet" : "/dashboard/monitoring"}><Search size={18} /><input ref={searchRef} name="q" aria-label="User or host search" placeholder={account.role === "COIN_SELLER" ? "Search user name or ID" : "Search user or host ID"} /><kbd>⌘ K</kbd></form>
         <div className="top-actions"><span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
       </header>
       <div className="page-content">{children}</div>

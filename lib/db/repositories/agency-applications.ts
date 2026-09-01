@@ -22,7 +22,6 @@ export type AgencyReviewApplication = {
   parentName: string | null;
   parentPublicId: string | null;
   parentRole: string | null;
-  panMasked: string | null;
   aadhaarMasked: string | null;
   hasDocument: boolean;
   documentCount?: number;
@@ -43,14 +42,14 @@ export async function listAgencyApplications(scope: Scope): Promise<AgencyReview
        ORDER BY FIELD(application.status, 'PENDING','APPROVED','REJECTED','SUSPENDED','REMOVED'), application.created_at DESC LIMIT 50`,
       agencyScope.values,
     );
-    let creations: (RowDataPacket & { id: string; full_name: string; public_id: number; agency_name: string; owner_name: string | null; country_code: string; business_whatsapp_e164: string; parent_name: string | null; parent_public_id: number | null; parent_role: string | null; pan_last4: string | null; aadhaar_last4: string | null; document_byte_size: number | null; status: string; created_at: string })[] = [];
+    let creations: (RowDataPacket & { id: string; full_name: string; public_id: number; agency_name: string; owner_name: string | null; country_code: string; business_whatsapp_e164: string; parent_name: string | null; parent_public_id: number | null; parent_role: string | null; aadhaar_last4: string | null; document_byte_size: number | null; status: string; created_at: string })[] = [];
     if (["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(scope.account.role)) {
       const creationScope = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "application.parent_account_id");
       const [rows] = await db().query<typeof creations>(
         `SELECT application.id, user.full_name, user.public_id, application.agency_name,
                 application.owner_name, application.country_code, application.business_whatsapp_e164,
                 parent.full_name parent_name, parent.public_id parent_public_id, parent.role parent_role,
-                application.pan_last4, application.aadhaar_last4, application.document_byte_size,
+                application.aadhaar_last4, application.document_byte_size,
                 application.status, application.created_at,
                 (SELECT COUNT(*) FROM agency_application_documents document WHERE document.application_id = application.id) document_count
          FROM agency_creation_applications application
@@ -63,8 +62,8 @@ export async function listAgencyApplications(scope: Scope): Promise<AgencyReview
       creations = rows;
     }
     return [
-      ...joins.map((row) => ({ id: row.id, type: "JOIN" as const, userName: row.full_name, userPublicId: String(row.public_id), agencyName: row.agency_name, agencyPublicId: String(row.agency_public_id), ownerName: null, countryCode: null, whatsapp: null, parentName: null, parentPublicId: null, parentRole: null, panMasked: null, aadhaarMasked: null, hasDocument: false, status: row.status, createdAt: row.created_at })),
-      ...creations.map((row) => ({ id: row.id, type: "CREATE" as const, userName: row.full_name, userPublicId: String(row.public_id), agencyName: row.agency_name, agencyPublicId: null, ownerName: row.owner_name, countryCode: row.country_code, whatsapp: row.business_whatsapp_e164, parentName: row.parent_name, parentPublicId: row.parent_public_id == null ? null : String(row.parent_public_id), parentRole: row.parent_role, panMasked: row.pan_last4 ? `*****${row.pan_last4}*` : null, aadhaarMasked: row.aadhaar_last4 ? `XXXX XXXX ${row.aadhaar_last4}` : null, hasDocument: Number(row.document_byte_size ?? 0) > 0, documentCount: Number(row.document_count ?? 0), status: row.status, createdAt: row.created_at })),
+      ...joins.map((row) => ({ id: row.id, type: "JOIN" as const, userName: row.full_name, userPublicId: String(row.public_id), agencyName: row.agency_name, agencyPublicId: String(row.agency_public_id), ownerName: null, countryCode: null, whatsapp: null, parentName: null, parentPublicId: null, parentRole: null, aadhaarMasked: null, hasDocument: false, status: row.status, createdAt: row.created_at })),
+      ...creations.map((row) => ({ id: row.id, type: "CREATE" as const, userName: row.full_name, userPublicId: String(row.public_id), agencyName: row.agency_name, agencyPublicId: null, ownerName: row.owner_name, countryCode: row.country_code, whatsapp: row.business_whatsapp_e164, parentName: row.parent_name, parentPublicId: row.parent_public_id == null ? null : String(row.parent_public_id), parentRole: row.parent_role, aadhaarMasked: row.aadhaar_last4 ? `XXXX XXXX ${row.aadhaar_last4}` : null, hasDocument: Number(row.document_byte_size ?? 0) > 0, documentCount: Number(row.document_count ?? 0), status: row.status, createdAt: row.created_at })),
     ].sort((left, right) => Number(left.status !== "PENDING") - Number(right.status !== "PENDING") || new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   } catch (error) {
     if ((error as { code?: string }).code === "ER_NO_SUCH_TABLE") return [];
@@ -134,12 +133,13 @@ export async function reviewAgencyCreation(input: { scope: Scope; applicationId:
       await connection.execute("UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?", [agencyAccountId, application.application_user_id]);
       const [extraDocuments] = await connection.query<RowDataPacket[]>("SELECT * FROM agency_application_documents WHERE application_id = ? AND slot > 1 ORDER BY slot", [application.id]);
       for (const document of extraDocuments) {
-        await connection.execute("INSERT INTO private_documents (id, owner_type, owner_id, document_type, original_name, mime_type, byte_size, encrypted_data, encryption_iv, encryption_tag, uploaded_by) VALUES (?, 'PLATFORM_ACCOUNT', ?, 'AGENCY_KYC_PROOF', ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), agencyAccountId, document.original_name, document.mime_type, document.byte_size, document.encrypted_data, document.encryption_iv, document.encryption_tag, input.scope.account.id]);
+        const documentType = Number(document.slot) === 2 ? "AADHAAR_BACK" : "AADHAAR_SELFIE";
+        await connection.execute("INSERT INTO private_documents (id, owner_type, owner_id, document_type, original_name, mime_type, byte_size, encrypted_data, encryption_iv, encryption_tag, uploaded_by) VALUES (?, 'PLATFORM_ACCOUNT', ?, ?, ?, ?, ?, ?, ?, ?, ?)", [randomUUID(), agencyAccountId, documentType, document.original_name, document.mime_type, document.byte_size, document.encrypted_data, document.encryption_iv, document.encryption_tag, input.scope.account.id]);
       }
       if (application.document_encrypted_data && application.document_encryption_iv && application.document_encryption_tag && application.document_original_name && application.document_mime_type && application.document_byte_size) {
         await connection.execute(
           `INSERT INTO private_documents (id, owner_type, owner_id, document_type, original_name, mime_type, byte_size, encrypted_data, encryption_iv, encryption_tag, uploaded_by)
-           VALUES (?, 'PLATFORM_ACCOUNT', ?, 'AGENCY_KYC_PROOF', ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, 'PLATFORM_ACCOUNT', ?, 'AADHAAR_FRONT', ?, ?, ?, ?, ?, ?, ?)`,
           [randomUUID(), agencyAccountId, application.document_original_name, application.document_mime_type, application.document_byte_size, application.document_encrypted_data, application.document_encryption_iv, application.document_encryption_tag, input.scope.account.id],
         );
       }

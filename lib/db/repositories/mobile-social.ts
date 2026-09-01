@@ -150,7 +150,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
   const user = (row: RowDataPacket) => ({
     id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
     country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number),
-    anchorLevel: Math.min(120, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+    anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
     vip: Number(row.vip_tier), role: row.is_host ? "host" : "user",
   });
   return {
@@ -229,7 +229,6 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
   ownerName: string;
   countryCode: string;
   whatsappE164: string;
-  pan?: string;
   aadhaar: string;
   parentCode: string;
   documentDataUrl: string;
@@ -265,12 +264,11 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
     await connection.execute(
       `INSERT INTO agency_creation_applications
         (id, application_user_id, agency_name, owner_name, country_code, business_whatsapp_e164, parent_account_id,
-         pan_last4, pan_encrypted, pan_iv, pan_tag, aadhaar_last4, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
+         aadhaar_last4, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
          logo_mime_type, logo_data, logo_byte_size, document_original_name, document_mime_type, document_byte_size,
          document_encrypted_data, document_encryption_iv, document_encryption_tag)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [applicationId, identity.userId, input.name, input.ownerName, input.countryCode, input.whatsappE164, parent.id,
-       null, null, null, null,
        aadhaar.slice(-4), encryptedAadhaar.encryptedData, encryptedAadhaar.iv, encryptedAadhaar.tag,
        logo?.mimeType ?? null, logo?.data ?? null, logo?.byteSize ?? null,
        proof.originalName, proof.mimeType, proof.byteSize, proof.encryptedData, proof.iv, proof.tag],
@@ -290,7 +288,7 @@ export async function discoveryPosts(after?: string) {
       `SELECT post.id, post.caption, post.status, post.created_at, asset.id asset_id,
               user.public_id, user.full_name, user.country_code,
               CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000)) ELSE user.avatar_url END avatar_url,
-              user.level_number, LEAST(120, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level, user.vip_tier, user.is_host
+              user.level_number, LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level, user.vip_tier, user.is_host
        FROM discovery_posts post
        LEFT JOIN discovery_post_assets asset ON asset.id = post.asset_id
        INNER JOIN application_users user ON user.id = post.application_user_id
@@ -349,9 +347,19 @@ function settingObject(value: unknown) {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
 }
 
+function privateMessagePricing(value: unknown) {
+  const setting = settingObject(value);
+  const configuredCost = Number(setting.private_message_coin_cost ?? 10);
+  const configuredLimit = Number(setting.private_message_daily_paid_limit ?? 20);
+  return {
+    coinCost: Number.isFinite(configuredCost) ? Math.max(0, Math.floor(configuredCost)) : 10,
+    dailyPaidLimit: Number.isFinite(configuredLimit) ? Math.max(0, Math.floor(configuredLimit)) : 20,
+  };
+}
+
 export async function privateMessagingForUser(identity: MobileIdentity, before?: string) {
   try {
-    const [messages, settingRows, blocks] = await Promise.all([
+    const [messages, settingRows, blocks, usageRows, clockRows] = await Promise.all([
       db().query<RowDataPacket[]>(
         `SELECT message.id, message.client_message_id, sender.public_id sender_public_id,
                 recipient.public_id recipient_public_id, message.body, message.coin_cost,
@@ -378,11 +386,28 @@ export async function privateMessagingForUser(identity: MobileIdentity, before?:
          WHERE blocklist.blocker_application_user_id = ?`,
         [identity.userId],
       ),
+      db().query<RowDataPacket[]>(
+        `SELECT paid_message_count, total_message_count
+         FROM private_message_daily_usage
+         WHERE application_user_id = ? AND usage_date = CURRENT_DATE
+         LIMIT 1`,
+        [identity.userId],
+      ),
+      db().query<RowDataPacket[]>("SELECT DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') server_date"),
     ]);
-    const setting = settingObject(settingRows[0][0]?.setting_value);
+    const pricing = privateMessagePricing(settingRows[0][0]?.setting_value);
+    const paidMessagesToday = Math.max(0, Number(usageRows[0][0]?.paid_message_count ?? 0));
+    const totalMessagesToday = Math.max(0, Number(usageRows[0][0]?.total_message_count ?? 0));
+    const remainingPaidMessages = Math.max(0, pricing.dailyPaidLimit - paidMessagesToday);
     return {
       hasMore: messages[0].length === 60,
-      coinCost: Math.max(0, Number(setting.private_message_coin_cost ?? 50)),
+      coinCost: pricing.coinCost,
+      dailyPaidLimit: pricing.dailyPaidLimit,
+      paidMessagesToday,
+      totalMessagesToday,
+      remainingPaidMessages,
+      nextMessageCoinCost: remainingPaidMessages > 0 ? pricing.coinCost : 0,
+      serverDate: String(clockRows[0][0]?.server_date ?? ""),
       blockedUserIds: blocks[0].map((row) => String(row.public_id)),
       people: [...new Map(messages[0].flatMap((row) => [
         [String(row.sender_public_id), { id: String(row.sender_public_id), name: String(row.sender_name), avatarUrl: row.sender_avatar }],
@@ -391,7 +416,11 @@ export async function privateMessagingForUser(identity: MobileIdentity, before?:
       messages: messages[0].map((row) => ({ id: String(row.id), clientMessageId: String(row.client_message_id), senderId: String(row.sender_public_id), recipientId: String(row.recipient_public_id), body: String(row.body), coinCost: Number(row.coin_cost), read: row.read_at != null, createdAt: row.created_at, conversationStatus: String(row.conversation_status).toLowerCase(), initiatedBy: String(row.initiated_by_public_id) })),
     };
   } catch (error) {
-    if ((error as { code?: string }).code === "ER_NO_SUCH_TABLE") return { coinCost: 50, blockedUserIds: [], messages: [] };
+    if ((error as { code?: string }).code === "ER_NO_SUCH_TABLE") return {
+      coinCost: 10, dailyPaidLimit: 20, paidMessagesToday: 0,
+      totalMessagesToday: 0, remainingPaidMessages: 20,
+      nextMessageCoinCost: 10, serverDate: "", blockedUserIds: [], messages: [],
+    };
     throw error;
   }
 }
@@ -408,29 +437,75 @@ export async function sendPrivateMessage(identity: MobileIdentity, input: { reci
     const [conversations] = await connection.query<RowDataPacket[]>("SELECT status, initiated_by FROM private_conversations WHERE user_low = ? AND user_high = ? FOR UPDATE", [low, high]);
     const conversation = conversations[0];
     const [settingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.social' LIMIT 1");
-    const coinCost = Math.max(0, Number(settingObject(settingRows[0]?.setting_value).private_message_coin_cost ?? 50));
+    const pricing = privateMessagePricing(settingRows[0]?.setting_value);
     await connection.execute("INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN')", [randomUUID(), identity.userId]);
     const [wallets] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE", [identity.userId]);
-    const [existing] = await connection.query<(RowDataPacket & { id: string })[]>("SELECT id FROM private_messages WHERE sender_application_user_id = ? AND client_message_id = ? LIMIT 1", [identity.userId, input.clientMessageId]);
-    if (existing[0]) return { id: existing[0].id, coinCost, alreadySent: true };
+    await connection.execute(
+      "INSERT IGNORE INTO private_message_daily_usage (application_user_id, usage_date) VALUES (?, CURRENT_DATE)",
+      [identity.userId],
+    );
+    const [usageRows] = await connection.query<(RowDataPacket & { paid_message_count: number; total_message_count: number; server_date: string })[]>(
+      `SELECT paid_message_count, total_message_count,
+              DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') server_date
+       FROM private_message_daily_usage
+       WHERE application_user_id = ? AND usage_date = CURRENT_DATE
+       LIMIT 1 FOR UPDATE`,
+      [identity.userId],
+    );
+    const usage = usageRows[0];
+    const paidMessagesToday = Math.max(0, Number(usage?.paid_message_count ?? 0));
+    const totalMessagesToday = Math.max(0, Number(usage?.total_message_count ?? 0));
+    const [existing] = await connection.query<(RowDataPacket & { id: string; coin_cost: number })[]>("SELECT id, coin_cost FROM private_messages WHERE sender_application_user_id = ? AND client_message_id = ? LIMIT 1", [identity.userId, input.clientMessageId]);
+    if (existing[0]) {
+      const remainingPaidMessages = Math.max(0, pricing.dailyPaidLimit - paidMessagesToday);
+      return {
+        id: existing[0].id, coinCost: Number(existing[0].coin_cost), alreadySent: true,
+        paidMessagesToday, totalMessagesToday, remainingPaidMessages,
+        nextMessageCoinCost: remainingPaidMessages > 0 ? pricing.coinCost : 0,
+        serverDate: String(usage?.server_date ?? ""),
+        remainingCoins: Number(wallets[0].available_balance),
+      };
+    }
     if (conversation.status === "REJECTED") throw new Error("This message request was declined.");
     if (conversation.status === "PENDING") {
       if (conversation.initiated_by !== identity.userId) throw new Error("Accept this message request before replying.");
       const [pendingMessages] = await connection.query<RowDataPacket[]>("SELECT id FROM private_messages WHERE sender_application_user_id = ? AND recipient_application_user_id = ? LIMIT 1", [identity.userId, recipient.id]);
       if (pendingMessages.length) throw new Error("Your request is pending. Wait for the recipient to accept.");
     }
+    const coinCost = paidMessagesToday < pricing.dailyPaidLimit ? pricing.coinCost : 0;
     if (Number(wallets[0].available_balance) < coinCost) throw new Error(`You need ${coinCost} coins to send this message.`);
     const messageId = randomUUID();
     const ledgerId = randomUUID();
-    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [coinCost, wallets[0].id]);
+    if (coinCost > 0) {
+      await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [coinCost, wallets[0].id]);
+    }
     await connection.execute(
       `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason)
-       VALUES (?, ?, ?, 'COIN', 'PRIVATE_MESSAGE', 'APPLICATION_USER', ?, 'SYSTEM', ?, 'COMPLETED', 'Private message')`,
-      [ledgerId, `MSG-${input.clientMessageId.replace(/-/g, "").slice(0, 20).toUpperCase()}`, `private-message:${identity.userId}:${input.clientMessageId}`, identity.userId, coinCost],
+       VALUES (?, ?, ?, 'COIN', ?, 'APPLICATION_USER', ?, 'SYSTEM', ?, 'COMPLETED', ?)`,
+      [ledgerId, `MSG-${input.clientMessageId.replace(/-/g, "").slice(0, 20).toUpperCase()}`, `private-message:${identity.userId}:${input.clientMessageId}`,
+        coinCost > 0 ? "PRIVATE_MESSAGE" : "PRIVATE_MESSAGE_FREE", identity.userId, coinCost,
+        coinCost > 0 ? "Paid private message" : "Free private message after daily paid allowance"],
     );
     await connection.execute("INSERT INTO private_messages (id, client_message_id, sender_application_user_id, recipient_application_user_id, body, coin_cost, ledger_transaction_id) VALUES (?, ?, ?, ?, ?, ?, ?)", [messageId, input.clientMessageId, identity.userId, recipient.id, input.body, coinCost, ledgerId]);
+    await connection.execute(
+      `UPDATE private_message_daily_usage
+       SET paid_message_count = paid_message_count + ?, total_message_count = total_message_count + 1
+       WHERE application_user_id = ? AND usage_date = CURRENT_DATE`,
+      [coinCost > 0 ? 1 : 0, identity.userId],
+    );
     await connection.execute("UPDATE private_conversations SET updated_at = CURRENT_TIMESTAMP(3) WHERE user_low = ? AND user_high = ?", [low, high]);
-    return { id: messageId, coinCost, remainingCoins: Number(wallets[0].available_balance) - coinCost };
+    const nextPaidMessagesToday = paidMessagesToday + (coinCost > 0 ? 1 : 0);
+    const nextTotalMessagesToday = totalMessagesToday + 1;
+    const remainingPaidMessages = Math.max(0, pricing.dailyPaidLimit - nextPaidMessagesToday);
+    return {
+      id: messageId, coinCost,
+      remainingCoins: Number(wallets[0].available_balance) - coinCost,
+      paidMessagesToday: nextPaidMessagesToday,
+      totalMessagesToday: nextTotalMessagesToday,
+      remainingPaidMessages,
+      nextMessageCoinCost: remainingPaidMessages > 0 ? pricing.coinCost : 0,
+      serverDate: String(usage?.server_date ?? ""),
+    };
   });
 }
 

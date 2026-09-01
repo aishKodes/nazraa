@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { RowDataPacket } from "mysql2";
+import { can } from "@/lib/auth/permissions";
 import { db } from "@/lib/db/pool";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PageRequest, PageResult, Role, Scope } from "@/types/platform";
@@ -79,6 +80,37 @@ export async function listUsersPage(scope: Scope, input: PageRequest = {}): Prom
     [...values, pageSize + 1, offset],
   );
   return { items: rows.slice(0, pageSize).map(mapUser), page, pageSize, hasNext: rows.length > pageSize };
+}
+
+/**
+ * Small, explicit recipient lookup for coin transfers. Coin Sellers may sell
+ * to any active Nazraa user; every other role remains limited to its branch.
+ * Keeping this separate from the Users directory avoids granting Coin Sellers
+ * broad directory access through another route.
+ */
+export async function searchCoinTransferRecipients(scope: Scope, search: string, limit = 25) {
+  if (!can(scope.account.role, "coins.transfer")) return [];
+  const query = search.trim().slice(0, 120);
+  if (!query) return [];
+  const scoped = scope.account.role === "COIN_SELLER"
+    ? { clause: "1=1", values: [] as string[] }
+    : scopeWhere(scope, "u.agency_account_id");
+  const filters = [scoped.clause, "u.account_status = 'ACTIVE'"];
+  const values: unknown[] = [...scoped.values];
+  if (/^\d{1,12}$/.test(query)) {
+    filters.push("(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)");
+    values.push(Number(query), query, `${query}%`);
+  } else {
+    filters.push("(u.full_name LIKE ? OR u.external_user_id LIKE ? OR u.whatsapp_e164 LIKE ?)");
+    values.push(`${query}%`, `${query}%`, `${query}%`);
+  }
+  const [rows] = await db().query<UserRow[]>(
+    `${userQuery(filters.join(" AND "))}
+     ORDER BY CASE WHEN u.external_user_id = ? THEN 0 ELSE 1 END, u.full_name
+     LIMIT ?`,
+    [...values, query, Math.min(50, Math.max(5, limit))],
+  );
+  return rows.map(mapUser);
 }
 
 function mapHost(row: HostRow) {

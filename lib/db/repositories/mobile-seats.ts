@@ -4,7 +4,7 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
 
 export async function actOnRoomSeat(identity: MobileIdentity, input: {
-  roomCode: string; action: "request" | "accept" | "reject" | "assign" | "leave";
+  roomCode: string; action: "request" | "accept" | "reject" | "assign" | "leave" | "lock" | "unlock";
   seatIndex?: number; targetPublicId?: string;
 }) {
   return withTransaction(async (connection) => {
@@ -22,9 +22,32 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       await connection.execute("UPDATE live_seat_requests SET status = 'EXPIRED' WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
       return { status: "left" };
     }
+    if (input.action === "lock" || input.action === "unlock") {
+      if (!["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the Room Owner or a Room Admin can lock seats.");
+      const index = input.seatIndex;
+      if (index == null || !Number.isInteger(index) || index < 0 || index >= Number(room.seat_count)) throw new Error("Choose a valid seat.");
+      if (input.action === "lock") {
+        const [occupied] = await connection.query<RowDataPacket[]>(
+          "SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND left_at IS NULL LIMIT 1",
+          [room.id, index],
+        );
+        if (occupied.length) throw new Error("Remove the speaker before locking this seat.");
+        await connection.execute(
+          `INSERT INTO live_room_seat_locks (room_id, seat_index, locked_by_application_user_id)
+           VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE locked_by_application_user_id = VALUES(locked_by_application_user_id), created_at = CURRENT_TIMESTAMP(3)`,
+          [room.id, index, identity.userId],
+        );
+        await connection.execute("UPDATE live_seat_requests SET status = 'REJECTED' WHERE room_id = ? AND seat_index = ? AND status = 'PENDING'", [room.id, index]);
+      } else {
+        await connection.execute("DELETE FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ?", [room.id, index]);
+      }
+      return { status: input.action === "lock" ? "locked" : "unlocked", seatIndex: index };
+    }
     if (input.action === "request") {
       const index = input.seatIndex;
       if (index == null || !Number.isInteger(index) || index < 0 || index >= Number(room.seat_count)) throw new Error("Choose an available seat.");
+      const [locked] = await connection.query<RowDataPacket[]>("SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ? LIMIT 1", [room.id, index]);
+      if (locked.length) throw new Error("That seat is locked by room staff.");
       const [occupied] = await connection.query<RowDataPacket[]>("SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND application_user_id != ? AND left_at IS NULL", [room.id, index, identity.userId]);
       if (occupied.length) throw new Error("That seat is already reserved. Choose another seat.");
       if (["OWNER", "ADMIN"].includes(room.room_role)) {
@@ -38,6 +61,8 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
     if (input.action === "assign") {
       const index = input.seatIndex;
       if (index == null || !Number.isInteger(index) || index < 0 || index >= Number(room.seat_count)) throw new Error("Choose an available seat.");
+      const [locked] = await connection.query<RowDataPacket[]>("SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ? LIMIT 1", [room.id, index]);
+      if (locked.length) throw new Error("Unlock this seat before assigning a member.");
       const [targets] = await connection.query<RowDataPacket[]>(
         `SELECT user.id, member.room_role FROM live_room_members member
          INNER JOIN application_users user ON user.id = member.application_user_id
@@ -76,6 +101,8 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
     const request = requests[0];
     if (!request) throw new Error("This mic request has expired or is no longer pending.");
     if (input.action === "accept") {
+      const [locked] = await connection.query<RowDataPacket[]>("SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ? LIMIT 1", [room.id, request.seat_index]);
+      if (locked.length) throw new Error("Unlock this seat before accepting the request.");
       const [occupied] = await connection.query<RowDataPacket[]>("SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND application_user_id != ? AND left_at IS NULL", [room.id, request.seat_index, request.application_user_id]);
       if (occupied.length) throw new Error("That seat was taken. Ask the user to choose another seat.");
       await connection.execute("UPDATE live_room_members SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role), seat_index = ?, muted = FALSE WHERE room_id = ? AND application_user_id = ?", [request.seat_index, room.id, request.application_user_id]);
