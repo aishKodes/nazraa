@@ -743,13 +743,35 @@ const supportedRoundGames = new Set([
   ...goldenSingleGames,
   ...goldenZoneGames,
 ]);
-const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
+export const footballMultipliers = [2, 5, 8, 18, 66, 50, 100, 88, 30, 20] as const;
+// 0.98 / displayed multiplier, scaled to integers. The five-unit rounding
+// difference is normalized by chooseWeighted and stays far below one draw in
+// a million. This is the reference game's embedded 2% service-margin model.
+export const footballWeights = [490000, 196000, 122500, 54444, 14848, 19600, 9800, 11136, 32667, 49000] as const;
 const junglePaylines = [
-  [0, 0, 0, 0, 0], [1, 1, 1, 1, 1], [2, 2, 2, 2, 2], [0, 1, 2, 2, 1], [2, 1, 0, 0, 1],
-  [0, 0, 1, 2, 2], [2, 2, 1, 0, 0], [1, 0, 0, 1, 2], [1, 2, 2, 1, 0], [0, 1, 1, 0, 0],
-  [2, 1, 1, 2, 2], [1, 0, 1, 2, 1], [1, 2, 1, 0, 1], [0, 1, 0, 1, 0], [2, 1, 2, 1, 2],
+  [1, 1, 1, 1, 1], [0, 0, 0, 0, 0], [2, 2, 2, 2, 2], [0, 1, 2, 1, 0], [2, 1, 0, 1, 2],
+  [1, 0, 0, 0, 1], [1, 2, 2, 2, 1], [0, 0, 1, 2, 2], [2, 2, 1, 0, 0], [1, 2, 1, 0, 1],
+  [1, 0, 1, 2, 1], [0, 1, 1, 1, 0], [2, 1, 1, 1, 2], [2, 1, 1, 1, 0], [0, 1, 1, 1, 2],
 ] as const;
-const jungleSymbols = ["ten", "crocodile", "rhino", "elephant"] as const;
+export const jungleSymbols = ["wild", "lion", "elephant", "rhino", "crocodile", "gorilla", "a", "k", "q", "j", "ten", "jackpot"] as const;
+type JungleSymbol = typeof jungleSymbols[number];
+const junglePaytable: Record<Exclude<JungleSymbol, "wild" | "jackpot">, Readonly<Record<3 | 4 | 5, number>>> = {
+  lion: { 3: 100, 4: 500, 5: 1500 },
+  elephant: { 3: 50, 4: 300, 5: 1000 },
+  rhino: { 3: 40, 4: 150, 5: 800 },
+  crocodile: { 3: 35, 4: 100, 5: 600 },
+  gorilla: { 3: 30, 4: 80, 5: 500 },
+  a: { 3: 15, 4: 50, 5: 150 },
+  k: { 3: 15, 4: 50, 5: 150 },
+  q: { 3: 10, 4: 20, 5: 80 },
+  j: { 3: 5, 4: 15, 5: 60 },
+  ten: { 3: 5, 4: 10, 5: 50 },
+};
+// The supplied material does not establish reel weights for the additional
+// symbols. Preserve the four existing production reel symbols until the
+// Master config supplies verified weights; the evaluator below already
+// supports the complete paytable, Wild and confirmed Jackpot patterns.
+const jungleConfiguredReelSymbols: readonly JungleSymbol[] = ["ten", "crocodile", "rhino", "elephant"];
 
 type ServerGameRoundInput = {
   clientRoundId: string;
@@ -945,83 +967,91 @@ function buildTeenPattiHands() {
   }));
 }
 
-function luck77Round(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+function luck77Round(input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
+  void _targetWin;
   const keys = ["watermelon", "seven", "plum"] as const;
   const checked = checkedBets(input, keys, 100);
   if (checked.total === 0) throw new Error("Choose a Luck77 house.");
-  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
-    throw new Error("Choose no more than two Luck77 houses.");
-  }
-  // Exact eight-sector order shown in the 2026-09-01 reference recording.
-  const segments = ["seven", "watermelon", "plum", "watermelon", "seven", "plum", "watermelon", "plum"] as const;
-  const winner = chooseIndexForTarget(
-    segments.map((_, index) => index),
-    (index) => checked.bets[segments[index]] * (segments[index] === "seven" ? 8 : 2),
-    checked.total,
-    targetWin,
-  );
+  // Nine equal visual sectors: four Watermelon, four Plum, one Lucky 77.
+  // The draw is global/configuration-driven and never depends on one user's bet.
+  const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum"] as const;
+  const winner = randomInt(segments.length);
   const winningHouse = segments[winner];
   const multiplier = winningHouse === "seven" ? 8 : 2;
-  return { outcome: { winner: winningHouse, winningSegment: winner, multiplier, targetWin }, wager: checked.total, payout: checked.bets[winningHouse] * multiplier };
+  return { outcome: { winner: winningHouse, winningSegment: winner, multiplier, lucky77SpecialBonusEnabled: false }, wager: checked.total, payout: checked.bets[winningHouse] * multiplier };
 }
 
-function footballRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+function footballRound(input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
+  void _targetWin;
   const checked = checkedBets(input, footballMultipliers.map((_, index) => String(index)), 500);
   if (checked.total === 0) throw new Error("Choose a Bounty Football zone.");
-  const winner = chooseIndexForTarget(
-    footballMultipliers.map((_, index) => index),
-    (index) => checked.bets[String(index)] * footballMultipliers[index],
-    checked.total,
-    targetWin,
-  );
+  const winner = chooseWeighted(footballWeights.map((weight, index) => ({ index, weight }))).index;
   const multiplier = footballMultipliers[winner];
-  return { outcome: { winner, multiplier, targetWin }, wager: checked.total, payout: checked.bets[String(winner)] * multiplier };
+  return {
+    outcome: {
+      winner, multiplier, probabilityWeight: footballWeights[winner],
+      feeModel: "EMBEDDED_IN_ODDS", serviceMarginPercent: 2,
+    },
+    wager: checked.total,
+    payout: checked.bets[String(winner)] * multiplier,
+    commissionablePayout: 0,
+  };
 }
 
-function jungleMultiplier(symbol: typeof jungleSymbols[number], matches: number) {
-  const table = {
-    ten: [0, 0, 0, 3, 10, 20], crocodile: [0, 0, 0, 5, 20, 40],
-    rhino: [0, 0, 0, 8, 30, 60], elephant: [0, 0, 0, 10, 50, 100],
-  } as const;
-  return table[symbol][matches] ?? 0;
+function jungleMultiplier(symbol: JungleSymbol, matches: number) {
+  if (symbol === "wild" || symbol === "jackpot" || (matches !== 3 && matches !== 4 && matches !== 5)) return 0;
+  return junglePaytable[symbol][matches];
 }
 
-function jungleRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+function jungleRound(input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
+  void _targetWin;
   const checked = checkedBets(input, ["spin"], 150, 3_000);
   if (checked.total === 0) throw new Error("Choose a spin amount.");
   if (checked.total % junglePaylines.length !== 0) throw new Error("The Jungle Hunt bet must cover all 15 lines.");
-  let result: ReturnType<typeof evaluateJungleGrid> | null = null;
-  for (let attempt = 0; attempt < 512; attempt++) {
-    const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleSymbols[randomInt(jungleSymbols.length)]));
-    const evaluated = evaluateJungleGrid(grid, checked.total);
-    result = evaluated;
-    if (targetWin ? evaluated.payout > checked.total : evaluated.payout <= checked.total) break;
-  }
-  if (targetWin && result!.payout <= checked.total) {
-    const grid: (typeof jungleSymbols[number])[][] = Array.from(
-      { length: 3 },
-      () => Array.from({ length: 5 }, () => "ten" as typeof jungleSymbols[number]),
-    );
-    grid[0] = Array.from({ length: 5 }, () => "elephant" as const);
-    result = evaluateJungleGrid(grid, checked.total);
-  }
-  return { outcome: { grid: result!.grid, winningLines: result!.winningLines, targetWin }, wager: checked.total, payout: result!.payout };
+  const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleConfiguredReelSymbols[randomInt(jungleConfiguredReelSymbols.length)]));
+  const result = evaluateJungleGrid(grid, checked.total);
+  return {
+    outcome: {
+      grid: result.grid, winningLines: result.winningLines,
+      lineWins: result.lineWins, jackpotResult: result.jackpotResult,
+      payoutBasis: "LINE_BET", paylines: 15,
+    },
+    wager: checked.total,
+    payout: result.payout,
+  };
 }
 
-function evaluateJungleGrid(grid: (typeof jungleSymbols[number])[][], total: number) {
+export function evaluateJungleGrid(grid: JungleSymbol[][], total: number) {
   const winningLines: number[] = [];
+  const lineWins: { line: number; symbol: JungleSymbol; matches: number; payout: number }[] = [];
   const lineBet = total / junglePaylines.length;
   let payout = 0;
   for (let line = 0; line < junglePaylines.length; line++) {
     const path = junglePaylines[line];
-    const first = grid[path[0]][0];
-    let matches = 1;
-    for (let column = 1; column < 5 && grid[path[column]][column] === first; column++) matches++;
+    const symbols = path.map((row, column) => grid[row][column]);
+    const firstNormal = symbols.find((symbol) => symbol !== "wild");
+    if (!firstNormal || firstNormal === "jackpot") continue;
+    let matches = 0;
+    for (const symbol of symbols) {
+      if (symbol !== firstNormal && symbol !== "wild") break;
+      matches++;
+    }
     if (matches < 3) continue;
+    const linePayout = lineBet * jungleMultiplier(firstNormal, matches);
+    if (linePayout <= 0) continue;
     winningLines.push(line + 1);
-    payout += lineBet * jungleMultiplier(first, matches);
+    payout += linePayout;
+    lineWins.push({ line: line + 1, symbol: firstNormal, matches, payout: linePayout });
   }
-  return { grid, winningLines, payout };
+  const jackpotResult = grid[1].every((symbol) => symbol === "jackpot")
+    ? { pattern: 1, payout: 1_000_000 }
+    : grid[0].every((symbol) => symbol === "jackpot")
+      ? { pattern: 2, payout: 500_000 }
+      : grid[2].every((symbol) => symbol === "jackpot")
+        ? { pattern: 3, payout: 500_000 }
+        : null;
+  if (jackpotResult) payout += jackpotResult.payout;
+  return { grid, winningLines, lineWins, jackpotResult, payout };
 }
 
 type WeightedGoldenOutcome = { label: string; multiplier: number; weight: number };
@@ -1131,31 +1161,48 @@ function threeCardRound(input: Record<string, number>, targetWin: boolean): Serv
   };
 }
 
-function greedyRound(game: string, input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+export function evaluateGreedyRound(
+  game: "greedy_lion" | "greedy_king",
+  input: Record<string, number>,
+  outcome: number | "salad" | "pizza",
+): ServerGameOutcome {
   const lion = game === "greedy_lion";
   const keys = Array.from({ length: lion ? 8 : 10 }, (_, index) => String(index));
   const checked = checkedBets(input, keys, 500, 50_000_000);
   if (checked.total === 0) throw new Error(lion ? "Choose at least one food house." : "Choose at least one wheel zone.");
-  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 6) {
-    throw new Error("Choose no more than six wheel zones.");
-  }
   const multipliers = lion
     ? [5, 45, 25, 5, 15, 5, 5, 10] as const
     : [5, 10, 15, 25, 45, 5, 5, 5, 1.25, 4.37] as const;
   const labels = lion
     ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Steak"] as const
     : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce", "Salad", "Pizza"] as const;
-  const resultIndexes = Array.from({ length: 8 }, (_, index) => index);
-  const categoryFor = (index: number) => [0, 5, 6, 7].includes(index) ? 8 : 9;
-  const grossFor = (index: number) => checked.bets[String(index)] * multipliers[index] +
-    (lion ? 0 : checked.bets[String(categoryFor(index))] * (multipliers[categoryFor(index)] ?? 0));
-  const winner = chooseIndexForTarget(resultIndexes, grossFor, checked.total, targetWin);
+  const saladMembers = lion ? [0, 3, 5, 6] : [0, 5, 6, 7];
+  const pizzaMembers = lion ? [1, 2, 4, 7] : [1, 2, 3, 4];
+  if (outcome === "salad" || outcome === "pizza") {
+    const winners = outcome === "salad" ? saladMembers : pizzaMembers;
+    const payout = Math.floor(winners.reduce((sum, index) => sum + checked.bets[String(index)] * multipliers[index], 0));
+    return {
+      outcome: {
+        winner: outcome, label: outcome === "salad" ? "Salad" : "Pizza",
+        winners, winningGroups: [outcome.toUpperCase()], specialResult: true,
+      },
+      wager: checked.total,
+      payout,
+    };
+  }
+  const winner = outcome;
+  if (!Number.isSafeInteger(winner) || winner < 0 || winner >= 8) throw new Error("The Greedy result is invalid.");
+  const categoryFor = (index: number) => saladMembers.includes(index) ? 8 : 9;
   const multiplier = multipliers[winner];
   const secondaryWinner = lion ? null : categoryFor(winner);
-  const payout = Math.floor(grossFor(winner));
+  const payout = Math.floor(
+    checked.bets[String(winner)] * multiplier +
+    (secondaryWinner == null ? 0 : checked.bets[String(secondaryWinner)] * Number(multipliers[secondaryWinner] ?? 0)),
+  );
   return {
     outcome: {
-      winner, winningZone: winner + 1, multiplier, label: labels[winner], targetWin,
+      winner, winningZone: winner + 1, multiplier, label: labels[winner],
+      winningGroups: [saladMembers.includes(winner) ? "SALAD" : "PIZZA"], specialResult: false,
       secondaryWinner,
       secondaryLabel: secondaryWinner == null ? null : labels[secondaryWinner],
       secondaryMultiplier: secondaryWinner == null ? null : multipliers[secondaryWinner],
@@ -1164,6 +1211,15 @@ function greedyRound(game: string, input: Record<string, number>, targetWin: boo
     wager: checked.total,
     payout,
   };
+}
+
+function greedyRound(game: string, input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
+  void _targetWin;
+  // Exact Greedy draw weights and pool triggers are not established by the
+  // supplied evidence. Preserve the existing eight-way normal draw and keep
+  // SALAD/PIZZA settlement available for verified configured triggers, rather
+  // than inventing a probability or choosing a cheap result from user bets.
+  return evaluateGreedyRound(game as "greedy_lion" | "greedy_king", input, randomInt(8));
 }
 
 function createServerGameOutcome(game: string, bets: Record<string, number>, targetWin: boolean) {
@@ -1175,6 +1231,319 @@ function createServerGameOutcome(game: string, bets: Record<string, number>, tar
   if (game === "three_card") return threeCardRound(bets, targetWin);
   if (goldenZoneGames.has(game)) return greedyRound(game, bets, targetWin);
   throw new Error("This game is unavailable.");
+}
+
+const sharedRoundGames = new Set(["luck77", "greedy_lion", "greedy_king", "bounty_football"]);
+type SharedRoundGame = "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
+const sharedRoundTiming: Record<SharedRoundGame, { betting: number; drawing: number; result: number }> = {
+  luck77: { betting: 10, drawing: 3, result: 3 },
+  greedy_lion: { betting: 20, drawing: 3, result: 4 },
+  greedy_king: { betting: 30, drawing: 3, result: 4 },
+  bounty_football: { betting: 10, drawing: 4, result: 4 },
+};
+
+type SharedRoundRow = RowDataPacket & {
+  id: string; game_name: SharedRoundGame; round_number: number;
+  betting_starts_at: Date; betting_ends_at: Date; drawing_ends_at: Date; result_ends_at: Date;
+  outcome_json: unknown;
+};
+
+function sharedGame(value: string): SharedRoundGame {
+  if (!sharedRoundGames.has(value)) throw new Error("This game does not use shared rounds.");
+  return value as SharedRoundGame;
+}
+
+function sharedRoundOutcome(game: SharedRoundGame) {
+  if (game === "luck77") {
+    const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum"] as const;
+    const winningSegment = randomInt(segments.length);
+    const winner = segments[winningSegment];
+    return { winner, winningSegment, multiplier: winner === "seven" ? 8 : 2, lucky77SpecialBonusEnabled: false };
+  }
+  if (game === "bounty_football") {
+    const winner = chooseWeighted(footballWeights.map((weight, index) => ({ index, weight }))).index;
+    return {
+      winner, multiplier: footballMultipliers[winner], probabilityWeight: footballWeights[winner],
+      feeModel: "EMBEDDED_IN_ODDS", serviceMarginPercent: 2,
+    };
+  }
+  const winner = randomInt(8);
+  const lion = game === "greedy_lion";
+  const labels = lion
+    ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Meat"]
+    : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce"];
+  const multipliers = lion ? [5, 45, 25, 5, 15, 5, 5, 10] : [5, 10, 15, 25, 45, 5, 5, 5];
+  return {
+    winner, label: labels[winner], multiplier: multipliers[winner], specialResult: false,
+    // Exact SALAD/PIZZA trigger weights remain unconfigured rather than guessed.
+    saladWeight: 0, pizzaWeight: 0,
+  };
+}
+
+function validateSharedBets(game: SharedRoundGame, input: Record<string, number>) {
+  if (game === "luck77") return checkedBets(input, ["watermelon", "seven", "plum"], 100);
+  if (game === "bounty_football") return checkedBets(input, footballMultipliers.map((_, index) => String(index)), 500);
+  const count = game === "greedy_lion" ? 8 : 10;
+  return checkedBets(input, Array.from({ length: count }, (_, index) => String(index)), 500);
+}
+
+function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, number>, outcome: Record<string, unknown>): ServerGameOutcome {
+  const checked = validateSharedBets(game, bets);
+  if (game === "luck77") {
+    const winner = String(outcome.winner);
+    const multiplier = winner === "seven" ? 8 : 2;
+    return { outcome, wager: checked.total, payout: Number(checked.bets[winner] ?? 0) * multiplier };
+  }
+  if (game === "bounty_football") {
+    const winner = Number(outcome.winner);
+    const multiplier = Number(footballMultipliers[winner] ?? 0);
+    return { outcome, wager: checked.total, payout: Number(checked.bets[String(winner)] ?? 0) * multiplier, commissionablePayout: 0 };
+  }
+  const configuredOutcome = outcome.specialResult === true
+    ? String(outcome.winner) as "salad" | "pizza"
+    : Number(outcome.winner);
+  return evaluateGreedyRound(game, checked.bets, configuredOutcome);
+}
+
+async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGame, now = new Date()) {
+  const timing = sharedRoundTiming[game];
+  const totalSeconds = timing.betting + timing.drawing + timing.result;
+  const roundNumber = Math.floor(now.getTime() / (totalSeconds * 1000));
+  const startsAt = new Date(roundNumber * totalSeconds * 1000);
+  const bettingEndsAt = new Date(startsAt.getTime() + timing.betting * 1000);
+  const drawingEndsAt = new Date(bettingEndsAt.getTime() + timing.drawing * 1000);
+  const resultEndsAt = new Date(drawingEndsAt.getTime() + timing.result * 1000);
+  await connection.execute(
+    `INSERT IGNORE INTO game_shared_rounds
+      (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_ends_at, outcome_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(sharedRoundOutcome(game))],
+  );
+  const [rows] = await connection.query<SharedRoundRow[]>(
+    "SELECT * FROM game_shared_rounds WHERE game_name = ? AND round_number = ? LIMIT 1 FOR UPDATE",
+    [game, roundNumber],
+  );
+  if (!rows[0]) throw new Error("The shared game round could not be opened.");
+  return rows[0];
+}
+
+function sharedPhase(round: SharedRoundRow, now: Date) {
+  if (now < new Date(round.betting_ends_at)) return { phase: "BETTING", phaseEndsAt: new Date(round.betting_ends_at) };
+  if (now < new Date(round.drawing_ends_at)) return { phase: "DRAWING", phaseEndsAt: new Date(round.drawing_ends_at) };
+  return { phase: "RESULT", phaseEndsAt: new Date(round.result_ends_at) };
+}
+
+async function settleMaturedSharedRounds(connection: PoolConnection, game: SharedRoundGame) {
+  const [pairs] = await connection.query<(RowDataPacket & { round_id: string; application_user_id: string })[]>(
+    `SELECT DISTINCT bet.round_id, bet.application_user_id
+     FROM game_shared_bets bet
+     INNER JOIN game_shared_rounds round ON round.id = bet.round_id
+     LEFT JOIN game_shared_settlements settlement
+       ON settlement.round_id = bet.round_id AND settlement.application_user_id = bet.application_user_id
+     WHERE round.game_name = ? AND round.drawing_ends_at <= UTC_TIMESTAMP(3) AND settlement.id IS NULL
+     ORDER BY bet.round_id LIMIT 200`,
+    [game],
+  );
+  for (const pair of pairs) {
+    await connection.query(
+      "SELECT id FROM game_shared_bet_requests WHERE round_id = ? AND application_user_id = ? FOR UPDATE",
+      [pair.round_id, pair.application_user_id],
+    );
+    const [alreadyRows] = await connection.query<RowDataPacket[]>(
+      "SELECT id FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1",
+      [pair.round_id, pair.application_user_id],
+    );
+    if (alreadyRows[0]) continue;
+    const [roundRows] = await connection.query<SharedRoundRow[]>("SELECT * FROM game_shared_rounds WHERE id = ? LIMIT 1", [pair.round_id]);
+    const round = roundRows[0];
+    if (!round) continue;
+    const [betRows] = await connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
+      "SELECT target_id, SUM(amount) amount FROM game_shared_bets WHERE round_id = ? AND application_user_id = ? GROUP BY target_id",
+      [pair.round_id, pair.application_user_id],
+    );
+    const bets = Object.fromEntries(betRows.map((row) => [String(row.target_id), Number(row.amount)]));
+    const result = sharedRoundSettlement(game, bets, asObject(round.outcome_json));
+    const [gameSettingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
+    );
+    const rules = gameEconomyRules(gameSettingRows[0]?.setting_value);
+    const deductionRate = game === "bounty_football" ? 0 : rules.winningsDeductionRate;
+    const grossPayout = result.payout;
+    const deduction = grossPayout > result.wager && deductionRate > 0 ? Math.floor(grossPayout * deductionRate) : 0;
+    const payout = grossPayout - deduction;
+    await connection.execute(
+      "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN') ON DUPLICATE KEY UPDATE available_balance = available_balance",
+      [randomUUID(), pair.application_user_id],
+    );
+    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
+      [pair.application_user_id],
+    );
+    if (!walletRows[0]) throw new Error("The game wallet is unavailable.");
+    const balanceAfter = Number(walletRows[0].available_balance) + payout;
+    if (payout > 0) {
+      await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [balanceAfter, walletRows[0].id]);
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
+         VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
+        [randomUUID(), code("GSC"), `SHARED_GAME:${round.id}:${pair.application_user_id}:CREDIT`, pair.application_user_id, payout, `${game} shared round payout`, JSON.stringify({ game, sharedRoundId: round.id, grossPayout, deduction, rate: deductionRate })],
+      );
+    }
+    if (deduction > 0) {
+      await connection.execute(
+        `INSERT INTO ledger_transactions
+          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, amount, status, reason, metadata)
+         VALUES (?, ?, ?, 'COIN', 'GAME_WITHHOLDING', 'GAME', 'PLATFORM', ?, 'COMPLETED', ?, ?)`,
+        [randomUUID(), code("GSW"), `SHARED_GAME:${round.id}:${pair.application_user_id}:WITHHOLDING`, deduction, `${game} shared-round winnings deduction`, JSON.stringify({ game, sharedRoundId: round.id, grossPayout, netPayout: payout, rate: deductionRate })],
+      );
+    }
+    const resultId = randomUUID();
+    const clientRoundId = randomUUID();
+    const fullOutcome = {
+      ...asObject(round.outcome_json), sharedRoundId: round.id, roundNumber: Number(round.round_number),
+      grossPayout, winningsDeduction: deduction, winningsDeductionRate: deductionRate, netPayout: payout,
+    };
+    await connection.execute(
+      `INSERT INTO game_round_results
+        (id, client_round_id, application_user_id, game_name, bets_json, outcome_json, wager_total, payout_total, balance_after)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [resultId, clientRoundId, pair.application_user_id, game, JSON.stringify(bets), JSON.stringify(fullOutcome), result.wager, payout, balanceAfter],
+    );
+    await connection.execute(
+      `INSERT INTO game_shared_settlements
+        (id, round_id, application_user_id, wager_total, gross_payout, deduction_total, payout_total, balance_after, result_record_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), round.id, pair.application_user_id, result.wager, grossPayout, deduction, payout, balanceAfter, resultId],
+    );
+  }
+}
+
+async function sharedRoundStatePayload(connection: PoolConnection, identity: MobileIdentity, round: SharedRoundRow, now = new Date()) {
+  const game = round.game_name;
+  const targets = game === "luck77"
+    ? ["watermelon", "seven", "plum"]
+    : game === "bounty_football"
+      ? footballMultipliers.map((_, index) => String(index))
+      : Array.from({ length: game === "greedy_lion" ? 8 : 10 }, (_, index) => String(index));
+  const [totalRows, myRows, walletRows, playerRows, settlementRows, recentRows] = await Promise.all([
+    connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
+      "SELECT target_id, SUM(amount) amount FROM game_shared_bets WHERE round_id = ? GROUP BY target_id", [round.id]),
+    connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
+      "SELECT target_id, SUM(amount) amount FROM game_shared_bets WHERE round_id = ? AND application_user_id = ? GROUP BY target_id", [round.id, identity.userId]),
+    connection.query<(RowDataPacket & { available_balance: number })[]>(
+      "SELECT available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1", [identity.userId]),
+    connection.query<(RowDataPacket & { total: number })[]>(
+      "SELECT COUNT(DISTINCT application_user_id) total FROM game_shared_bets WHERE round_id = ?", [round.id]),
+    connection.query<RowDataPacket[]>(
+      "SELECT wager_total, gross_payout, deduction_total, payout_total, balance_after, settled_at FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1", [round.id, identity.userId]),
+    connection.query<SharedRoundRow[]>(
+      `SELECT * FROM game_shared_rounds WHERE game_name = ? AND drawing_ends_at <= UTC_TIMESTAMP(3)
+       ORDER BY round_number DESC LIMIT 12`, [game]),
+  ]);
+  const totalMap = Object.fromEntries(totalRows[0].map((row) => [String(row.target_id), Number(row.amount)]));
+  const myMap = Object.fromEntries(myRows[0].map((row) => [String(row.target_id), Number(row.amount)]));
+  const phase = sharedPhase(round, now);
+  const reveal = now >= new Date(round.drawing_ends_at);
+  const settlement = settlementRows[0][0];
+  return {
+    game,
+    serverTimestamp: now.toISOString(),
+    round: {
+      id: round.id, number: Number(round.round_number), phase: phase.phase,
+      phaseEndsAt: phase.phaseEndsAt.toISOString(), bettingEndsAt: new Date(round.betting_ends_at).toISOString(),
+    },
+    targetTotals: Object.fromEntries(targets.map((target) => [target, Number(totalMap[target] ?? 0)])),
+    myBets: Object.fromEntries(targets.map((target) => [target, Number(myMap[target] ?? 0)])),
+    walletBalance: Number(walletRows[0][0]?.available_balance ?? 0),
+    playerCount: Number(playerRows[0][0]?.total ?? 0),
+    outcome: reveal ? asObject(round.outcome_json) : null,
+    settlement: settlement ? {
+      wager: Number(settlement.wager_total), grossPayout: Number(settlement.gross_payout),
+      deduction: Number(settlement.deduction_total), payout: Number(settlement.payout_total),
+      balance: Number(settlement.balance_after), settledAt: new Date(settlement.settled_at as Date).toISOString(),
+    } : null,
+    recentResults: recentRows[0].map((item) => ({
+      roundId: item.id, roundNumber: Number(item.round_number), outcome: asObject(item.outcome_json),
+    })),
+  };
+}
+
+export async function gameSharedRoundState(identity: MobileIdentity, gameValue: string) {
+  const game = sharedGame(gameValue);
+  return withTransaction(async (connection) => {
+    await settleMaturedSharedRounds(connection, game);
+    const now = new Date();
+    const round = await ensureSharedRound(connection, game, now);
+    return sharedRoundStatePayload(connection, identity, round, now);
+  });
+}
+
+export async function placeSharedGameBets(identity: MobileIdentity, input: {
+  requestId: string; game: string; roundId: string; bets: Record<string, number>;
+}) {
+  const game = sharedGame(input.game);
+  const bets = canonicalBets(input.bets);
+  return withTransaction(async (connection) => {
+    await settleMaturedSharedRounds(connection, game);
+    const now = new Date();
+    const round = await ensureSharedRound(connection, game, now);
+    if (round.id !== input.roundId || now >= new Date(round.betting_ends_at)) throw new Error("Betting has closed for this round.");
+    const [existingRows] = await connection.query<(RowDataPacket & { round_id: string; bets_json: unknown })[]>(
+      "SELECT round_id, bets_json FROM game_shared_bet_requests WHERE application_user_id = ? AND request_id = ? LIMIT 1 FOR UPDATE",
+      [identity.userId, input.requestId],
+    );
+    if (existingRows[0]) {
+      if (String(existingRows[0].round_id) !== round.id || JSON.stringify(canonicalBets(asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
+        throw new Error("This bet request ID was already used.");
+      }
+      return sharedRoundStatePayload(connection, identity, round, now);
+    }
+    const checked = validateSharedBets(game, bets);
+    if (checked.total <= 0) throw new Error("Choose a positive game bet.");
+    const [roundWagerRows] = await connection.query<(RowDataPacket & { total: number })[]>(
+      `SELECT COALESCE(SUM(wager_total), 0) total
+       FROM game_shared_bet_requests
+       WHERE round_id = ? AND application_user_id = ?`,
+      [round.id, identity.userId],
+    );
+    const roundWager = Number(roundWagerRows[0]?.total ?? 0);
+    if (!Number.isSafeInteger(roundWager) || roundWager + checked.total > 50_000_000) {
+      throw new Error("The 50,000,000 coin round limit has been reached.");
+    }
+    await connection.execute(
+      "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN') ON DUPLICATE KEY UPDATE available_balance = available_balance",
+      [randomUUID(), identity.userId],
+    );
+    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
+      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
+      [identity.userId],
+    );
+    if (!walletRows[0] || Number(walletRows[0].available_balance) < checked.total) throw new Error("Not enough coins.");
+    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [checked.total, walletRows[0].id]);
+    const ledgerId = randomUUID();
+    await connection.execute(
+      `INSERT INTO ledger_transactions
+        (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
+       VALUES (?, ?, ?, 'COIN', 'GAME_DEBIT', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
+      [ledgerId, code("GSB"), `SHARED_BET:${identity.userId}:${input.requestId}`, identity.userId, checked.total, `${game} shared bet`, JSON.stringify({ game, sharedRoundId: round.id, requestId: input.requestId, bets: checked.bets })],
+    );
+    const requestRowId = randomUUID();
+    await connection.execute(
+      `INSERT INTO game_shared_bet_requests
+        (id, request_id, round_id, application_user_id, bets_json, wager_total, ledger_transaction_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [requestRowId, input.requestId, round.id, identity.userId, JSON.stringify(checked.bets), checked.total, ledgerId],
+    );
+    for (const [target, amount] of Object.entries(checked.bets)) {
+      if (amount <= 0) continue;
+      await connection.execute(
+        "INSERT INTO game_shared_bets (id, request_id, round_id, application_user_id, target_id, amount) VALUES (?, ?, ?, ?, ?, ?)",
+        [randomUUID(), requestRowId, round.id, identity.userId, target, amount],
+      );
+    }
+    return sharedRoundStatePayload(connection, identity, round, now);
+  });
 }
 
 function gameRoundResponse(row: RowDataPacket) {
@@ -1232,12 +1601,13 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
     const result = createServerGameOutcome(input.game, bets, targetWin);
     const grossPayout = result.payout;
     const commissionablePayout = result.commissionablePayout;
+    const effectiveDeductionRate = input.game === "bounty_football" ? 0 : rules.winningsDeductionRate;
     const winningsDeduction = commissionablePayout == null
       ? grossPayout > result.wager
-        ? Math.floor(grossPayout * rules.winningsDeductionRate)
+        ? Math.floor(grossPayout * effectiveDeductionRate)
         : 0
-      : commissionablePayout > 0
-        ? Math.max(1, Math.floor(commissionablePayout * rules.winningsDeductionRate))
+      : commissionablePayout > 0 && effectiveDeductionRate > 0
+        ? Math.max(1, Math.floor(commissionablePayout * effectiveDeductionRate))
         : 0;
     result.payout = grossPayout - winningsDeduction;
     result.outcome = {
@@ -1245,7 +1615,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       grossPayout,
       commissionablePayout: commissionablePayout ?? grossPayout,
       winningsDeduction,
-      winningsDeductionRate: rules.winningsDeductionRate,
+      winningsDeductionRate: effectiveDeductionRate,
       netPayout: result.payout,
     };
     if (before < result.wager) throw new Error("Not enough coins.");
@@ -1266,7 +1636,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
          VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
-        [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round net payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, winningsDeduction, winningsDeductionRate: rules.winningsDeductionRate })],
+        [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round net payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, winningsDeduction, winningsDeductionRate: effectiveDeductionRate })],
       );
     }
     if (winningsDeduction > 0) {
@@ -1274,7 +1644,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, amount, status, reason, metadata)
          VALUES (?, ?, ?, 'COIN', 'GAME_WITHHOLDING', 'GAME', 'PLATFORM', ?, 'COMPLETED', ?, ?)`,
-        [randomUUID(), code("GMW"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:WITHHOLDING`, winningsDeduction, `${input.game} winnings deduction`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, netPayout: result.payout, rate: rules.winningsDeductionRate })],
+        [randomUUID(), code("GMW"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:WITHHOLDING`, winningsDeduction, `${input.game} winnings deduction`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, netPayout: result.payout, rate: effectiveDeductionRate })],
       );
     }
 
@@ -1311,11 +1681,17 @@ export async function gameRoundLeaderboard(
   period: "round" | "daily" | "weekly" | "monthly" = "daily",
 ) {
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
-  const periodFilter = period === "round"
-    ? `result.created_at >= DATE_SUB(
-         (SELECT MAX(latest.created_at) FROM game_round_results latest
-          WHERE latest.game_name = ? AND latest.wager_total > 0),
-         INTERVAL 25 SECOND)`
+  const sharedLeaderboard = sharedRoundGames.has(game);
+  const periodFilter = period === "round" && sharedLeaderboard
+    ? `JSON_UNQUOTE(JSON_EXTRACT(result.outcome_json, '$.sharedRoundId')) =
+       (SELECT latest.id FROM game_shared_rounds latest
+        WHERE latest.game_name = ? AND latest.drawing_ends_at <= UTC_TIMESTAMP(3)
+        ORDER BY latest.round_number DESC LIMIT 1)`
+    : period === "round"
+      ? `result.created_at >= DATE_SUB(
+           (SELECT MAX(latest.created_at) FROM game_round_results latest
+            WHERE latest.game_name = ? AND latest.wager_total > 0),
+           INTERVAL 25 SECOND)`
     : period === "weekly"
       ? "result.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
       : period === "monthly"

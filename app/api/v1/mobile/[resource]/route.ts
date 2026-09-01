@@ -10,9 +10,11 @@ import {
   createWithdrawalRequest,
   gameRoundHistory,
   gameRoundLeaderboard,
+  gameSharedRoundState,
   mobileBootstrap,
   mutateGameWallet,
   sendGift,
+  placeSharedGameBets,
   settleGameRound,
   setFollow,
 } from "@/lib/db/repositories/mobile-product";
@@ -104,6 +106,10 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
       const game = z.enum(["teen_patti_pro", "luck77", "bounty_football", "jungle_hunt", "food_wheel", "cat_wheel", "greedy_king", "greedy_lion"]).parse(parameters.get("game"));
       const limit = z.coerce.number().int().min(1).max(20).default(10).parse(parameters.get("limit") ?? undefined);
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "game-state") {
+      const game = z.enum(["luck77", "greedy_lion", "greedy_king", "bounty_football"]).parse(new URL(request.url).searchParams.get("game"));
+      return NextResponse.json(await gameSharedRoundState(identity, game), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-leaderboard") {
       const parameters = new URL(request.url).searchParams;
@@ -360,6 +366,16 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
       }).parse(body);
       return NextResponse.json(await settleGameRound(identity, parsed), { status: 201 });
+    }
+    if (resource === "game-bets") {
+      if (!mobileCan(identity, "wallet.read")) return errorResponse(new Error("Forbidden."), 403);
+      const parsed = z.object({
+        requestId: z.string().uuid(),
+        roundId: z.string().uuid(),
+        game: z.enum(["luck77", "greedy_lion", "greedy_king", "bounty_football"]),
+        bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
+      }).parse(body);
+      return NextResponse.json(await placeSharedGameBets(identity, parsed), { status: 201 });
     }
     if (resource === "face") {
       if (!mobileCan(identity, "face.submit")) return errorResponse(new Error("Forbidden."), 403);
