@@ -35,9 +35,10 @@ export function giftDiamondValue(coinValue: number, giftCoinUnits = 100, receive
 }
 
 function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome", maximumLevel = track === "anchorIncome" ? 200 : 120) {
-  const level = Math.min(maximumLevel, Math.floor(Math.sqrt(Math.max(0, totalPoints) / 500)) + 1);
-  const start = (level - 1) * (level - 1) * 500;
-  const end = level * level * 500;
+  const pointScale = track === "anchorIncome" ? 10_000 : 5_000;
+  const level = Math.min(maximumLevel, Math.floor(Math.sqrt(Math.max(0, totalPoints) / pointScale)) + 1);
+  const start = (level - 1) * (level - 1) * pointScale;
+  const end = level * level * pointScale;
   return {
     track,
     totalPoints,
@@ -122,8 +123,8 @@ async function settingsMap() {
 async function activeRoomRows(after?: string) {
   return db().query<RowDataPacket[]>(
       `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
-              room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.country_code,
-              room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled,
+              room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.face_background_asset_id, room.country_code,
+              room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled, room.audio_join_requests_enabled,
               top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
               top_avatar.updated_at top_avatar_updated_at,
               top_user.country_code top_country, top_user.language_code top_language,
@@ -160,10 +161,12 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
     language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
     seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
     photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
+    faceBackgroundUrl: row.face_background_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.face_background_asset_id}`,
     passwordRequired: row.password_hash != null,
     chatLocked: Boolean(row.chat_locked), interactionsEnabled: Boolean(row.interactions_enabled),
     themeEnabled: Boolean(row.theme_enabled),
     pkRequestsEnabled: Boolean(row.pk_requests_enabled),
+    audioJoinRequestsEnabled: Boolean(row.audio_join_requests_enabled),
     countryCode: row.country_code,
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
     host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
@@ -577,7 +580,7 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
   return { followed };
 }
 
-export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; themeEnabled: boolean; countryCode?: string; photoDataUrl?: string; password?: string }) {
+export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; themeEnabled: boolean; countryCode?: string; photoDataUrl?: string; faceBackgroundDataUrl?: string; password?: string }) {
   const roomType = input.kind === "party" ? "PARTY" : input.kind === "face" ? "FACE" : "LIVE";
   const policy = LiveAccessPolicyService.for(identity);
   const access = roomType === "PARTY" ? policy.party : roomType === "FACE" ? policy.face : policy.video;
@@ -587,6 +590,10 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     ? await publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Room photo", { maxWidth: 1440, maxHeight: 1920 })
     : null;
   const photoAssetId = photo ? randomUUID() : null;
+  const faceBackground = input.faceBackgroundDataUrl
+    ? await publicImageFromDataUrl(input.faceBackgroundDataUrl, 1536 * 1024, "Face Live background", { maxWidth: 1440, maxHeight: 1920 })
+    : null;
+  const faceBackgroundAssetId = faceBackground ? randomUUID() : null;
   if (input.privacy === "locked" && !/^(\d{4}|\d{6}|\d{10})$/.test(input.password ?? "")) {
     throw new Error("Locked rooms require a 4, 6, or 10 digit password.");
   }
@@ -604,7 +611,7 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
        LIMIT 1 FOR UPDATE`,
       [identity.userId],
     );
-    if (!identity.hostAccessOverride && restrictionRows[0]) throw new Error("Live hosting is temporarily restricted. Check your Nazraa notifications or contact support.");
+    if (restrictionRows[0]) throw new Error("Live hosting is temporarily restricted. Check your Nazraa notifications or contact support.");
     const [rewardRuleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT id FROM host_reward_rules
        WHERE room_type = ? AND enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3)
@@ -615,9 +622,12 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     if (photo && photoAssetId) {
       await connection.execute("INSERT INTO room_photo_assets (id, owner_application_user_id, mime_type, image_data, byte_size) VALUES (?, ?, ?, ?, ?)", [photoAssetId, identity.userId, photo.mimeType, photo.data, photo.byteSize]);
     }
+    if (faceBackground && faceBackgroundAssetId) {
+      await connection.execute("INSERT INTO room_photo_assets (id, owner_application_user_id, mime_type, image_data, byte_size) VALUES (?, ?, ?, ?, ?)", [faceBackgroundAssetId, identity.userId, faceBackground.mimeType, faceBackground.data, faceBackground.byteSize]);
+    }
     await connection.execute(
-      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, password_hash, password_length, seat_count, theme_index, theme_enabled, room_photo_asset_id, country_code, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, input.countryCode ?? null, "ACTIVE"],
+      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, password_hash, password_length, seat_count, theme_index, theme_enabled, room_photo_asset_id, face_background_asset_id, country_code, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, roomType === "FACE" ? faceBackgroundAssetId : null, input.countryCode ?? null, "ACTIVE"],
     );
     await connection.execute(
       "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?)",
@@ -721,7 +731,7 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
     );
     await connection.execute(
       `UPDATE application_users
-       SET level_number = LEAST(120, FLOOR(SQRT(GREATEST(0, consumption_points + ?) / 500)) + 1),
+       SET level_number = LEAST(120, FLOOR(SQRT(GREATEST(0, consumption_points + ?) / 5000)) + 1),
            consumption_points = consumption_points + ?
        WHERE id = ?`,
       [total, total, identity.userId],
@@ -1573,7 +1583,7 @@ async function sharedRoundStatePayload(
     connection.query<RowDataPacket[]>(
       `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
               user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level
        FROM game_big_winner_events event
        INNER JOIN application_users user ON user.id = event.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
@@ -1888,7 +1898,7 @@ export async function gameSocialState(game: string) {
       connection.query<RowDataPacket[]>(
         `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
                 user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-                LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level
+                LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level
          FROM game_big_winner_events event
          INNER JOIN application_users user ON user.id = event.application_user_id
          LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id

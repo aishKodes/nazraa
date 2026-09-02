@@ -392,7 +392,7 @@ export async function rocketSnapshot(identity: MobileIdentity, roomCode: string)
         rank: index + 1,
         user: {
           id: String(row.public_id), name: String(row.full_name), avatarUrl: avatarUrl(row), country: row.country_code ?? "",
-          level: Number(row.level_number), anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 500)) + 1)),
+          level: Number(row.level_number), anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 10000)) + 1)),
           vip: Number(row.vip_tier), role: "user",
         },
         score: Number(row.total), label: "Rocket",

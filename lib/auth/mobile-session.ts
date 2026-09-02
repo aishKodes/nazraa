@@ -29,6 +29,10 @@ export type MobileIdentity = {
   agencyFaceLiveAuthorized: boolean;
   superAdminFaceLiveAuthorized: boolean;
   hostAccessOverride: boolean;
+  hostProfileStatus: string | null;
+  liveRestricted: boolean;
+  liveRestrictedUntil: string | null;
+  liveRestrictionReason: string | null;
 };
 
 const rolePermissions: Record<MobileRole, string[]> = {
@@ -230,18 +234,37 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     is_host: number;
     platform_role: string | null;
     host_access_override: number;
+    host_profile_status: string | null;
+    live_restricted: number;
+    live_restricted_until: Date | string | null;
+    live_restriction_reason: string | null;
   })[]>(
     `SELECT session.id session_id, user.id user_id, user.public_id, user.external_user_id,
             user.full_name, user.account_status, user.face_verification_status, user.is_host,
             user.agency_account_id, user.agency_face_live_authorized, user.super_admin_face_live_authorized,
             account.role platform_role,
-            (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override
+            (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override,
+            host_profile.status host_profile_status,
+            (live_restriction.id IS NOT NULL) live_restricted,
+            live_restriction.ends_at live_restricted_until,
+            live_restriction.reason live_restriction_reason
      FROM mobile_sessions session
      INNER JOIN application_users user ON user.id = session.application_user_id
      LEFT JOIN platform_accounts account
        ON account.status = 'ACTIVE'
       AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
      LEFT JOIN mobile_access_overrides access_override ON access_override.application_user_id = user.id
+     LEFT JOIN host_profiles host_profile ON host_profile.application_user_id = user.id
+     LEFT JOIN moderation_restrictions live_restriction
+       ON live_restriction.id = (
+         SELECT current_restriction.id
+         FROM moderation_restrictions current_restriction
+         WHERE current_restriction.application_user_id = user.id
+           AND current_restriction.status = 'ACTIVE'
+           AND current_restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+           AND (current_restriction.ends_at IS NULL OR current_restriction.ends_at > CURRENT_TIMESTAMP(3))
+         ORDER BY current_restriction.created_at DESC LIMIT 1
+       )
      WHERE session.token_hash = ? AND session.revoked_at IS NULL
        AND session.expires_at > CURRENT_TIMESTAMP(3) AND user.account_status = 'ACTIVE'
        AND NOT EXISTS (
@@ -270,5 +293,9 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     agencyFaceLiveAuthorized: Boolean(row.agency_face_live_authorized),
     superAdminFaceLiveAuthorized: Boolean(row.super_admin_face_live_authorized),
     hostAccessOverride: Boolean(row.host_access_override),
+    hostProfileStatus: row.host_profile_status,
+    liveRestricted: Boolean(row.live_restricted),
+    liveRestrictedUntil: row.live_restricted_until ? new Date(row.live_restricted_until).toISOString() : null,
+    liveRestrictionReason: row.live_restriction_reason,
   };
 }

@@ -295,6 +295,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         themeEnabled: z.boolean().default(false),
         countryCode: z.string().trim().toUpperCase().pipe(mobileCountryCodeSchema).optional(),
         photoDataUrl: z.string().max(2_100_000).optional(),
+        faceBackgroundDataUrl: z.string().max(2_100_000).optional(),
         password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(),
       }).refine((value) => value.kind !== "party" || Boolean(value.photoDataUrl), "Add a room photo before starting a Party.").parse(body);
       const permission = parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
@@ -320,7 +321,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       return NextResponse.json(await setRoomAdmin(identity, parsed));
     }
     if (resource === "room-kick") {
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/) }).parse(body);
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), block: z.boolean().default(false) }).parse(body);
       return NextResponse.json(await kickRoomMember(identity, parsed));
     }
     if (resource === "room-microphone") {
@@ -347,7 +348,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       return NextResponse.json(await recordFacePresenceAutoStop(identity, parsed), { status: 201 });
     }
     if (resource === "room-settings") {
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), themeIndex: z.number().int().min(0).max(20).optional(), themeEnabled: z.boolean().optional(), pkRequestsEnabled: z.boolean().optional(), chatLocked: z.boolean().optional(), password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(), removePassword: z.boolean().default(false), topPublicId: z.string().regex(/^\d+$/).optional(), resetTopDp: z.boolean().default(false) }).parse(body);
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), themeIndex: z.number().int().min(0).max(20).optional(), themeEnabled: z.boolean().optional(), pkRequestsEnabled: z.boolean().optional(), audioJoinRequestsEnabled: z.boolean().optional(), chatLocked: z.boolean().optional(), password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional(), removePassword: z.boolean().default(false), topPublicId: z.string().regex(/^\d+$/).optional(), resetTopDp: z.boolean().default(false) }).parse(body);
       return NextResponse.json(await updateRoomSettings(identity, parsed));
     }
     if (resource === "room-chat") {

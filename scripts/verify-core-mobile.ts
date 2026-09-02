@@ -58,7 +58,7 @@ async function main() {
       const [rows] = await root.query<RowDataPacket[]>("SELECT public_id FROM application_users WHERE id = ?", [id]);
       await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'COIN', 5000)", [randomUUID(), id]);
       await root.execute("INSERT INTO host_profiles (id, application_user_id, status, verification_status) VALUES (?, ?, 'ACTIVE', 'VERIFIED')", [randomUUID(), id]);
-      return { userId: id, publicId: String(rows[0].public_id), externalUserId: id, fullName: name, role: "HOST", accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: null, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true, hostAccessOverride: false };
+      return { userId: id, publicId: String(rows[0].public_id), externalUserId: id, fullName: name, role: "HOST", accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: null, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true, hostAccessOverride: false, hostProfileStatus: "ACTIVE", liveRestricted: false, liveRestrictedUntil: null, liveRestrictionReason: null };
     }
     const owner = await user("QA Room Owner");
     const guest = await user("QA Audience");
@@ -184,6 +184,18 @@ async function main() {
     await rooms.respondLiveCoHost(owner, { roomCode: videoRoomCode, targetPublicId: guest.publicId, accept: false });
     assert.equal((await rooms.refreshRoomPresence(guest, videoRoomCode)).coHostRequests?.[0]?.status, "rejected");
     console.log("PASS Video Live calls: server request, owner-only accept/reject, publish grant, disconnect and token denial");
+
+    const faceRoomCode = `QAF${Date.now()}`;
+    await product.createRoom(owner, { roomCode: faceRoomCode, kind: "face", title: "QA Face Broadcast", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    await rooms.joinLiveRoom(guest, faceRoomCode);
+    await assert.rejects(rooms.roomPublishingDecision(guest, faceRoomCode), /audio request/);
+    await rooms.requestLiveCoHost(guest, faceRoomCode);
+    await rooms.respondLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: guest.publicId, accept: true });
+    assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "speaker");
+    assert.equal((await rooms.roomPublishingDecision(guest, faceRoomCode)).allowed, true);
+    await rooms.endLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: guest.publicId });
+    assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "audience");
+    console.log("PASS Face Live broadcast roles: viewer request, owner accept, audio speaker grant, owner disconnect");
 
     await product.setFollow(owner, "user", guest.publicId, true);
     const followers = await social.socialDirectory(guest, { targetPublicId: guest.publicId, kind: "followers" });

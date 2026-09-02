@@ -34,6 +34,7 @@ async function main() {
     const catalog = await import("@/lib/db/repositories/catalog");
     const completion = await import("@/lib/db/repositories/completion-administration");
     const mobileSession = await import("@/lib/auth/mobile-session");
+    const liveAccess = await import("@/lib/services/live-access-policy");
     const password = "Local-QA-Only-2026!";
     await accounts.createInitialMaster({ publicId: 100001, fullName: "QA Master", password });
     const [seededHostRules] = await root.query<RowDataPacket[]>(
@@ -152,7 +153,7 @@ async function main() {
     for (const kind of ["LIVE", "PARTY", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, 0, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, master.account.id]);
     const [hostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
     const hostId = String(hostRows[0].id);
-    const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true, hostAccessOverride: false };
+    const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true, hostAccessOverride: false, hostProfileStatus: "ACTIVE", liveRestricted: false, liveRestrictedUntil: null, liveRestrictionReason: null };
     const sharedGame = await product.gameSharedRoundState(identity, "luck77");
     assert.equal(sharedGame.game, "luck77");
     assert.equal(sharedGame.controls.enabled, true);
@@ -310,10 +311,26 @@ async function main() {
     await mobileAdministration.reviewFaceVerification({ scope: master, requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA Master restores corrected selfie" });
     passed++;
 
+    const restrictionToken = randomUUID();
+    await root.execute(
+      "INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, expires_at) VALUES (?, ?, ?, 'QA restriction policy', DATE_ADD(NOW(), INTERVAL 1 DAY))",
+      [randomUUID(), ownUser.id, createHash("sha256").update(restrictionToken).digest("hex")],
+    );
+    const restrictionRequest = new Request("http://localhost/api/test", { headers: { authorization: `Bearer ${restrictionToken}` } });
+    assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     const temp = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 30, reason: "QA temporary Live restriction" });
+    const restrictedIdentity = await mobileSession.authenticateMobileRequest(restrictionRequest);
+    assert.ok(restrictedIdentity);
+    assert.equal(restrictedIdentity.liveRestricted, true);
+    const restrictedPolicy = liveAccess.LiveAccessPolicyService.for(restrictedIdentity);
+    assert.equal(restrictedPolicy.party.allowed, false);
+    assert.equal(restrictedPolicy.video.allowed, false);
+    assert.equal(restrictedPolicy.face.allowed, false);
+    assert.equal(restrictedPolicy.join.allowed, true);
     assert.ok((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId);
     await assert.rejects(ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA reject other branch" }));
     await root.execute("UPDATE moderation_restrictions SET ends_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE id = ?", [temp.restrictionId]);
+    assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
     assert.equal((await monitoring.listModerationHistory(await refresh(cs), [ownUser.id]))[0].status, "EXPIRED");
     passed++;

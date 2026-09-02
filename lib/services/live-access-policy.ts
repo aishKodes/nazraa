@@ -10,14 +10,23 @@ function decision(allowed: boolean, reason: string): LiveAccessDecision {
 
 export class LiveAccessPolicyService {
   static for(identity: MobileIdentity) {
+    const liveRestricted = identity.liveRestricted;
+    const hostStatusRestricted = identity.hostProfileStatus != null
+      && ["SUSPENDED", "INACTIVE"].includes(identity.hostProfileStatus);
+    const hostingRestricted = liveRestricted || hostStatusRestricted;
+    const restrictionReason = liveRestricted
+      ? `Live hosting is restricted${identity.liveRestrictedUntil ? ` until ${identity.liveRestrictedUntil}` : ""}.${identity.liveRestrictionReason ? ` ${identity.liveRestrictionReason}` : ""}`
+      : hostStatusRestricted
+        ? "Hosting is suspended or inactive. Contact your Agency or Nazraa support."
+        : "Hosting access active.";
     if (identity.hostAccessOverride) {
       return {
         browse: decision(true, "Owner test access active."),
         join: decision(true, "Owner test access active."),
         chat: decision(true, "Owner test access active."),
-        party: decision(true, "Owner test access active."),
-        video: decision(true, "Owner test access active."),
-        face: decision(true, "Owner test access active."),
+        party: decision(!hostingRestricted, hostingRestricted ? restrictionReason : "Owner test access active."),
+        video: decision(!hostingRestricted, hostingRestricted ? restrictionReason : "Owner test access active."),
+        face: decision(!hostingRestricted, hostingRestricted ? restrictionReason : "Owner test access active."),
         faceVerified: true,
         agencyApproved: true,
         agencyAuthorized: true,
@@ -26,10 +35,12 @@ export class LiveAccessPolicyService {
     }
     const faceVerified = identity.faceVerificationStatus === "VERIFIED";
     const agencyApproved = Boolean(identity.agencyAccountId);
-    const party = decision(faceVerified, faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");
-    const managedLiveAllowed = faceVerified && agencyApproved && identity.agencyFaceLiveAuthorized && identity.superAdminFaceLiveAuthorized;
+    const partyAllowed = faceVerified && !hostingRestricted;
+    const party = decision(partyAllowed, hostingRestricted ? restrictionReason : faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");
+    const managedLiveAllowed = faceVerified && agencyApproved && identity.agencyFaceLiveAuthorized && identity.superAdminFaceLiveAuthorized && !hostingRestricted;
     const managedLiveReason =
-      !faceVerified ? "Complete automatic Face Verification first."
+      hostingRestricted ? restrictionReason
+        : !faceVerified ? "Complete automatic Face Verification first."
         : !agencyApproved ? "Join an approved Agency to unlock Video or Face Live."
           : !identity.agencyFaceLiveAuthorized ? "Your Agency must authorize Video and Face Live access."
             : !identity.superAdminFaceLiveAuthorized ? "Super Admin authorization is still required."

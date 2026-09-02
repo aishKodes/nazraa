@@ -150,7 +150,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
   const user = (row: RowDataPacket) => ({
     id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
     country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number),
-    anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+    anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
     vip: Number(row.vip_tier), role: row.is_host ? "host" : "user",
   });
   return {
@@ -288,7 +288,7 @@ export async function discoveryPosts(after?: string) {
       `SELECT post.id, post.caption, post.status, post.created_at, asset.id asset_id,
               user.public_id, user.full_name, user.country_code,
               CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000)) ELSE user.avatar_url END avatar_url,
-              user.level_number, LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level, user.vip_tier, user.is_host
+              user.level_number, LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level, user.vip_tier, user.is_host
        FROM discovery_posts post
        LEFT JOIN discovery_post_assets asset ON asset.id = post.asset_id
        INNER JOIN application_users user ON user.id = post.application_user_id
@@ -386,7 +386,7 @@ export async function searchPrivateMessageRecipients(identity: MobileIdentity, r
       country: row.country_code ?? "",
       language: row.language_code ?? "en",
       level: Number(row.level_number ?? 1),
-      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
       vip: Number(row.vip_tier ?? 0),
       role: row.is_host ? "host" : "user",
       bio: String(row.bio ?? ""),
@@ -433,8 +433,8 @@ export async function socialDirectory(
     people: page.map((row) => ({
       id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
       country: row.country_code ?? "", language: row.language_code ?? "en", bio: String(row.bio ?? ""),
-      level: Math.min(120, Math.floor(Math.sqrt(Math.max(0, Number(row.consumption_points ?? 0)) / 500)) + 1),
-      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+      level: Math.min(120, Math.floor(Math.sqrt(Math.max(0, Number(row.consumption_points ?? 0)) / 5000)) + 1),
+      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
       vip: Number(row.vip_tier ?? 0), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0),
       role: row.is_host ? "host" : "user",
     })),

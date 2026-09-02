@@ -191,6 +191,13 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
     );
     const room = rooms[0];
     if (!room) throw new Error("This room is no longer active.");
+    if (room.host_application_user_id !== identity.userId) {
+      const [blocks] = await connection.query<RowDataPacket[]>(
+        "SELECT 1 FROM live_room_blocks WHERE room_id = ? AND application_user_id = ? LIMIT 1",
+        [room.id, identity.userId],
+      );
+      if (blocks[0]) throw new Error("The room owner has blocked you from this Live.");
+    }
     if (room.host_application_user_id !== identity.userId && room.password_hash) {
       if (!password || !(await bcrypt.compare(password, room.password_hash))) {
         throw new Error("The room password is incorrect.");
@@ -204,7 +211,7 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
        VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
        ON DUPLICATE KEY UPDATE seat_index = IF(left_at IS NULL, seat_index, NULL),
          room_role = IF(room_role IN ('OWNER','ADMIN') OR left_at IS NULL, room_role, VALUES(room_role)),
-         muted = IF(left_at IS NULL, muted, VALUES(muted)), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
+         muted = IF(left_at IS NULL, muted, VALUES(muted)), muted_by_staff = IF(left_at IS NULL, muted_by_staff, FALSE), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
       [room.id, identity.userId, requestedRole, requestedRole === "AUDIENCE"],
     );
     await connection.execute(
@@ -278,7 +285,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
 export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
-      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, member.room_role, member.seat_index, member.muted,
+      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, member.room_role, member.seat_index, member.muted, member.muted_by_staff,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
@@ -303,9 +310,13 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       [rows[0].id],
     );
     const [coHostRequests] = await connection.query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, request.status, request.requested_at
+      `SELECT user.public_id, user.full_name, request.status, request.requested_at,
+              CASE WHEN avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                ELSE user.avatar_url END avatar_url
        FROM live_cohost_requests request
        INNER JOIN application_users user ON user.id = request.requester_application_user_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        INNER JOIN live_room_members member
          ON member.room_id = request.room_id
         AND member.application_user_id = request.requester_application_user_id
@@ -329,9 +340,9 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     );
     const [participants] = await connection.query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name,
-              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level,
-              LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level,
-              user.vip_tier, user.country_code, user.language_code, member.room_role, member.seat_index, member.muted,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level,
+              user.vip_tier, user.country_code, user.language_code, member.room_role, member.seat_index, member.muted, member.muted_by_staff,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
@@ -355,15 +366,15 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
               sender.public_id sender_public_id, sender.full_name sender_name, sender.vip_tier sender_vip,
               sender.country_code sender_country, sender.language_code sender_language,
-              LEAST(120, FLOOR(SQRT(GREATEST(0, sender.consumption_points) / 500)) + 1) sender_level,
-              LEAST(200, FLOOR(SQRT(GREATEST(0, sender.anchor_income_points) / 500)) + 1) sender_anchor_level,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, sender.consumption_points) / 5000)) + 1) sender_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, sender.anchor_income_points) / 10000)) + 1) sender_anchor_level,
               CASE WHEN sender_avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', sender.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(sender_avatar.updated_at) * 1000))
                 ELSE sender.avatar_url END sender_avatar_url,
               receiver.public_id receiver_public_id, receiver.full_name receiver_name, receiver.vip_tier receiver_vip,
               receiver.country_code receiver_country, receiver.language_code receiver_language,
-              LEAST(120, FLOOR(SQRT(GREATEST(0, receiver.consumption_points) / 500)) + 1) receiver_level,
-              LEAST(200, FLOOR(SQRT(GREATEST(0, receiver.anchor_income_points) / 500)) + 1) receiver_anchor_level,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, receiver.consumption_points) / 5000)) + 1) receiver_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, receiver.anchor_income_points) / 10000)) + 1) receiver_anchor_level,
               CASE WHEN receiver_avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
                 ELSE receiver.avatar_url END receiver_avatar_url
@@ -388,19 +399,54 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        ORDER BY event.created_at ASC LIMIT 50`,
       [rows[0].id],
     );
+    const [gameWinEvents] = await connection.query<RowDataPacket[]>(
+      `SELECT ledger.id, ledger.amount coins, ledger.created_at,
+              COALESCE(JSON_UNQUOTE(JSON_EXTRACT(ledger.metadata, '$.game')), 'Nazraa Game') game_name,
+              user.public_id, user.full_name, user.vip_tier, user.country_code, user.language_code,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level,
+              CASE WHEN avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                ELSE user.avatar_url END avatar_url
+       FROM ledger_transactions ledger
+       INNER JOIN application_users user ON user.id = ledger.destination_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       WHERE ledger.transaction_type = 'GAME_CREDIT' AND ledger.status = 'COMPLETED'
+         AND ledger.created_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+       ORDER BY ledger.created_at ASC LIMIT 30`,
+    );
+    const [rocketEvents] = await connection.query<RowDataPacket[]>(
+      `SELECT cycle.id, cycle.rocket_level, cycle.completed_at,
+              user.public_id, user.full_name, user.vip_tier, user.country_code, user.language_code,
+              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level,
+              LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level,
+              CASE WHEN avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                ELSE user.avatar_url END avatar_url
+       FROM rocket_cycles cycle
+       INNER JOIN rocket_contributions contribution ON contribution.rocket_cycle_id = cycle.id
+         AND contribution.created_at = (SELECT MAX(latest.created_at) FROM rocket_contributions latest WHERE latest.rocket_cycle_id = cycle.id)
+       INNER JOIN application_users user ON user.id = contribution.application_user_id
+       LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+       WHERE cycle.room_id = ? AND cycle.status = 'COMPLETED'
+         AND cycle.completed_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+       ORDER BY cycle.completed_at ASC LIMIT 10`,
+      [rows[0].id],
+    );
     return {
       active: true,
       roomRole: String(rows[0].room_role).toLowerCase(), seatIndex: rows[0].seat_index,
-      muted: Boolean(rows[0].muted), chatLocked: Boolean(rows[0].chat_locked),
+      muted: Boolean(rows[0].muted), staffMuted: Boolean(rows[0].muted_by_staff), chatLocked: Boolean(rows[0].chat_locked),
       themeIndex: Number(rows[0].theme_index), themeEnabled: Boolean(rows[0].theme_enabled),
+      audioJoinRequestsEnabled: Boolean(rows[0].audio_join_requests_enabled),
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
-      coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
+      coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url, status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
       messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), actorVip: Number(row.vip_tier), body: String(row.body), createdAt: row.created_at })),
       participants: participants.map((member) => ({
         user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, country: member.country_code ?? "", language: member.language_code ?? "", level: Number(member.consumption_level), anchorLevel: Number(member.anchor_level), vip: Number(member.vip_tier), followers: Number(member.followers ?? 0), following: Number(member.following ?? 0) },
-        roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
+        roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), staffMuted: Boolean(member.muted_by_staff), receivedGiftValue: Number(member.received_gift_value),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
@@ -414,6 +460,14 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         targetPublicId: String(event.target_public_id), targetName: String(event.target_name),
         createdAt: event.created_at,
       })),
+      gameWinEvents: gameWinEvents.map((event) => ({
+        id: String(event.id), coins: Number(event.coins), game: String(event.game_name).replaceAll('_', ' '), createdAt: event.created_at,
+        user: { id: String(event.public_id), name: String(event.full_name), avatarUrl: event.avatar_url, country: event.country_code ?? "", language: event.language_code ?? "", level: Number(event.consumption_level), anchorLevel: Number(event.anchor_level), vip: Number(event.vip_tier) },
+      })),
+      rocketEvents: rocketEvents.map((event) => ({
+        id: String(event.id), level: Number(event.rocket_level), createdAt: event.completed_at,
+        user: { id: String(event.public_id), name: String(event.full_name), avatarUrl: event.avatar_url, country: event.country_code ?? "", language: event.language_code ?? "", level: Number(event.consumption_level), anchorLevel: Number(event.anchor_level), vip: Number(event.vip_tier) },
+      })),
     };
   });
 }
@@ -422,8 +476,8 @@ export async function requestLiveCoHost(identity: MobileIdentity, roomCode: stri
   const policy = LiveAccessPolicyService.for(identity);
   if (!policy.chat.allowed) throw new Error(policy.chat.reason);
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; room_role: string })[]>(
-      `SELECT room.id, room.room_type, room.host_application_user_id, member.room_role
+    const [rows] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; room_role: string; audio_join_requests_enabled: number })[]>(
+      `SELECT room.id, room.room_type, room.host_application_user_id, room.audio_join_requests_enabled, member.room_role
        FROM live_rooms room
        INNER JOIN live_room_members member
          ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
@@ -433,6 +487,7 @@ export async function requestLiveCoHost(identity: MobileIdentity, roomCode: stri
     const room = rows[0];
     if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("Join an active Video Live room first.");
     if (room.host_application_user_id === identity.userId || room.room_role === "OWNER") throw new Error("The room owner is already live.");
+    if (!Boolean(room.audio_join_requests_enabled)) throw new Error("The host is not accepting audio join requests right now.");
     if (room.room_role === "SPEAKER") return { status: "accepted" };
     await connection.execute(
       `INSERT INTO live_cohost_requests
@@ -469,8 +524,8 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     );
     const target = targets[0];
     if (!target || target.request_status !== "PENDING") throw new Error("This call request is no longer pending.");
-    if (input.accept && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
-      throw new Error("The viewer must complete Face Verification before joining the host on camera.");
+    if (input.accept && room.room_type === "LIVE" && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
+      throw new Error("The viewer must complete Face Verification before joining this Video Live.");
     }
     await connection.execute(
       `UPDATE live_cohost_requests SET status = ?, responded_at = CURRENT_TIMESTAMP(3),
@@ -479,7 +534,7 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       [input.accept ? "ACCEPTED" : "REJECTED", identity.userId, input.accept, room.id, target.id],
     );
     await connection.execute(
-      "UPDATE live_room_members SET room_role = ?, muted = ? WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      "UPDATE live_room_members SET room_role = ?, muted = ?, muted_by_staff = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [input.accept ? "SPEAKER" : "AUDIENCE", !input.accept, room.id, target.id],
     );
     return { status: input.accept ? "accepted" : "rejected" };
@@ -507,7 +562,7 @@ export async function endLiveCoHost(identity: MobileIdentity, input: { roomCode:
     const target = targets[0];
     if (!target || target.id === room.host_application_user_id) return { status: "ended" };
     await connection.execute(
-      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE, muted_by_staff = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [room.id, target.id],
     );
     await connection.execute(
@@ -549,7 +604,11 @@ export async function roomPublishingDecision(identity: MobileIdentity, roomCode:
       [room.id, identity.userId],
     );
     if (!members[0] || members[0].room_role !== "SPEAKER" || Boolean(members[0].muted)) {
-      throw new Error("The host must accept your call request before camera or microphone access.");
+      throw new Error(
+        room.room_type === "FACE"
+          ? "The host must accept your audio request before microphone access."
+          : "The host must accept your call request before camera or microphone access.",
+      );
     }
     if (!policy.chat.allowed) throw new Error(policy.chat.reason);
     return policy.chat;
@@ -611,41 +670,49 @@ export async function setRoomAdmin(identity: MobileIdentity, input: { roomCode: 
 
 export async function setRoomMemberMuted(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; muted: boolean }) {
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; target_id: string; target_role: string })[]>(
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; room_type: string; actor_role: string; target_id: string; target_role: string; muted_by_staff: number })[]>(
       `SELECT room.id room_id, actor.room_role actor_role,
-              target.application_user_id target_id, target.room_role target_role
+              room.room_type, target.application_user_id target_id, target.room_role target_role, target.muted_by_staff
        FROM live_rooms room
        INNER JOIN live_room_members actor ON actor.room_id = room.id
          AND actor.application_user_id = ? AND actor.left_at IS NULL
        INNER JOIN live_room_members target ON target.room_id = room.id AND target.left_at IS NULL
        INNER JOIN application_users target_user ON target_user.id = target.application_user_id
-       WHERE room.room_code = ? AND room.room_type = 'PARTY'
-         AND room.status IN ('ACTIVE','LOCKED') AND target_user.public_id = ?
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') AND target_user.public_id = ?
        LIMIT 1 FOR UPDATE`,
       [identity.userId, input.roomCode, input.targetPublicId],
     );
     const member = rows[0];
-    if (!member || !["OWNER", "ADMIN"].includes(member.actor_role)) {
+    if (!member) throw new Error("Both users must be active in this room.");
+    const selfAction = member.target_id === identity.userId;
+    if (!selfAction && !["OWNER", "ADMIN"].includes(member.actor_role)) {
       throw new Error("Only the Room Owner or a Room Admin can manage microphones.");
     }
-    if (member.target_id === identity.userId || member.target_role === "OWNER") {
+    if (!selfAction && member.target_role === "OWNER") {
       throw new Error("The Room Owner microphone is controlled on the owner device.");
     }
-    if (member.actor_role === "ADMIN" && member.target_role === "ADMIN") {
+    if (!selfAction && member.actor_role === "ADMIN" && member.target_role === "ADMIN") {
       throw new Error("Only the Room Owner can manage another Room Admin microphone.");
     }
+    if (selfAction && !input.muted && Boolean(member.muted_by_staff)) {
+      throw new Error("Your microphone is muted by room staff.");
+    }
     await connection.execute(
-      "UPDATE live_room_members SET muted = ? WHERE room_id = ? AND application_user_id = ?",
-      [input.muted, member.room_id, member.target_id],
+      `UPDATE live_room_members
+       SET muted = ?, muted_by_staff = IF(?, muted_by_staff, ?)
+       WHERE room_id = ? AND application_user_id = ?`,
+      [input.muted, selfAction, input.muted, member.room_id, member.target_id],
     );
-    await connection.execute(
-      `INSERT INTO audit_logs
-        (id, actor_role, action, module, target_type, target_id, new_data, reason)
-       VALUES (?, ?, ?, 'PARTY_ROOM', 'APPLICATION_USER', ?,
-         JSON_OBJECT('roomCode', ?, 'muted', ?), 'Authorized in-room microphone moderation.')`,
-      [randomUUID(), member.actor_role, input.muted ? "ROOM_MEMBER_MUTED" : "ROOM_MEMBER_UNMUTE_REQUESTED",
-        member.target_id, input.roomCode, input.muted],
-    );
+    if (!selfAction) {
+      await connection.execute(
+        `INSERT INTO audit_logs
+          (id, actor_role, action, module, target_type, target_id, new_data, reason)
+         VALUES (?, ?, ?, 'LIVE_ROOM', 'APPLICATION_USER', ?,
+           JSON_OBJECT('roomCode', ?, 'roomType', ?, 'muted', ?), 'Authorized in-room microphone moderation.')`,
+        [randomUUID(), member.actor_role, input.muted ? "ROOM_MEMBER_MUTED" : "ROOM_MEMBER_UNMUTE_REQUESTED",
+          member.target_id, input.roomCode, member.room_type, input.muted],
+      );
+    }
     return { muted: input.muted, targetPublicId: input.targetPublicId };
   });
 }
@@ -816,11 +883,11 @@ export async function recordFacePresenceAutoStop(
   });
 }
 
-export async function updateRoomSettings(identity: MobileIdentity, input: { roomCode: string; themeIndex?: number; themeEnabled?: boolean; pkRequestsEnabled?: boolean; chatLocked?: boolean; password?: string; removePassword: boolean; topPublicId?: string; resetTopDp: boolean }) {
+export async function updateRoomSettings(identity: MobileIdentity, input: { roomCode: string; themeIndex?: number; themeEnabled?: boolean; pkRequestsEnabled?: boolean; audioJoinRequestsEnabled?: boolean; chatLocked?: boolean; password?: string; removePassword: boolean; topPublicId?: string; resetTopDp: boolean }) {
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; chat_locked: number; password_hash: string | null; password_length: number | null; top_application_user_id: string | null })[]>(
+    const [rows] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; audio_join_requests_enabled: number; chat_locked: number; password_hash: string | null; password_length: number | null; top_application_user_id: string | null })[]>(
       `SELECT room.id room_id, member.room_role actor_role, room.theme_index, room.chat_locked,
-              room.password_hash, room.password_length, room.theme_enabled, room.pk_requests_enabled, room.top_application_user_id
+              room.password_hash, room.password_length, room.theme_enabled, room.pk_requests_enabled, room.audio_join_requests_enabled, room.top_application_user_id
        FROM live_rooms room INNER JOIN live_room_members member ON member.room_id = room.id
          AND member.application_user_id = ? AND member.left_at IS NULL
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
@@ -845,13 +912,13 @@ export async function updateRoomSettings(identity: MobileIdentity, input: { room
       topUserId = topRows[0].id;
     }
     await connection.execute(
-      `UPDATE live_rooms SET theme_index = ?, theme_enabled = ?, pk_requests_enabled = ?, chat_locked = ?, password_hash = ?, password_length = ?, top_application_user_id = ?,
+      `UPDATE live_rooms SET theme_index = ?, theme_enabled = ?, pk_requests_enabled = ?, audio_join_requests_enabled = ?, chat_locked = ?, password_hash = ?, password_length = ?, top_application_user_id = ?,
          privacy = IF(? IS NULL, IF(privacy = 'LOCKED', 'PUBLIC', privacy), 'LOCKED')
        WHERE id = ?`,
-      [input.themeIndex ?? Number(room.theme_index), input.themeEnabled ?? Boolean(room.theme_enabled), input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), input.chatLocked ?? Boolean(room.chat_locked), passwordHash, passwordLength, topUserId,
+      [input.themeIndex ?? Number(room.theme_index), input.themeEnabled ?? Boolean(room.theme_enabled), input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), input.audioJoinRequestsEnabled ?? Boolean(room.audio_join_requests_enabled), input.chatLocked ?? Boolean(room.chat_locked), passwordHash, passwordLength, topUserId,
         passwordHash, room.room_id],
     );
-    return { themeIndex: input.themeIndex ?? Number(room.theme_index), themeEnabled: input.themeEnabled ?? Boolean(room.theme_enabled), pkRequestsEnabled: input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), chatLocked: input.chatLocked ?? Boolean(room.chat_locked), passwordRequired: passwordHash != null, topPublicId: input.topPublicId ?? null };
+    return { themeIndex: input.themeIndex ?? Number(room.theme_index), themeEnabled: input.themeEnabled ?? Boolean(room.theme_enabled), pkRequestsEnabled: input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled), audioJoinRequestsEnabled: input.audioJoinRequestsEnabled ?? Boolean(room.audio_join_requests_enabled), chatLocked: input.chatLocked ?? Boolean(room.chat_locked), passwordRequired: passwordHash != null, topPublicId: input.topPublicId ?? null };
   });
 }
 
@@ -895,7 +962,7 @@ export async function clearRoomChat(identity: MobileIdentity, roomCode: string) 
   });
 }
 
-export async function kickRoomMember(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string }) {
+export async function kickRoomMember(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; block?: boolean }) {
   return withTransaction(async (connection) => {
     const [actors] = await connection.query<(RowDataPacket & { room_id: string; actor_role: string; target_id: string; target_role: string })[]>(
       `SELECT room.id room_id, actor.room_role actor_role, target.application_user_id target_id, target.room_role target_role
@@ -922,13 +989,21 @@ export async function kickRoomMember(identity: MobileIdentity, input: { roomCode
       "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE WHERE room_id = ? AND application_user_id = ?",
       [member.room_id, member.target_id],
     );
+    if (input.block) {
+      await connection.execute(
+        `INSERT INTO live_room_blocks (room_id, application_user_id, blocked_by_application_user_id)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE blocked_by_application_user_id = VALUES(blocked_by_application_user_id), created_at = CURRENT_TIMESTAMP(3)`,
+        [member.room_id, member.target_id, identity.userId],
+      );
+    }
     await connection.execute(
       `INSERT INTO audit_logs
         (id, actor_role, action, module, target_type, target_id, new_data, reason)
-       VALUES (?, ?, 'ROOM_MEMBER_KICKED', 'PARTY_ROOM', 'APPLICATION_USER', ?, JSON_OBJECT('roomCode', ?), 'Authorized in-room moderation action.')`,
-      [randomUUID(), member.actor_role, member.target_id, input.roomCode],
+       VALUES (?, ?, ?, 'LIVE_ROOM', 'APPLICATION_USER', ?, JSON_OBJECT('roomCode', ?, 'blocked', ?), 'Authorized in-room moderation action.')`,
+      [randomUUID(), member.actor_role, input.block ? 'ROOM_MEMBER_BLOCKED' : 'ROOM_MEMBER_KICKED', member.target_id, input.roomCode, Boolean(input.block)],
     );
-    return { kicked: true, targetPublicId: input.targetPublicId };
+    return { kicked: true, blocked: Boolean(input.block), targetPublicId: input.targetPublicId };
   });
 }
 
@@ -1102,8 +1177,8 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
       user: {
         id: String(row.public_id), name: String(row.full_name),
         avatarUrl: row.avatar_updated_at == null ? row.avatar_url : `https://nazraa.vercel.app/api/v1/mobile/avatar/${row.public_id}?v=${new Date(row.avatar_updated_at as Date).getTime()}`,
-        country: row.country_code ?? "", language: row.language_code ?? "", level: Math.max(1, Math.min(120, Math.floor(Math.sqrt(Number(row.consumption_points ?? 0) / 500)) + 1)),
-        anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 500)) + 1)),
+        country: row.country_code ?? "", language: row.language_code ?? "", level: Math.max(1, Math.min(120, Math.floor(Math.sqrt(Number(row.consumption_points ?? 0) / 5000)) + 1)),
+        anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 10000)) + 1)),
         vip: Number(row.vip_tier), role,
       },
       score, label: period,
