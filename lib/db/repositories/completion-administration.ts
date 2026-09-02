@@ -178,6 +178,14 @@ export async function setFaceLiveAuthorization(input: { scope: Scope; userPublic
     } else {
       await connection.execute("UPDATE application_users SET super_admin_face_live_authorized = ? WHERE id = ?", [input.approved, user.id]);
     }
+    const [persistedRows] = await connection.query<(RowDataPacket & { agency_face_live_authorized: number; super_admin_face_live_authorized: number })[]>(
+      "SELECT agency_face_live_authorized, super_admin_face_live_authorized FROM application_users WHERE id = ? LIMIT 1",
+      [user.id],
+    );
+    const persisted = input.authorizationType === "AGENCY_FACE_LIVE"
+      ? Boolean(persistedRows[0]?.agency_face_live_authorized)
+      : Boolean(persistedRows[0]?.super_admin_face_live_authorized);
+    if (persisted !== input.approved) throw new Error("Live authorization was not persisted. No success was recorded.");
     await connection.execute(
       `INSERT INTO live_access_authorization_history
         (id, application_user_id, authorization_type, decision, actor_account_id, reason)

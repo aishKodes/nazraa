@@ -120,10 +120,14 @@ async function activeRoomRows(after?: string) {
               top_avatar.updated_at top_avatar_updated_at,
               top_user.country_code top_country, top_user.language_code top_language,
               top_user.anchor_income_points top_anchor_points, top_user.level_number top_level, top_user.vip_tier top_vip,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = top_user.id) top_followers,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = top_user.id) top_following,
               room.status, (SELECT COUNT(*) FROM live_room_members recent WHERE recent.room_id = room.id AND recent.left_at IS NULL AND recent.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE) audience_count,
               user.public_id host_public_id, user.full_name host_name, user.anchor_income_points host_anchor_points, user.level_number host_level,
               user.vip_tier host_vip, user.avatar_url host_avatar_url, host_avatar.updated_at host_avatar_updated_at, user.country_code host_country,
               user.language_code host_language,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) host_followers,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) host_following,
               (SELECT operator.role FROM platform_accounts operator
                WHERE operator.status = 'ACTIVE' AND
                  (operator.application_user_id = user.id OR operator.application_user_id = user.external_user_id
@@ -156,11 +160,11 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
     host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
       country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level), anchorLevel: levelProgress(Number(row.host_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
-      vip: Number(row.host_vip), role: productRole(row.host_platform_role, true) },
+      vip: Number(row.host_vip), followers: Number(row.host_followers ?? 0), following: Number(row.host_following ?? 0), role: productRole(row.host_platform_role, true) },
     topUser: row.top_public_id == null ? null : {
       id: String(row.top_public_id), name: String(row.top_name), avatarUrl: mobileAvatarUrl(row, "top_"),
       country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level), anchorLevel: levelProgress(Number(row.top_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
-      vip: Number(row.top_vip), role: "user",
+      vip: Number(row.top_vip), followers: Number(row.top_followers ?? 0), following: Number(row.top_following ?? 0), role: "user",
     },
     managers: [], participants: [], giftEvents: [],
   };
@@ -204,8 +208,14 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       public_id: number; full_name: string; avatar_url: string | null; country_code: string | null;
       date_of_birth: string | null; gender: string | null; bio: string; language_code: string; whatsapp_e164: string | null;
       level_number: number; vip_tier: number; consumption_points: number; anchor_income_points: number;
-      face_verification_status: string; is_host: number;
-    })[]>("SELECT public_id, full_name, avatar_url, country_code, date_of_birth, gender, bio, language_code, whatsapp_e164, level_number, vip_tier, consumption_points, anchor_income_points, face_verification_status, is_host FROM application_users WHERE id = ? LIMIT 1", [identity.userId]),
+      face_verification_status: string; is_host: number; followers: number; following: number;
+    })[]>(`SELECT user.public_id, user.full_name, user.avatar_url, user.country_code, user.date_of_birth,
+                   user.gender, user.bio, user.language_code, user.whatsapp_e164, user.level_number,
+                   user.vip_tier, user.consumption_points, user.anchor_income_points,
+                   user.face_verification_status, user.is_host,
+                   (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
+                   (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following
+            FROM application_users user WHERE user.id = ? LIMIT 1`, [identity.userId]),
     db().query<(RowDataPacket & { asset_type: string; available_balance: number; reserved_balance: number })[]>("SELECT asset_type, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ?", [identity.userId]),
     db().query<RowDataPacket[]>(
       `SELECT id, transaction_code, asset_type, transaction_type, source_id, destination_type, destination_id, amount, reason, created_at
@@ -218,7 +228,9 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     activeRoomRows(),
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at, user.country_code, user.language_code,
-              user.level_number, user.anchor_income_points, user.vip_tier, user.is_host,
+              user.level_number, user.consumption_points, user.anchor_income_points, user.vip_tier, user.is_host,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               account.role platform_role
        FROM application_users user
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
@@ -352,6 +364,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
       whatsappE164: profile.whatsapp_e164, level: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel).level,
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
+      followers: Number(profile.followers), following: Number(profile.following),
       permissions: permissionsForMobileRole(identity.role),
     },
     config: {
@@ -371,7 +384,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
       country: row.country_code ?? "", language: row.language_code ?? "", level: levelProgress(Number(row.consumption_points ?? 0), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumActorLevel).level,
-      vip: Number(row.vip_tier), role: productRole(row.platform_role, row.is_host) })),
+      vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host) })),
     gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({

@@ -284,7 +284,14 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
          AND (id = ? OR status IN ('PENDING','PROCESSING','RETRY','DUPLICATE'))`,
       [input.decision, input.scope.account.id, input.reason, input.decision, request.application_user_id, request.id],
     );
-    await connection.execute("UPDATE application_users SET face_verification_status = ? WHERE id = ?", [input.decision, request.application_user_id]);
+    await connection.execute(
+      `UPDATE application_users
+       SET face_verification_status = ?,
+           agency_face_live_authorized = CASE WHEN ? = 'VERIFIED' THEN agency_face_live_authorized ELSE FALSE END,
+           super_admin_face_live_authorized = CASE WHEN ? = 'VERIFIED' THEN super_admin_face_live_authorized ELSE FALSE END
+       WHERE id = ?`,
+      [input.decision, input.decision, input.decision, request.application_user_id],
+    );
     await connection.execute(
       `UPDATE private_documents document
        INNER JOIN face_verification_requests face_request ON face_request.id = document.owner_id
@@ -293,6 +300,13 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
       [input.decision, request.application_user_id],
     );
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'FACE_VERIFICATION', ?, ?, 'face')", [randomUUID(), request.application_user_id, input.decision === "VERIFIED" ? "Face verification approved" : "Face verification needs attention", input.decision === "VERIFIED" ? "Your Face Live verification is active." : input.reason]);
+    const [persistedRows] = await connection.query<(RowDataPacket & { face_verification_status: string })[]>(
+      "SELECT face_verification_status FROM application_users WHERE id = ? LIMIT 1",
+      [request.application_user_id],
+    );
+    if (persistedRows[0]?.face_verification_status !== input.decision) {
+      throw new Error("Verification was not persisted. No success was recorded.");
+    }
     await audit(connection, { scope: input.scope, action: "face_verification.review", module: "face_verification", targetType: "face_verification_request", targetId: request.id, reason: input.reason, previous: { status: request.status }, next: { status: input.decision } });
   });
 }

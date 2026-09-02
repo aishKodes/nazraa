@@ -256,6 +256,15 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
       "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?",
       [room.id, identity.userId],
     );
+    if (["LIVE", "FACE"].includes(room.room_type)) {
+      await connection.execute(
+        `UPDATE live_cohost_requests
+         SET status = CASE WHEN status = 'PENDING' THEN 'CANCELED' ELSE 'ENDED' END,
+             ended_at = CURRENT_TIMESTAMP(3)
+         WHERE room_id = ? AND requester_application_user_id = ? AND status IN ('PENDING','ACCEPTED')`,
+        [room.id, identity.userId],
+      );
+    }
     await connection.execute(
       `UPDATE live_rooms SET audience_count = (
          SELECT COUNT(*) FROM live_room_members WHERE room_id = ? AND left_at IS NULL
@@ -287,6 +296,25 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        WHERE request.room_id = ? AND member.left_at IS NULL AND request.requested_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
          AND (request.application_user_id = ? OR (? IN ('OWNER','ADMIN') AND request.status = 'PENDING'))
        ORDER BY request.requested_at LIMIT 50`, [rows[0].id, identity.userId, rows[0].room_role]);
+    await connection.execute(
+      `UPDATE live_cohost_requests SET status = 'EXPIRED', ended_at = CURRENT_TIMESTAMP(3)
+       WHERE room_id = ? AND status = 'PENDING'
+         AND requested_at < CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE`,
+      [rows[0].id],
+    );
+    const [coHostRequests] = await connection.query<RowDataPacket[]>(
+      `SELECT user.public_id, user.full_name, request.status, request.requested_at
+       FROM live_cohost_requests request
+       INNER JOIN application_users user ON user.id = request.requester_application_user_id
+       INNER JOIN live_room_members member
+         ON member.room_id = request.room_id
+        AND member.application_user_id = request.requester_application_user_id
+       WHERE request.room_id = ? AND member.left_at IS NULL
+         AND (request.requester_application_user_id = ?
+           OR (? = 'OWNER' AND request.status = 'PENDING'))
+       ORDER BY request.requested_at LIMIT 25`,
+      [rows[0].id, identity.userId, rows[0].room_role],
+    );
     const [messages] = await connection.query<RowDataPacket[]>(
       `SELECT message.id, user.full_name, user.vip_tier, message.body, message.created_at FROM live_room_messages message
        INNER JOIN application_users user ON user.id = message.sender_application_user_id
@@ -304,6 +332,8 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 500)) + 1) consumption_level,
               LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 500)) + 1) anchor_level,
               user.vip_tier, user.country_code, user.language_code, member.room_role, member.seat_index, member.muted,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
+              (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url,
@@ -366,9 +396,10 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
+      coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
       messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), actorVip: Number(row.vip_tier), body: String(row.body), createdAt: row.created_at })),
       participants: participants.map((member) => ({
-        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, country: member.country_code ?? "", language: member.language_code ?? "", level: Number(member.consumption_level), anchorLevel: Number(member.anchor_level), vip: Number(member.vip_tier) },
+        user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, country: member.country_code ?? "", language: member.language_code ?? "", level: Number(member.consumption_level), anchorLevel: Number(member.anchor_level), vip: Number(member.vip_tier), followers: Number(member.followers ?? 0), following: Number(member.following ?? 0) },
         roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), receivedGiftValue: Number(member.received_gift_value),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
@@ -384,6 +415,107 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         createdAt: event.created_at,
       })),
     };
+  });
+}
+
+export async function requestLiveCoHost(identity: MobileIdentity, roomCode: string) {
+  const policy = LiveAccessPolicyService.for(identity);
+  if (!policy.chat.allowed) throw new Error(policy.chat.reason);
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; room_role: string })[]>(
+      `SELECT room.id, room.room_type, room.host_application_user_id, member.room_role
+       FROM live_rooms room
+       INNER JOIN live_room_members member
+         ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
+      [identity.userId, roomCode],
+    );
+    const room = rows[0];
+    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("Join an active Video Live room first.");
+    if (room.host_application_user_id === identity.userId || room.room_role === "OWNER") throw new Error("The room owner is already live.");
+    if (room.room_role === "SPEAKER") return { status: "accepted" };
+    await connection.execute(
+      `INSERT INTO live_cohost_requests
+        (id, room_id, requester_application_user_id, status, requested_at, responded_at, responder_application_user_id, ended_at)
+       VALUES (?, ?, ?, 'PENDING', CURRENT_TIMESTAMP(3), NULL, NULL, NULL)
+       ON DUPLICATE KEY UPDATE status = 'PENDING', requested_at = CURRENT_TIMESTAMP(3),
+         responded_at = NULL, responder_application_user_id = NULL, ended_at = NULL`,
+      [randomUUID(), room.id, identity.userId],
+    );
+    return { status: "pending" };
+  });
+}
+
+export async function respondLiveCoHost(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; accept: boolean }) {
+  return withTransaction(async (connection) => {
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string })[]>(
+      "SELECT id, room_type, host_application_user_id FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
+      [input.roomCode],
+    );
+    const room = rooms[0];
+    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("This Video Live room is no longer active.");
+    if (room.host_application_user_id !== identity.userId) throw new Error("Only the room owner can accept call requests.");
+    const [targets] = await connection.query<(RowDataPacket & { id: string; face_verification_status: string; request_status: string })[]>(
+      `SELECT user.id, user.face_verification_status, request.status request_status
+       FROM application_users user
+       INNER JOIN live_room_members member
+         ON member.application_user_id = user.id AND member.room_id = ? AND member.left_at IS NULL
+       INNER JOIN live_cohost_requests request
+         ON request.requester_application_user_id = user.id AND request.room_id = member.room_id
+       WHERE user.public_id = ? LIMIT 1 FOR UPDATE`,
+      [room.id, input.targetPublicId],
+    );
+    const target = targets[0];
+    if (!target || target.request_status !== "PENDING") throw new Error("This call request is no longer pending.");
+    if (input.accept && target.face_verification_status !== "VERIFIED") {
+      throw new Error("The viewer must complete Face Verification before joining the host on camera.");
+    }
+    await connection.execute(
+      `UPDATE live_cohost_requests SET status = ?, responded_at = CURRENT_TIMESTAMP(3),
+         responder_application_user_id = ?, ended_at = CASE WHEN ? THEN NULL ELSE CURRENT_TIMESTAMP(3) END
+       WHERE room_id = ? AND requester_application_user_id = ?`,
+      [input.accept ? "ACCEPTED" : "REJECTED", identity.userId, input.accept, room.id, target.id],
+    );
+    await connection.execute(
+      "UPDATE live_room_members SET room_role = ?, muted = ? WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      [input.accept ? "SPEAKER" : "AUDIENCE", !input.accept, room.id, target.id],
+    );
+    return { status: input.accept ? "accepted" : "rejected" };
+  });
+}
+
+export async function endLiveCoHost(identity: MobileIdentity, input: { roomCode: string; targetPublicId?: string }) {
+  return withTransaction(async (connection) => {
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; host_application_user_id: string })[]>(
+      "SELECT id, host_application_user_id FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
+      [input.roomCode],
+    );
+    const room = rooms[0];
+    if (!room) return { status: "ended" };
+    const targetPublicId = input.targetPublicId ?? identity.publicId;
+    if (targetPublicId !== identity.publicId && room.host_application_user_id !== identity.userId) {
+      throw new Error("Only the room owner can disconnect another co-host.");
+    }
+    const [targets] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT user.id FROM application_users user
+       INNER JOIN live_room_members member ON member.application_user_id = user.id
+       WHERE member.room_id = ? AND member.left_at IS NULL AND user.public_id = ? LIMIT 1 FOR UPDATE`,
+      [room.id, targetPublicId],
+    );
+    const target = targets[0];
+    if (!target || target.id === room.host_application_user_id) return { status: "ended" };
+    await connection.execute(
+      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      [room.id, target.id],
+    );
+    await connection.execute(
+      `UPDATE live_cohost_requests
+       SET status = CASE WHEN status = 'PENDING' THEN 'CANCELED' ELSE 'ENDED' END,
+           ended_at = CURRENT_TIMESTAMP(3)
+       WHERE room_id = ? AND requester_application_user_id = ? AND status IN ('PENDING','ACCEPTED')`,
+      [room.id, target.id],
+    );
+    return { status: "ended" };
   });
 }
 
@@ -409,7 +541,17 @@ export async function roomPublishingDecision(identity: MobileIdentity, roomCode:
     }
     return policy.chat;
   }
-  if (room.host_application_user_id !== identity.userId) throw new Error("Only the room owner can publish a Live stream.");
+  if (room.host_application_user_id !== identity.userId) {
+    const [members] = await db().query<(RowDataPacket & { room_role: string; muted: number })[]>(
+      "SELECT room_role, muted FROM live_room_members WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL LIMIT 1",
+      [room.id, identity.userId],
+    );
+    if (!members[0] || members[0].room_role !== "SPEAKER" || Boolean(members[0].muted)) {
+      throw new Error("The host must accept your call request before camera or microphone access.");
+    }
+    if (!policy.chat.allowed) throw new Error(policy.chat.reason);
+    return policy.chat;
+  }
   const access = room.room_type === "FACE" ? policy.face : policy.video;
   if (!access.allowed) throw new Error(access.reason);
   return access;
@@ -849,6 +991,10 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       [session.ended_at, validSeconds, eligibleSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
     );
     await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [session.room_id]);
+    await connection.execute(
+      "UPDATE live_cohost_requests SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND status IN ('PENDING','ACCEPTED')",
+      [session.room_id],
+    );
     await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, ?), audience_count = 0 WHERE id = ?", [session.ended_at, session.room_id]);
     return { transactionId: rewardCode, roomType: session.room_type.toLowerCase(), validSeconds, eligibleSeconds, rewardCoins };
   });

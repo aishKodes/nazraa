@@ -23,6 +23,9 @@ import {
   clearRoomChat,
   closePkSession,
   recordFacePresenceAutoStop,
+  requestLiveCoHost,
+  respondLiveCoHost,
+  endLiveCoHost,
   createPkSession,
   exchangeDiamonds,
   finalizeLiveSession,
@@ -347,6 +350,25 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "room-chat-clear") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
       return NextResponse.json(await clearRoomChat(identity, parsed.roomCode));
+    }
+    if (resource === "live-cohost-request") {
+      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
+      return NextResponse.json(await requestLiveCoHost(identity, parsed.roomCode), { status: 201 });
+    }
+    if (resource === "live-cohost-response") {
+      const parsed = z.object({
+        roomCode: z.string().trim().min(3).max(80),
+        targetPublicId: z.string().regex(/^\d+$/),
+        accept: z.boolean(),
+      }).parse(body);
+      return NextResponse.json(await respondLiveCoHost(identity, parsed));
+    }
+    if (resource === "live-cohost-end") {
+      const parsed = z.object({
+        roomCode: z.string().trim().min(3).max(80),
+        targetPublicId: z.string().regex(/^\d+$/).optional(),
+      }).parse(body);
+      return NextResponse.json(await endLiveCoHost(identity, parsed));
     }
     if (resource === "live-end") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);

@@ -42,6 +42,7 @@ async function main() {
     const country = await admin.createPlatformAccount({ scope: master, role: "COUNTRY_MANAGER", fullName: "QA Country", countryCode: "IN", password: "Local-QA-Only-2026!", documents: [] });
     const superAdmin = await admin.createPlatformAccount({ scope: master, role: "SUPER_ADMIN", requestedParentId: country.accountId, fullName: "QA Super Admin", countryCode: "IN", password: "Local-QA-Only-2026!", documents: [] });
     const parent = await admin.createPlatformAccount({ scope: master, role: "ADMIN", requestedParentId: superAdmin.accountId, fullName: "QA Parent Admin", countryCode: "IN", password: "Local-QA-Only-2026!", documents: [] });
+    const qaAgency = await admin.createPlatformAccount({ scope: master, role: "AGENCY", requestedParentId: parent.accountId, fullName: "QA Agency", countryCode: "IN", password: "Local-QA-Only-2026!", documents: [] });
     const parentAccount = (await accounts.accountByManagementId(String(parent.publicId)))!;
     const parentScope = await accounts.scopeFor(parentAccount);
     for (const kind of ["PARTY", "LIVE", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, ?, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, kind === "PARTY" ? 0 : 3500, master.account.id]);
@@ -59,6 +60,8 @@ async function main() {
     const guest = await user("QA Audience");
     const roomAdmin = await user("QA Room Admin");
     const stranger = await user("QA Other Branch");
+    owner.agencyAccountId = qaAgency.accountId;
+    await root.execute("UPDATE application_users SET agency_account_id = ? WHERE id = ?", [qaAgency.accountId, owner.userId]);
     const png = await sharp({ create: { width: 100, height: 100, channels: 3, background: "#7450ad" } }).png().toBuffer();
     const photo = `data:image/png;base64,${png.toString("base64")}`;
     const image = await images.publicImageFromDataUrl(photo, 1_500_000, "QA photo");
@@ -160,6 +163,32 @@ async function main() {
     await seats.actOnRoomSeat(roomAdmin, { roomCode, action: "unlock", seatIndex: 2 });
     assert.deepEqual((await rooms.refreshRoomPresence(owner, roomCode)).lockedSeatIndexes, []);
     console.log("PASS seat permissions: Couple Seats stay empty; per-seat Lock/Unlock persists server-side; request/accept, assignment, rejection, leave and foreign denial");
+
+    const videoRoomCode = `QAV${Date.now()}`;
+    await product.createRoom(owner, { roomCode: videoRoomCode, kind: "live", title: "QA Video Live", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    await rooms.joinLiveRoom(guest, videoRoomCode);
+    await rooms.requestLiveCoHost(guest, videoRoomCode);
+    assert.equal((await rooms.refreshRoomPresence(owner, videoRoomCode)).coHostRequests?.[0]?.userId, guest.publicId);
+    await assert.rejects(rooms.respondLiveCoHost(stranger, { roomCode: videoRoomCode, targetPublicId: guest.publicId, accept: true }));
+    await rooms.respondLiveCoHost(owner, { roomCode: videoRoomCode, targetPublicId: guest.publicId, accept: true });
+    assert.equal((await rooms.refreshRoomPresence(guest, videoRoomCode)).roomRole, "speaker");
+    assert.equal((await rooms.roomPublishingDecision(guest, videoRoomCode)).allowed, true);
+    await rooms.endLiveCoHost(guest, { roomCode: videoRoomCode });
+    assert.equal((await rooms.refreshRoomPresence(guest, videoRoomCode)).roomRole, "audience");
+    await assert.rejects(rooms.roomPublishingDecision(guest, videoRoomCode));
+    await rooms.requestLiveCoHost(guest, videoRoomCode);
+    await rooms.respondLiveCoHost(owner, { roomCode: videoRoomCode, targetPublicId: guest.publicId, accept: false });
+    assert.equal((await rooms.refreshRoomPresence(guest, videoRoomCode)).coHostRequests?.[0]?.status, "rejected");
+    console.log("PASS Video Live calls: server request, owner-only accept/reject, publish grant, disconnect and token denial");
+
+    await product.setFollow(owner, "user", guest.publicId, true);
+    const guestDirectory = (await product.mobileBootstrap(owner)).people.find((entry) => entry.id === guest.publicId);
+    const guestProfile = (await product.mobileBootstrap(guest)).profile;
+    assert.equal(guestDirectory?.followers, 1);
+    assert.equal(guestProfile.followers, 1);
+    await product.setFollow(owner, "user", guest.publicId, false);
+    assert.equal((await product.mobileBootstrap(guest)).profile.followers, 0);
+    console.log("PASS follow/fans: persisted follow state and live follower counts");
 
     const ownerBeforeGift = await product.mobileBootstrap(owner);
     const guestBeforeGift = await product.mobileBootstrap(guest);
