@@ -1225,8 +1225,8 @@ function createServerGameOutcome(game: string, bets: Record<string, number>, tar
   throw new Error("This game is unavailable.");
 }
 
-const sharedRoundGames = new Set(["luck77", "greedy_lion", "greedy_king", "bounty_football"]);
-type SharedRoundGame = "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
+const sharedRoundGames = new Set([teenPattiGame, "luck77", "greedy_lion", "greedy_king", "bounty_football"]);
+type SharedRoundGame = "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
 type SharedRoundRow = RowDataPacket & {
   id: string; game_name: SharedRoundGame; round_number: number;
   betting_starts_at: Date; betting_ends_at: Date; drawing_ends_at: Date; result_ends_at: Date;
@@ -1239,6 +1239,21 @@ function sharedGame(value: string): SharedRoundGame {
 }
 
 async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig) {
+  if (game === teenPattiGame) {
+    const hands = buildTeenPattiHands();
+    const winnerLane = strongestTeenPattiLane(hands);
+    const winner = hands[winnerLane];
+    return {
+      hands,
+      winnerLane,
+      winningCategory: winner.category,
+      winningLabel: winner.label,
+      crownMultiplier: winner.multiplier,
+      normalMultipliers: teenPattiLaneMultiplierTenths.map((value) => value / 10),
+      normalMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
+      payoutMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
+    };
+  }
   if (game === "luck77") {
     const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum"] as const;
     const choices = ["seven", "watermelon", "plum"] as const;
@@ -1305,6 +1320,13 @@ function validateSharedBets(game: SharedRoundGame, input: Record<string, number>
     if (checked.total > 0 && checked.total < config.minimumBet) throw new Error(`The minimum bet is ${config.minimumBet} coins.`);
     return checked;
   };
+  if (game === teenPattiGame) {
+    const checked = validate(["0", "1", "2", "crown"]);
+    if (["0", "1", "2"].filter((key) => checked.bets[key] > 0).length > 2) {
+      throw new Error("You can bet on up to 2 hands.");
+    }
+    return checked;
+  }
   if (game === "luck77") return validate(["watermelon", "seven", "plum"]);
   if (game === "bounty_football") return validate(footballMultipliers.map((_, index) => String(index)));
   const count = game === "greedy_lion" ? 8 : 10;
@@ -1313,6 +1335,19 @@ function validateSharedBets(game: SharedRoundGame, input: Record<string, number>
 
 function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, number>, outcome: Record<string, unknown>, config: GameRuntimeConfig): ServerGameOutcome {
   const checked = validateSharedBets(game, bets, config);
+  if (game === teenPattiGame) {
+    const winnerLane = Number(outcome.winnerLane);
+    if (!Number.isInteger(winnerLane) || winnerLane < 0 || winnerLane > 2) throw new Error("The shared Teen Patti result is invalid.");
+    const crownMultiplier = Number(outcome.crownMultiplier ?? 0);
+    const normalPayout = teenPattiLanePayout(winnerLane, checked.bets[String(winnerLane)] ?? 0);
+    const crownPayout = (checked.bets.crown ?? 0) * crownMultiplier;
+    return {
+      outcome: { ...outcome, normalPayout, crownPayout, crownWon: crownPayout > 0 },
+      wager: checked.total,
+      payout: normalPayout + crownPayout,
+      commissionablePayout: normalPayout,
+    };
+  }
   if (game === "luck77") {
     const winner = String(outcome.winner);
     const multiplier = winner === "seven" ? 8 : 2;
@@ -1402,7 +1437,8 @@ async function settleMaturedSharedRounds(connection: PoolConnection, game: Share
     const rules = gameEconomyRules(settings);
     const deductionRate = game === "bounty_football" ? 0 : rules.winningsDeductionRate;
     const grossPayout = result.payout;
-    const deduction = grossPayout > result.wager && deductionRate > 0 ? Math.floor(grossPayout * deductionRate) : 0;
+    const deductionBase = result.commissionablePayout ?? grossPayout;
+    const deduction = grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
     const payout = grossPayout - deduction;
     await connection.execute(
       "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN') ON DUPLICATE KEY UPDATE available_balance = available_balance",
@@ -1468,8 +1504,10 @@ async function sharedRoundStatePayload(
   now = new Date(),
 ) {
   const game = round.game_name;
-  const targets = game === "luck77"
-    ? ["watermelon", "seven", "plum"]
+  const targets = game === teenPattiGame
+    ? ["0", "1", "2", "crown"]
+    : game === "luck77"
+      ? ["watermelon", "seven", "plum"]
     : game === "bounty_football"
       ? footballMultipliers.map((_, index) => String(index))
       : Array.from({ length: game === "greedy_lion" ? 8 : 10 }, (_, index) => String(index));
@@ -1501,13 +1539,14 @@ async function sharedRoundStatePayload(
       [game],
     ),
     connection.query<RowDataPacket[]>(
-      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at
+      `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
+              bet.target_id, SUM(bet.amount) bet_amount, MAX(bet.created_at) last_bet_at
        FROM game_shared_bets bet
        INNER JOIN application_users user ON user.id = bet.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE bet.round_id = ?
-       GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at
-       ORDER BY MIN(bet.created_at), user.public_id LIMIT 50`,
+       GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at, bet.target_id
+       ORDER BY MIN(bet.created_at), user.public_id, bet.target_id LIMIT 500`,
       [round.id],
     ),
     game === "greedy_lion" || game === "greedy_king"
@@ -1522,6 +1561,20 @@ async function sharedRoundStatePayload(
   const phase = sharedPhase(round, now);
   const reveal = now >= new Date(round.drawing_ends_at);
   const settlement = settlementRows[0][0];
+  const playersById = new Map<string, { publicId: string; name: string; avatarUrl: string | null; bets: Record<string, number>; totalWager: number; lastBetAt: string }>();
+  for (const item of playerListRows[0]) {
+    const publicId = String(item.public_id);
+    const current = playersById.get(publicId) ?? {
+      publicId, name: String(item.full_name), avatarUrl: mobileAvatarUrl(item), bets: {} as Record<string, number>, totalWager: 0,
+      lastBetAt: new Date(item.last_bet_at as Date).toISOString(),
+    };
+    const amount = Number(item.bet_amount ?? 0);
+    current.bets[String(item.target_id)] = amount;
+    current.totalWager += amount;
+    const timestamp = new Date(item.last_bet_at as Date).toISOString();
+    if (timestamp > current.lastBetAt) current.lastBetAt = timestamp;
+    playersById.set(publicId, current);
+  }
   return {
     game,
     serverTimestamp: now.toISOString(),
@@ -1533,9 +1586,7 @@ async function sharedRoundStatePayload(
     myBets: Object.fromEntries(targets.map((target) => [target, Number(myMap[target] ?? 0)])),
     walletBalance: Number(walletRows[0][0]?.available_balance ?? 0),
     playerCount: Number(playerRows[0][0]?.total ?? 0),
-    players: playerListRows[0].map((item) => ({
-      publicId: String(item.public_id), name: String(item.full_name), avatarUrl: mobileAvatarUrl(item),
-    })),
+    players: [...playersById.values()].slice(0, 50),
     progressivePool: Number((poolRows[0] as (RowDataPacket & { amount?: number })[])[0]?.amount ?? 0),
     controls: {
       enabled: config.enabled, maintenance: config.maintenance,
@@ -1667,7 +1718,10 @@ function gameRoundResponse(row: RowDataPacket) {
 
 export async function settleGameRound(identity: MobileIdentity, input: ServerGameRoundInput) {
   if (!supportedRoundGames.has(input.game)) throw new Error("This game is unavailable.");
-  if (sharedRoundGames.has(input.game)) throw new Error("Update Nazraa to play this shared game.");
+  // Keep Teen Patti compatible with the immediately previous mobile release
+  // while current clients use its global shared round. Other shared games have
+  // never shipped through this legacy endpoint.
+  if (sharedRoundGames.has(input.game) && input.game !== teenPattiGame) throw new Error("Update Nazraa to play this shared game.");
   const bets = canonicalBets(input.bets);
   return withTransaction(async (connection) => {
     // Lock the existing wallet first for every round. Concurrent retries must

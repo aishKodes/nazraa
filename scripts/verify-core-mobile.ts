@@ -389,7 +389,7 @@ async function main() {
     const repeatedDebit = await product.mutateGameWallet(owner, { clientTransactionId: gameTransactionId, direction: "DEBIT", amount: 25, game: "Luck77", reason: "QA repeated wager" });
     assert.equal(repeatedDebit.coinBalance, gameDebit.coinBalance, "game wallet mutation must be idempotent");
     const diamondsBeforeGame = (await product.mobileBootstrap(owner)).wallet.diamonds;
-    async function completeSharedRound(game: "luck77" | "bounty_football" | "greedy_king" | "greedy_lion", bets: Record<string, number>) {
+    async function completeSharedRound(game: "teen_patti_pro" | "luck77" | "bounty_football" | "greedy_king" | "greedy_lion", bets: Record<string, number>) {
       const before = await product.gameSharedRoundState(owner, game);
       // The QA call can land during DRAWING/RESULT. Keep this deterministic
       // without sleeping by reopening only this temporary database round.
@@ -430,6 +430,11 @@ async function main() {
     assert.ok(["watermelon", "seven", "plum"].includes(String(gameRound.outcome.winner)));
     const roundHistory = await product.gameRoundHistory(owner, "luck77", 10);
     assert.equal(roundHistory.rounds[0]?.outcome.sharedRoundId, gameRound.round.id);
+    assert.equal(gameRound.players.find((player) => player.publicId === owner.publicId)?.bets.watermelon, 500);
+    const sharedTeenRound = await completeSharedRound("teen_patti_pro", { "0": 500, "1": 0, "2": 0, crown: 500 });
+    assert.notEqual(sharedTeenRound.round.number, 1, "Teen Patti must expose the global server round number");
+    assert.equal(Array.isArray(sharedTeenRound.outcome.hands) && sharedTeenRound.outcome.hands.length, 3);
+    assert.equal(sharedTeenRound.players.find((player) => player.publicId === owner.publicId)?.bets.crown, 500);
     const teenRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",

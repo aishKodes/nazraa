@@ -294,6 +294,13 @@ async function main() {
     const visibleFaceRows = await mobileAdministration.listFaceVerificationRequests(await refresh(cm));
     assert.equal(visibleFaceRows.filter((entry) => entry.userPublicId === ownUser.publicId).length, 1, "Panel shows only the current Face Verification row per user");
     assert.equal(visibleFaceRows.find((entry) => entry.userPublicId === ownUser.publicId)?.status, "VERIFIED");
+    await mobileAdministration.reviewFaceVerification({ scope: master, requestId: currentFaceRequest, decision: "REJECTED", reason: "QA Master rejects incorrect selfie" });
+    const [rejectedFaceRows] = await root.query<RowDataPacket[]>("SELECT face_verification_status, agency_face_live_authorized, super_admin_face_live_authorized FROM application_users WHERE id = ?", [ownUser.id]);
+    assert.equal(rejectedFaceRows[0].face_verification_status, "REJECTED");
+    assert.equal(Number(rejectedFaceRows[0].agency_face_live_authorized), 0);
+    assert.equal(Number(rejectedFaceRows[0].super_admin_face_live_authorized), 0);
+    assert.equal((await mobileAdministration.listFaceVerificationRequests(master)).find((entry) => entry.userPublicId === ownUser.publicId)?.status, "REJECTED");
+    await mobileAdministration.reviewFaceVerification({ scope: master, requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA Master restores corrected selfie" });
     passed++;
 
     const temp = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 30, reason: "QA temporary Live restriction" });

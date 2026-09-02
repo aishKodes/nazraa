@@ -1,4 +1,5 @@
 export const configurableGameIds = [
+  "teen_patti_pro",
   "luck77",
   "greedy_lion",
   "greedy_king",
@@ -38,6 +39,12 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
   target_win_rate: 0.6,
   winnings_deduction_rate: 0.01,
   games: {
+    teen_patti_pro: {
+      enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 5,
+      resultSeconds: 7, minimumBet: 500, maximumBet: 50_000_000,
+      denominations: [500, 1000, 10_000, 100_000], historyLength: 12,
+      bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
+    },
     luck77: {
       enabled: true, maintenance: false, bettingSeconds: 10, drawingSeconds: 3,
       resultSeconds: 3, minimumBet: 100, maximumBet: 50_000_000,

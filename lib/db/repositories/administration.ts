@@ -160,6 +160,13 @@ export async function updateDocumentVerification(input: { scope: Scope; document
   if (!permitted) throw new Error("Document is outside your hierarchy.");
   await withTransaction(async (connection) => {
     await connection.execute("UPDATE private_documents SET verification_status = ? WHERE id = ?", [input.status, document.id]);
+    const [persistedRows] = await connection.query<(RowDataPacket & { verification_status: string })[]>(
+      "SELECT verification_status FROM private_documents WHERE id = ? LIMIT 1",
+      [document.id],
+    );
+    if (persistedRows[0]?.verification_status !== input.status) {
+      throw new Error("Document verification was not persisted. No success was recorded.");
+    }
     await connection.execute(
       "INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason) VALUES (?, ?, ?, 'document.review', 'documents', 'private_document', ?, ?, ?, ?)",
       [randomUUID(), input.scope.account.id, input.scope.account.role, document.id, JSON.stringify({ status: document.verification_status }), JSON.stringify({ status: input.status }), input.reason],
