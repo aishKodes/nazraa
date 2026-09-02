@@ -509,7 +509,9 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     );
     const room = rooms[0];
     if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("This Video Live room is no longer active.");
-    if (room.host_application_user_id !== identity.userId) throw new Error("Only the room owner can accept call requests.");
+    if (room.host_application_user_id !== identity.userId) {
+      throw new Error(room.room_type === "FACE" ? "Only the room owner can accept audio requests." : "Only the room owner can accept call requests.");
+    }
     const [targets] = await connection.query<(RowDataPacket & { id: string; face_verification_status: string; request_status: string; host_access_override: number })[]>(
       `SELECT user.id, user.face_verification_status, request.status request_status,
               (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override
@@ -523,7 +525,9 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       [room.id, input.targetPublicId],
     );
     const target = targets[0];
-    if (!target || target.request_status !== "PENDING") throw new Error("This call request is no longer pending.");
+    if (!target || target.request_status !== "PENDING") {
+      throw new Error(room.room_type === "FACE" ? "This audio request is no longer pending." : "This call request is no longer pending.");
+    }
     if (input.accept && room.room_type === "LIVE" && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
       throw new Error("The viewer must complete Face Verification before joining this Video Live.");
     }
@@ -537,7 +541,10 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       "UPDATE live_room_members SET room_role = ?, muted = ?, muted_by_staff = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [input.accept ? "SPEAKER" : "AUDIENCE", !input.accept, room.id, target.id],
     );
-    return { status: input.accept ? "accepted" : "rejected" };
+    return {
+      status: input.accept ? "accepted" : "rejected",
+      mediaMode: room.room_type === "FACE" ? "audio_only" : "camera_and_microphone",
+    };
   });
 }
 
