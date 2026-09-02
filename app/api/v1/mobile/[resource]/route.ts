@@ -117,7 +117,7 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
       return NextResponse.json(await gameRoundHistory(identity, game, limit), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-state") {
-      const game = z.enum(["luck77", "greedy_lion", "greedy_king", "bounty_football"]).parse(new URL(request.url).searchParams.get("game"));
+      const game = z.enum(["teen_patti_pro", "luck77", "greedy_lion", "greedy_king", "bounty_football"]).parse(new URL(request.url).searchParams.get("game"));
       return NextResponse.json(await gameSharedRoundState(identity, game), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-social") {
@@ -399,7 +399,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({
         requestId: z.string().uuid(),
         roundId: z.string().uuid(),
-        game: z.enum(["luck77", "greedy_lion", "greedy_king", "bounty_football"]),
+        game: z.enum(["teen_patti_pro", "luck77", "greedy_lion", "greedy_king", "bounty_football"]),
         bets: z.record(z.string().regex(/^[a-z0-9_]+$/), z.number().int().nonnegative().max(50_000_000)),
       }).parse(body);
       return NextResponse.json(await placeSharedGameBets(identity, parsed), { status: 201 });
