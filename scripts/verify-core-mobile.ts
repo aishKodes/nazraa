@@ -21,6 +21,11 @@ async function main() {
   try {
     for (const file of (await readdir("db/migrations")).filter((file) => file.endsWith(".sql")).sort()) await root.query(await readFile(`db/migrations/${file}`, "utf8"));
     const product = await import("@/lib/db/repositories/mobile-product");
+    const gameConfig = await import("@/lib/games/game-config");
+    assert.equal(gameConfig.defaultMobileGamesConfig.games.teen_patti_pro.targetWinRate, 0.5);
+    assert.equal(gameConfig.defaultMobileGamesConfig.games.luck77.targetWinRate, 0.5);
+    assert.equal(gameConfig.defaultMobileGamesConfig.games.jungle_hunt.targetWinRate, 0.4);
+    assert.equal(gameConfig.defaultMobileGamesConfig.games.jungle_hunt.maximumPayoutMultiplier, 20);
     assert.equal(product.giftDiamondValue(100), 97);
     assert.equal(product.giftDiamondValue(1000), 970);
     assert.equal(product.giftDiamondValue(100000), 97000);
@@ -460,6 +465,7 @@ async function main() {
     }
     const gameRound = await completeSharedRound("luck77", { watermelon: 500, seven: 0, plum: 0 });
     assert.ok(["watermelon", "seven", "plum"].includes(String(gameRound.outcome.winner)));
+    assert.equal(gameRound.outcome.oddsFinalized, true, "Luck77 must finalize one shared result against the configured server target");
     const roundHistory = await product.gameRoundHistory(owner, "luck77", 10);
     assert.equal(roundHistory.rounds[0]?.outcome.sharedRoundId, gameRound.round.id);
     assert.equal(gameRound.players.find((player) => player.publicId === owner.publicId)?.bets.watermelon, 500);
@@ -590,8 +596,18 @@ async function main() {
       assert.equal(Number(round.outcome.winningsDeduction), deduction);
       assert.equal(round.payout, gross - deduction);
     }
-    assert.ok(targetedWins >= 45 && targetedWins <= 75, `100 server rounds should stay near the configured 60% target, got ${targetedWins}%`);
-    console.log(`PASS imported games: complete database rounds, exact 1% withholding, ${targetedWins}% sampled Teen Patti target wins, paired ledger, history, retries`);
+    assert.ok(targetedWins >= 35 && targetedWins <= 65, `100 Teen Patti rounds should stay near the configured 50% target, got ${targetedWins}%`);
+    let jungleWins = 0;
+    for (let sample = 0; sample < 100; sample += 1) {
+      const round = await product.settleGameRound(stranger, {
+        clientRoundId: randomUUID(), game: 'jungle_hunt', bets: {spin: 150},
+      });
+      if (round.payout > round.wager) jungleWins += 1;
+      assert.ok(Number(round.outcome.grossPayout) <= 3000, "A 150-coin Jungle spin must never gross more than its configured 20x cap");
+      assert.ok(round.payout <= 2970, "The 1% deduction must apply after the Jungle payout cap");
+    }
+    assert.ok(jungleWins >= 25 && jungleWins <= 55, `100 Jungle rounds should stay near the configured 40% target, got ${jungleWins}%`);
+    console.log(`PASS imported games: complete database rounds, exact 1% withholding, Teen Patti ${targetedWins}% vs 50% target, Jungle ${jungleWins}% vs 40% target, Jungle 20x payout cap, paired ledger, history, retries`);
 
     const rewardHost = await user("QA Reward Host");
     rewardHost.agencyAccountId = qaAgency.accountId;

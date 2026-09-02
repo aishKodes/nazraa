@@ -323,6 +323,8 @@ export async function submitGameSettings(formData: FormData) {
   const parsed = z.object({
     game: z.enum(configurableGameIds),
     availability: z.enum(["ACTIVE", "MAINTENANCE", "DISABLED"]),
+    targetWinRate: z.coerce.number().min(0).max(1),
+    maximumPayoutMultiplier: z.coerce.number().min(1).max(1000),
     bettingSeconds: z.coerce.number().int().min(0).max(300),
     minimumBet: z.coerce.number().int().min(1).max(50_000_000),
     maximumBet: z.coerce.number().int().min(1).max(50_000_000),

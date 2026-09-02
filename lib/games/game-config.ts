@@ -12,6 +12,8 @@ export type ConfigurableGameId = typeof configurableGameIds[number];
 export type GameRuntimeConfig = {
   enabled: boolean;
   maintenance: boolean;
+  targetWinRate: number;
+  maximumPayoutMultiplier: number;
   bettingSeconds: number;
   drawingSeconds: number;
   resultSeconds: number;
@@ -36,17 +38,19 @@ export type MobileGamesConfig = {
 };
 
 export const defaultMobileGamesConfig: MobileGamesConfig = {
-  target_win_rate: 0.6,
+  target_win_rate: 0.5,
   winnings_deduction_rate: 0.01,
   games: {
     teen_patti_pro: {
       enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 5,
+      targetWinRate: 0.5, maximumPayoutMultiplier: 25,
       resultSeconds: 7, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 100_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
     },
     luck77: {
       enabled: true, maintenance: false, bettingSeconds: 10, drawingSeconds: 3,
+      targetWinRate: 0.5, maximumPayoutMultiplier: 8,
       resultSeconds: 3, minimumBet: 100, maximumBet: 50_000_000,
       denominations: [100, 500, 1000, 10_000, 50_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
@@ -54,6 +58,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
     },
     greedy_lion: {
       enabled: true, maintenance: false, bettingSeconds: 20, drawingSeconds: 3,
+      targetWinRate: 0.4, maximumPayoutMultiplier: 45,
       resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 50_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: true,
@@ -65,6 +70,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
     },
     greedy_king: {
       enabled: true, maintenance: false, bettingSeconds: 30, drawingSeconds: 3,
+      targetWinRate: 0.4, maximumPayoutMultiplier: 45,
       resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 5000, 10_000, 50_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
@@ -73,6 +79,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
     },
     bounty_football: {
       enabled: true, maintenance: false, bettingSeconds: 10, drawingSeconds: 4,
+      targetWinRate: 0.4, maximumPayoutMultiplier: 100,
       resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 5000, 50_000, 100_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
@@ -80,6 +87,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
     },
     jungle_hunt: {
       enabled: true, maintenance: false, bettingSeconds: 0, drawingSeconds: 0,
+      targetWinRate: 0.4, maximumPayoutMultiplier: 20,
       resultSeconds: 0, minimumBet: 150, maximumBet: 3000,
       denominations: [150, 300, 750, 1500, 3000], historyLength: 10,
       bigWinThreshold: 500_000, repeatBet: false, autoPlay: true,
@@ -95,6 +103,11 @@ function object(value: unknown): Record<string, unknown> {
 function integer(value: unknown, fallback: number, minimum: number, maximum: number) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+function decimal(value: unknown, fallback: number, minimum: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
 function numberArray(value: unknown, fallback: number[], length?: number) {
@@ -114,6 +127,18 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       ...fallback,
       enabled: typeof stored.enabled === "boolean" ? stored.enabled : fallback.enabled,
       maintenance: typeof stored.maintenance === "boolean" ? stored.maintenance : fallback.maintenance,
+      targetWinRate: decimal(
+        stored.targetWinRate ?? stored.target_win_rate,
+        fallback.targetWinRate,
+        0,
+        1,
+      ),
+      maximumPayoutMultiplier: decimal(
+        stored.maximumPayoutMultiplier ?? stored.maximum_payout_multiplier,
+        fallback.maximumPayoutMultiplier,
+        1,
+        1000,
+      ),
       bettingSeconds: integer(stored.bettingSeconds, fallback.bettingSeconds, 0, 300),
       drawingSeconds: integer(stored.drawingSeconds, fallback.drawingSeconds, 0, 60),
       resultSeconds: integer(stored.resultSeconds, fallback.resultSeconds, 0, 60),

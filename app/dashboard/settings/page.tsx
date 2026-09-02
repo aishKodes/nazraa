@@ -157,6 +157,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>
               <input name="game" type="hidden" value={gameId} />
               <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
+              <label>Target profitable rounds<input name="targetWinRate" type="number" min="0" max="1" step="0.01" required defaultValue={game.targetWinRate} /><span>0.50 = about 50%; 0.40 = about 40%. Shared games keep one result for everyone.</span></label>
+              <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" required defaultValue={game.maximumPayoutMultiplier} /><span>Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.</span></label>
               <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
               <label>Minimum bet<input name="minimumBet" type="number" min="1" required defaultValue={game.minimumBet} /></label>
               <label>Maximum per round<input name="maximumBet" type="number" min="1" required defaultValue={game.maximumBet} /></label>

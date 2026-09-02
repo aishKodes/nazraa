@@ -190,6 +190,8 @@ export async function saveGameSettings(input: {
   game: ConfigurableGameId;
   enabled: boolean;
   maintenance: boolean;
+  targetWinRate: number;
+  maximumPayoutMultiplier: number;
   bettingSeconds: number;
   minimumBet: number;
   maximumBet: number;
@@ -205,6 +207,8 @@ export async function saveGameSettings(input: {
   poolMinimumForSpecial?: number;
   reason: string;
 }) {
+  if (input.targetWinRate < 0 || input.targetWinRate > 1) throw new Error("Target win rate must be between 0 and 1.");
+  if (input.maximumPayoutMultiplier < 1 || input.maximumPayoutMultiplier > 1000) throw new Error("Maximum payout multiplier must be between 1 and 1,000.");
   if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");
   if (!input.denominations.length || input.denominations.some((value) => value < 1 || value > input.maximumBet)) {
     throw new Error("Add at least one valid denomination within the game limit.");
@@ -236,6 +240,8 @@ export async function saveGameSettings(input: {
         ...previous,
         enabled: input.enabled,
         maintenance: input.maintenance,
+        targetWinRate: input.targetWinRate,
+        maximumPayoutMultiplier: input.maximumPayoutMultiplier,
         bettingSeconds: input.bettingSeconds,
         minimumBet: input.minimumBet,
         maximumBet: input.maximumBet,
