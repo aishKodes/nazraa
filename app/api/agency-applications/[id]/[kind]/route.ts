@@ -1,5 +1,6 @@
 import type { RowDataPacket } from "mysql2";
 import { NextResponse } from "next/server";
+import sharp from "sharp";
 import { can } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { scopeFor } from "@/lib/db/repositories/accounts";
@@ -20,7 +21,21 @@ type KycRow = RowDataPacket & {
   document_encryption_tag: Buffer | null;
 };
 
-export async function GET(_: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
+function protectedImageResponse(request: Request, plain: Buffer, mimeType: string, fileName: string) {
+  const url = new URL(request.url);
+  const preview = url.searchParams.get("preview") === "1";
+  const inline = preview || url.searchParams.get("inline") === "1";
+  const isImage = ["image/jpeg", "image/png", "image/webp"].includes(mimeType);
+  const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
+  if (preview) {
+    if (!isImage) return new NextResponse("Preview unavailable", { status: 415 });
+    return sharp(plain).rotate().resize(96, 96, { fit: "cover", position: "centre" }).webp({ quality: 76 }).toBuffer()
+      .then((thumbnail) => new NextResponse(new Uint8Array(thumbnail), { headers: { ...headers, "Content-Type": "image/webp", "Content-Disposition": "inline; filename=protected-preview.webp" } }));
+  }
+  return Promise.resolve(new NextResponse(new Uint8Array(plain), { headers: { ...headers, "Content-Type": mimeType, "Content-Disposition": `${inline && isImage ? "inline" : "attachment"}; filename="${fileName.replaceAll('"', "")}"` } }));
+}
+
+export async function GET(request: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
   const account = await getSession();
   if (!account || !can(account.role, "documents.read") || !["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(account.role)) return new NextResponse("Unauthorized", { status: 401 });
   const scope = await scopeFor(account);
@@ -34,24 +49,23 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const application = rows[0];
   if (!application) return new NextResponse("Not found", { status: 404 });
   if (!scope.isGlobal && (!application.parent_account_id || !scope.accountIds.includes(application.parent_account_id))) return new NextResponse("Forbidden", { status: 403 });
-  const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
   if (kind.startsWith("document-")) {
     const [documents] = await db().query<RowDataPacket[]>("SELECT original_name, mime_type, encrypted_data, encryption_iv, encryption_tag FROM agency_application_documents WHERE application_id = ? AND slot = ? LIMIT 1", [id, Number(kind.slice(-1))]);
     const document = documents[0];
     if (!document) return new NextResponse("Not found", { status: 404 });
     const plain = decryptPrivateDocument({ encryptedData: document.encrypted_data, iv: document.encryption_iv, tag: document.encryption_tag });
-    return new NextResponse(new Uint8Array(plain), { headers: { ...headers, "Content-Type": document.mime_type, "Content-Disposition": `attachment; filename="document-${kind.slice(-1)}.${document.mime_type === 'image/png' ? 'png' : 'jpg'}"` } });
+    return protectedImageResponse(request, plain, String(document.mime_type), String(document.original_name ?? `document-${kind.slice(-1)}`));
   }
   if (kind === "document") {
     if (!application.document_encrypted_data || !application.document_encryption_iv || !application.document_encryption_tag) return new NextResponse("Not found", { status: 404 });
     const plain = decryptPrivateDocument({ encryptedData: application.document_encrypted_data, iv: application.document_encryption_iv, tag: application.document_encryption_tag });
     const name = (application.document_original_name ?? "agency-proof").replaceAll('"', "");
-    return new NextResponse(new Uint8Array(plain), { headers: { ...headers, "Content-Type": application.document_mime_type ?? "application/octet-stream", "Content-Disposition": `attachment; filename="${name}"` } });
+    return protectedImageResponse(request, plain, application.document_mime_type ?? "application/octet-stream", name);
   }
   const encryptedData = application.aadhaar_encrypted;
   const iv = application.aadhaar_iv;
   const tag = application.aadhaar_tag;
   if (!encryptedData || !iv || !tag) return new NextResponse("Not found", { status: 404 });
   const value = decryptPrivateText({ encryptedData, iv, tag });
-  return new NextResponse(value, { headers: { ...headers, "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": `attachment; filename="agency-${kind}.txt"` } });
+  return new NextResponse(value, { headers: { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "text/plain; charset=utf-8", "Content-Disposition": `attachment; filename="agency-${kind}.txt"` } });
 }

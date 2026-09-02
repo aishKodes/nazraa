@@ -108,14 +108,43 @@ export async function updateHostStatus(input: { scope: Scope; hostId: string; st
 
 export async function getHostDetail(scope: Scope, hostId: string) {
   const hostScope = scopeWhere(scope, "h.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; application_user_id: string; legal_name: string | null; full_name: string; external_user_id: string; country_code: string | null; status: string; verification_status: string; government_id_type: string | null; government_id_last4: string | null; agency_account_id: string | null; agency_name: string | null; applied_at: string; reviewed_at: string | null; review_reason: string | null })[]>(
-    `SELECT h.id, h.application_user_id, h.legal_name, u.full_name, u.external_user_id, h.country_code, h.status, h.verification_status,
+  const [rows] = await db().query<(RowDataPacket & { id: string; application_user_id: string; legal_name: string | null; full_name: string; public_id: number; external_user_id: string; avatar_url: string | null; date_of_birth: string | null; gender: string | null; whatsapp_e164: string | null; email: string | null; account_status: string; face_verification_status: string; country_code: string | null; status: string; verification_status: string; government_id_type: string | null; government_id_last4: string | null; agency_account_id: string | null; agency_name: string | null; applied_at: string; reviewed_at: string | null; review_reason: string | null })[]>(
+    `SELECT h.id, h.application_user_id, h.legal_name, u.full_name, u.public_id, u.external_user_id,
+            CASE WHEN avatar.updated_at IS NOT NULL
+              THEN CONCAT('/api/v1/mobile/avatar/', u.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+              ELSE u.avatar_url END avatar_url,
+            u.date_of_birth, u.gender, u.whatsapp_e164, u.email, u.account_status, u.face_verification_status,
+            h.country_code, h.status, h.verification_status,
             h.government_id_type, h.government_id_last4, h.agency_account_id, a.full_name agency_name, h.applied_at, h.reviewed_at, h.review_reason
      FROM host_profiles h INNER JOIN application_users u ON u.id = h.application_user_id
+     LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = u.id
      LEFT JOIN platform_accounts a ON a.id = h.agency_account_id
      WHERE h.id = ? AND ${hostScope.clause} LIMIT 1`, [hostId, ...hostScope.values],
   );
-  return rows[0] ? { id: rows[0].id, applicationUserId: rows[0].application_user_id, legalName: rows[0].legal_name ?? rows[0].full_name, displayName: rows[0].full_name, externalUserId: rows[0].external_user_id, country: rows[0].country_code, status: rows[0].status, verification: rows[0].verification_status, governmentIdType: rows[0].government_id_type, governmentIdLast4: rows[0].government_id_last4, agencyId: rows[0].agency_account_id, agencyName: rows[0].agency_name, appliedAt: rows[0].applied_at, reviewedAt: rows[0].reviewed_at, reviewReason: rows[0].review_reason } : null;
+  return rows[0] ? { id: rows[0].id, applicationUserId: rows[0].application_user_id, publicId: String(rows[0].public_id), legalName: rows[0].legal_name ?? rows[0].full_name, displayName: rows[0].full_name, externalUserId: rows[0].external_user_id, avatarUrl: rows[0].avatar_url, dateOfBirth: rows[0].date_of_birth, gender: rows[0].gender, mobile: rows[0].whatsapp_e164, email: rows[0].email, accountStatus: rows[0].account_status, faceVerification: rows[0].face_verification_status, country: rows[0].country_code, status: rows[0].status, verification: rows[0].verification_status, governmentIdType: rows[0].government_id_type, governmentIdLast4: rows[0].government_id_last4, agencyId: rows[0].agency_account_id, agencyName: rows[0].agency_name, appliedAt: rows[0].applied_at, reviewedAt: rows[0].reviewed_at, reviewReason: rows[0].review_reason } : null;
+}
+
+export async function updateHostGender(input: { scope: Scope; hostId: string; gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY"; reason: string }) {
+  if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a clear audit reason.");
+  const hostScope = scopeWhere(input.scope, "h.agency_account_id");
+  await withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { application_user_id: string; gender: string | null })[]>(
+      `SELECT h.application_user_id, u.gender FROM host_profiles h
+       INNER JOIN application_users u ON u.id = h.application_user_id
+       WHERE h.id = ? AND ${hostScope.clause} LIMIT 1 FOR UPDATE`,
+      [input.hostId, ...hostScope.values],
+    );
+    const host = rows[0];
+    if (!host) throw new Error("Host was not found in your permitted scope.");
+    if (host.gender === input.gender) throw new Error("Choose a different gender value.");
+    await connection.execute("UPDATE application_users SET gender = ? WHERE id = ?", [input.gender, host.application_user_id]);
+    await connection.execute(
+      `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
+       VALUES (?, ?, ?, 'host.gender_change', 'hosts', 'application_user', ?, ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, host.application_user_id,
+        JSON.stringify({ gender: host.gender }), JSON.stringify({ gender: input.gender }), input.reason.trim()],
+    );
+  });
 }
 
 export async function listHostDocuments(scope: Scope, hostId: string) {

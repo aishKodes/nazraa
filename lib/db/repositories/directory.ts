@@ -7,12 +7,12 @@ import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PageRequest, PageResult, Role, Scope } from "@/types/platform";
 
 export type DirectoryUser = {
-  id: string; externalUserId: string; fullName: string; countryCode: string | null; status: string;
+  id: string; publicId: string; externalUserId: string; fullName: string; avatarUrl: string | null; countryCode: string | null; status: string;
   level: number; agencyName: string | null; coins: number; diamonds: number; lastActiveAt: string | null; createdAt: string;
 };
 
 type UserRow = RowDataPacket & {
-  id: string; external_user_id: string; full_name: string; country_code: string | null; account_status: string;
+  id: string; public_id: number; external_user_id: string; full_name: string; avatar_url: string | null; country_code: string | null; account_status: string;
   level_number: number; agency_name: string | null; coins: number; diamonds: number; last_active_at: string | null; created_at: string;
 };
 
@@ -34,18 +34,23 @@ function pageInput(input: PageRequest = {}) {
 
 function mapUser(row: UserRow): DirectoryUser {
   return {
-    id: row.id, externalUserId: row.external_user_id, fullName: row.full_name, countryCode: row.country_code,
+    id: row.id, publicId: String(row.public_id), externalUserId: row.external_user_id, fullName: row.full_name, avatarUrl: row.avatar_url, countryCode: row.country_code,
     status: row.account_status, level: Number(row.level_number), agencyName: row.agency_name,
     coins: Number(row.coins), diamonds: Number(row.diamonds), lastActiveAt: row.last_active_at, createdAt: row.created_at,
   };
 }
 
 function userQuery(where: string) {
-  return `SELECT u.id, u.external_user_id, u.full_name, u.country_code, u.account_status, u.level_number,
+  return `SELECT u.id, u.public_id, u.external_user_id, u.full_name,
+                 CASE WHEN avatar.updated_at IS NOT NULL
+                   THEN CONCAT('/api/v1/mobile/avatar/', u.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                   ELSE u.avatar_url END avatar_url,
+                 u.country_code, u.account_status, u.level_number,
                  u.last_active_at, u.created_at, agency.full_name agency_name,
                  COALESCE(coins.available_balance, 0) coins, COALESCE(diamonds.available_balance, 0) diamonds
           FROM application_users u
           LEFT JOIN platform_accounts agency ON agency.id = u.agency_account_id
+          LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = u.id
           LEFT JOIN wallet_balances coins
             ON coins.owner_type = 'APPLICATION_USER' AND coins.owner_id = u.id AND coins.asset_type = 'COIN'
           LEFT JOIN wallet_balances diamonds
@@ -83,18 +88,16 @@ export async function listUsersPage(scope: Scope, input: PageRequest = {}): Prom
 }
 
 /**
- * Small, explicit recipient lookup for coin transfers. Coin Sellers may sell
- * to any active Nazraa user; every other role remains limited to its branch.
- * Keeping this separate from the Users directory avoids granting Coin Sellers
- * broad directory access through another route.
+ * Small, explicit recipient lookup for coin transfers. Every role that has
+ * coins.transfer may find any active Nazraa user, while transfer permission,
+ * inventory locking and ledger writes remain authoritative in transferCoins.
+ * This does not grant access to the broader user directory or private fields.
  */
 export async function searchCoinTransferRecipients(scope: Scope, search: string, limit = 25) {
   if (!can(scope.account.role, "coins.transfer")) return [];
   const query = search.trim().slice(0, 120);
   if (!query) return [];
-  const scoped = scope.account.role === "COIN_SELLER"
-    ? { clause: "1=1", values: [] as string[] }
-    : scopeWhere(scope, "u.agency_account_id");
+  const scoped = { clause: "1=1", values: [] as string[] };
   const filters = [scoped.clause, "u.account_status = 'ACTIVE'"];
   const values: unknown[] = [...scoped.values];
   if (/^\d{1,12}$/.test(query)) {

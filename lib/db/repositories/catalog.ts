@@ -21,13 +21,13 @@ async function auditedMutation(input: { scope: Scope; action: string; module: st
 }
 
 export async function listGifts() {
-  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; emoji: string | null; coin_price: number; visual_url: string | null; animation_key: string | null; active: number; updated_at: string })[]>(
-    "SELECT id, gift_key, name, category, emoji, coin_price, visual_url, animation_key, active, updated_at FROM gift_catalog ORDER BY active DESC, coin_price, name",
+  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; catalog_type: string; emoji: string | null; coin_price: number; visual_url: string | null; animation_key: string | null; active: number; updated_at: string })[]>(
+    "SELECT id, gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key, active, updated_at FROM gift_catalog ORDER BY active DESC, catalog_type, coin_price, name",
   );
-  return rows.map((row) => ({ id: row.id, key: row.gift_key, name: row.name, category: row.category, emoji: row.emoji, coinPrice: Number(row.coin_price), visualUrl: row.visual_url, animationKey: row.animation_key, active: Boolean(row.active), updatedAt: row.updated_at }));
+  return rows.map((row) => ({ id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type, emoji: row.emoji, coinPrice: Number(row.coin_price), visualUrl: row.visual_url, animationKey: row.animation_key, active: Boolean(row.active), updatedAt: row.updated_at }));
 }
 
-export async function createGift(input: { scope: Scope; key: string; name: string; category: string; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string }) {
+export async function createGift(input: { scope: Scope; key: string; name: string; category: string; catalogType: "VIRTUAL_GIFT" | "ENTRY_FRAME" | "PROFILE_EFFECT" | "MEDAL" | "BADGE"; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string }) {
   const id = randomUUID();
   const assetId = input.image ? randomUUID() : null;
   const visualUrl = assetId ? `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}` : null;
@@ -35,11 +35,11 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
     if (input.image && assetId) {
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     }
-    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, emoji, coin_price, visual_url, animation_key, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.emoji || null, input.coinPrice, visualUrl, input.animationKey || null, input.scope.account.id]);
+    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.catalogType, input.emoji || null, input.coinPrice, visualUrl, input.animationKey || null, input.scope.account.id]);
   } });
 }
 
-export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string; reason: string }) {
+export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; catalogType: "VIRTUAL_GIFT" | "ENTRY_FRAME" | "PROFILE_EFFECT" | "MEDAL" | "BADGE"; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string; reason: string }) {
   await auditedMutation({ scope: input.scope, action: "gift.update", module: "gifts", targetType: "gift", targetId: input.id, reason: input.reason, run: async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null })[]>("SELECT visual_url FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
     if (!rows[0]) throw new Error("Gift was not found.");
@@ -51,8 +51,8 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
     }
     if (input.artworkMode === "IMAGE" && !visualUrl) throw new Error("Upload a gift picture.");
     await connection.execute(
-      "UPDATE gift_catalog SET name = ?, category = ?, emoji = ?, coin_price = ?, visual_url = ?, animation_key = ? WHERE id = ?",
-      [input.name, input.category, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, visualUrl, input.animationKey || null, input.id],
+      "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, visual_url = ?, animation_key = ? WHERE id = ?",
+      [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, visualUrl, input.animationKey || null, input.id],
     );
   } });
 }

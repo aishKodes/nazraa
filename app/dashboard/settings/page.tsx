@@ -92,8 +92,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     <Card className="settings-card">
       <div className="card-title"><div><h2>Server-timed host rewards</h2><p>Party, Video Live, and Face Live use independent hourly rules. The phone clock is never trusted.</p></div></div>
       <form action={submitHostRewardRules} className="form-grid">
-        <label>Video Live coins/hour<input name="live" type="number" min="0" required defaultValue={host("LIVE", 3500)} /></label>
-        <label>Face Live coins/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 3500)} /></label>
+        <label>Video Live diamonds/hour<input name="live" type="number" min="0" required defaultValue={host("LIVE", 3500)} /></label>
+        <label>Face Live diamonds/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 3500)} /></label>
         <label>Party coins/hour<input name="party" type="number" value="0" readOnly aria-readonly="true" /><span>Audio Party hourly reward remains disabled.</span></label>
         <label>Minimum eligible seconds<input name="minimumEligibleSeconds" type="number" min="1" max="3600" required defaultValue={minimumEligible} /></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} /></label>

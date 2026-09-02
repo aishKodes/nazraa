@@ -228,7 +228,16 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1) {
          WHERE newer.application_user_id = request.application_user_id
            AND (newer.created_at > request.created_at OR (newer.created_at = request.created_at AND newer.id > request.id))
        )
-     ORDER BY FIELD(user.face_verification_status, 'PROCESSING','RETRY','DUPLICATE','PENDING','REJECTED','VERIFIED','NOT_SUBMITTED'), request.created_at DESC LIMIT 26 OFFSET ?`,
+     ORDER BY FIELD(
+       CONVERT(user.face_verification_status USING utf8mb4) COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'PROCESSING' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'RETRY' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'DUPLICATE' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'PENDING' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'REJECTED' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'VERIFIED' COLLATE utf8mb4_unicode_ci,
+       _utf8mb4'NOT_SUBMITTED' COLLATE utf8mb4_unicode_ci
+     ), request.created_at DESC LIMIT 26 OFFSET ?`,
     [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
   return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.user_status, requestStatus: row.status, documentId: row.selfie_document_id, documentMimeType: row.document_mime_type, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));

@@ -119,6 +119,13 @@ async function main() {
     const product = await import("@/lib/db/repositories/mobile-product");
     const liveCompletion = await import("@/lib/db/repositories/mobile-completion");
     const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
+    const [ownHostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
+    await hostsRepository.updateHostGender({ scope: await refresh(branchAdmin), hostId: String(ownHostRows[0].id), gender: "FEMALE", reason: "QA authorized identity correction" });
+    assert.equal((await hostsRepository.getHostDetail(await refresh(branchAdmin), String(ownHostRows[0].id)))?.gender, "FEMALE");
+    await assert.rejects(hostsRepository.updateHostGender({ scope: await refresh(adminOther), hostId: String(ownHostRows[0].id), gender: "MALE", reason: "QA foreign branch correction denied" }));
+    const [genderAudit] = await root.query<RowDataPacket[]>("SELECT previous_data, new_data FROM audit_logs WHERE target_id = ? AND action = 'host.gender_change'", [ownUser.id]);
+    assert.equal(genderAudit.length, 1, "Host gender corrections must be auditable");
+    passed++;
     const resetUser = await user(agency.account.id, "QA Monthly Reset Host");
     await root.execute(
       "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance, reserved_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 350, 0)",
@@ -331,16 +338,16 @@ async function main() {
     await assert.rejects(ops.allocatePlatformCoins({ scope: await refresh(cm), accountId: adminOther.account.id, amount: 1, reason: "QA reject foreign allocation", idempotencyKey: randomUUID() }));
     await ops.allocatePlatformCoins({ scope: master, accountId: seller.account.id, amount: 200, reason: "QA fund Coin Seller inventory", idempotencyKey: randomUUID() });
     assert.equal((await directory.searchCoinTransferRecipients(await refresh(seller), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Coin Seller can find a user outside its branch");
-    assert.equal((await directory.searchCoinTransferRecipients(await refresh(agency), "QA Other Host")).some((user) => user.id === otherUser.id), false, "Agency transfer search stays scoped");
+    assert.equal((await directory.searchCoinTransferRecipients(await refresh(agency), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Every authorized coin transfer screen can identify a valid platform user");
     await ops.transferCoins({ scope: await refresh(seller), recipientId: otherUser.id, amount: 50, reason: "QA Coin Seller cross-platform sale", idempotencyKey: randomUUID() });
     const [sellerWallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [seller.account.id]);
     assert.equal(Number(sellerWallet[0].available_balance), 150);
     const key = randomUUID();
     await ops.transferCoins({ scope: agency, recipientId: ownUser.id, amount: 100, reason: "QA own host coin transfer", idempotencyKey: key });
     await assert.rejects(ops.transferCoins({ scope: agency, recipientId: ownUser.id, amount: 100, reason: "QA repeated transfer denied", idempotencyKey: key }));
-    await assert.rejects(ops.transferCoins({ scope: agency, recipientId: otherUser.id, amount: 1, reason: "QA foreign transfer denied", idempotencyKey: randomUUID() }));
+    await ops.transferCoins({ scope: agency, recipientId: otherUser.id, amount: 1, reason: "QA authorized cross-platform transfer", idempotencyKey: randomUUID() });
     const [wallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [agency.account.id]);
-    assert.equal(Number(wallet[0].available_balance), 400);
+    assert.equal(Number(wallet[0].available_balance), 399);
     assert.equal((await dashboard.getDashboardMetrics(master)).coinInventory, 300);
     assert.equal((await dashboard.getRecentLedger(agency)).some((entry) => entry.transactionType === "ACCOUNT_ALLOCATION"), true, "Agency must see inventory received from its Admin");
     passed++;

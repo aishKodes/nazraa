@@ -15,7 +15,7 @@ import {
   updateDocumentVerification,
   updatePlatformAccount,
 } from "@/lib/db/repositories/administration";
-import { createHostApplication, reviewHostApplication, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
+import { createHostApplication, reviewHostApplication, updateHostGender, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
@@ -199,8 +199,8 @@ export async function submitHostStatus(formData: FormData) {
 
 export async function submitCreateGift(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift key, name, category, price, and animation key."));
+  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "PROFILE_EFFECT", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the catalogue key, type, name, category, price, and animation key."));
   try {
     const imageFile = formData.get("image");
     const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork", { maxWidth: 512, maxHeight: 512, animated: true }) : undefined;
@@ -213,7 +213,7 @@ export async function submitCreateGift(formData: FormData) {
 
 export async function submitGiftUpdate(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ id: z.string().uuid(), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ id: z.string().uuid(), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "PROFILE_EFFECT", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift details and change reason."));
   try {
     const imageFile = formData.get("image");
@@ -552,6 +552,21 @@ export async function submitFaceVerificationReview(formData: FormData) {
   try { await reviewFaceVerification({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/face-verification", "error", error instanceof Error ? error.message : "Face verification could not be reviewed.")); }
   revalidatePath("/dashboard/face-verification"); revalidatePath("/dashboard/users");
   redirect(destination("/dashboard/face-verification", "success", `Face verification ${parsed.data.decision.toLowerCase()}.`));
+}
+
+export async function submitHostGender(formData: FormData) {
+  const scope = await requirePermission("hosts.review");
+  const parsed = z.object({
+    hostId: z.string().uuid(),
+    gender: z.enum(["FEMALE", "MALE", "NON_BINARY", "PREFER_NOT_TO_SAY"]),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination(`/dashboard/hosts/${String(formData.get("hostId") ?? "")}`, "error", "Choose gender and provide a clear reason."));
+  try { await updateHostGender({ scope, ...parsed.data }); }
+  catch (error) { redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "error", error instanceof Error ? error.message : "Gender could not be updated.")); }
+  revalidatePath(`/dashboard/hosts/${parsed.data.hostId}`);
+  revalidatePath("/dashboard/users");
+  redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", "Gender updated and audited."));
 }
 
 export async function submitCommerceSettings(formData: FormData) {

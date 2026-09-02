@@ -238,7 +238,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        WHERE user.account_status = 'ACTIVE' ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
-    db().query<RowDataPacket[]>("SELECT gift_key, name, category, emoji, coin_price, visual_url, animation_key FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name"),
+    db().query<RowDataPacket[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, coin_price, name"),
     db().query<RowDataPacket[]>(
       `SELECT id, placement, title, subtitle, image_url, action_type, action_target, priority, starts_at, ends_at
        FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3))
@@ -385,7 +385,8 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
       country: row.country_code ?? "", language: row.language_code ?? "", level: levelProgress(Number(row.consumption_points ?? 0), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumActorLevel).level,
       vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host) })),
-    gifts: giftRows[0].map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
+    gifts: giftRows[0].filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
+    mallCatalog: giftRows[0].map((row) => ({ id: String(row.gift_key), name: String(row.name), type: String(row.catalog_type), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), visualUrl: row.visual_url, animationKey: row.animation_key })),
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({
       id: String(row.id), message: String(row.message), title: row.title,
@@ -630,7 +631,7 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       );
       return { success: true, remainingCoins: Number(balanceRows[0]?.available_balance ?? 0), message: "Gift already sent", rocket: null, event: null };
     }
-    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; coin_price: number })[]>("SELECT id, name, emoji, visual_url, coin_price FROM gift_catalog WHERE gift_key = ? AND active = TRUE LIMIT 1", [input.giftId]);
+    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; coin_price: number })[]>("SELECT id, name, emoji, visual_url, coin_price FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
     const [roomRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT room.id FROM live_rooms room
        INNER JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL

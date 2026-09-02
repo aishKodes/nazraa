@@ -975,13 +975,13 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
     let ledgerId: string | null = null;
     let rewardCode: string | null = null;
     if (rewardCoins > 0) {
-      await ensureWallet(connection, identity.userId, "COIN");
+      await ensureWallet(connection, identity.userId, "DIAMOND");
       ledgerId = randomUUID(); rewardCode = code("HST");
-      await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [rewardCoins, identity.userId]);
+      await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [rewardCoins, identity.userId]);
       await connection.execute(
         `INSERT INTO ledger_transactions
           (id, transaction_code, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
-         VALUES (?, ?, 'COIN', 'HOST_HOURLY_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
+         VALUES (?, ?, 'DIAMOND', 'HOST_HOURLY_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
         [ledgerId, rewardCode, identity.userId, rewardCoins, `${session.room_type} • ${eligibleSeconds} eligible seconds`],
       );
     }

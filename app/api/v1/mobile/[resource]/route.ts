@@ -74,7 +74,7 @@ function selectResource(resource: string, bootstrap: Awaited<ReturnType<typeof m
     rooms: ["rooms"], live: ["rooms"], party: ["rooms"], face: ["faceVerificationStatus"],
     agency: ["agency", "agencyApplications"], host: ["hostProfile"], banners: ["banners", "announcements"],
     withdrawals: ["withdrawalRequests", "payoutMethods", "minimumWithdrawal"], notifications: ["announcements"],
-    levels: ["consumptionLevel", "anchorIncomeLevel"], gifts: ["gifts"],
+    levels: ["consumptionLevel", "anchorIncomeLevel"], gifts: ["gifts", "mallCatalog"],
     "coin-packages": ["coinPackages"], "coin-sellers": ["coinSellers"], "coin-orders": ["coinPurchaseRequests"],
     "daily-rewards": ["dailyRewards"], "diamond-exchange": ["diamondConversionRule", "diamondExchangeHistory"],
     "host-rewards": ["hostRewardRules", "hostRewardHistory", "policies", "accessPolicy"], policies: ["policies"],

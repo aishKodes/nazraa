@@ -568,12 +568,13 @@ async function main() {
     await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [liveRewardRoomId, rewardHost.userId]);
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
-    const rewardCoinsBefore = (await product.mobileBootstrap(rewardHost)).wallet.coins;
+    const rewardDiamondsBefore = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
     const finalizedLive = await rooms.finalizeLiveSession(rewardHost, liveRewardCode);
     assert.equal(finalizedLive.rewardCoins, 3500);
     assert.equal((await rooms.finalizeLiveSession(rewardHost, liveRewardCode)).alreadyFinalized, true, "finalization retry must be idempotent");
     const rewardBootstrap = await product.mobileBootstrap(rewardHost);
-    assert.equal(rewardBootstrap.wallet.coins, rewardCoinsBefore + 3500);
+    assert.equal(rewardBootstrap.wallet.diamonds, rewardDiamondsBefore + 3500);
+    assert.equal(rewardBootstrap.wallet.coins, 5000, "Host Live rewards must not mint spendable social coins");
     assert.equal(rewardBootstrap.hostRewardHistory[0].rewardCoins, 3500);
 
     await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 6000) ON DUPLICATE KEY UPDATE available_balance = 6000, reserved_balance = 0", [randomUUID(), rewardHost.userId]);

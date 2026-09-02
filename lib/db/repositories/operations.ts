@@ -34,18 +34,13 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
   if (input.reason.trim().length < 5) throw new Error("A clear transfer reason is required.");
 
   return withTransaction(async (connection) => {
-    const recipientScope = input.scope.account.role === "COIN_SELLER"
-      ? { clause: "1=1", values: [] as string[] }
-      : scopeWhere(input.scope, "agency_account_id");
     const [recipients] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
       `SELECT id, full_name FROM application_users
-       WHERE id = ? AND account_status = 'ACTIVE' AND ${recipientScope.clause} LIMIT 1`,
-      [input.recipientId, ...recipientScope.values],
+       WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1`,
+      [input.recipientId],
     );
     const recipient = recipients[0];
-    if (!recipient) throw new Error(input.scope.account.role === "COIN_SELLER"
-      ? "An active user matching this recipient was not found."
-      : "Recipient was not found in your permitted hierarchy.");
+    if (!recipient) throw new Error("An active user matching this recipient was not found.");
 
     // Ensure both wallet rows exist before locking them. The unique owner/asset index makes this idempotent.
     await connection.execute(
