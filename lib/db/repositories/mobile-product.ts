@@ -4,16 +4,17 @@ import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
-import { withTransaction } from "@/lib/db/transaction";
+import { withIdempotentTransaction, withTransaction } from "@/lib/db/transaction";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
-import { permissionsForMobileRole } from "@/lib/auth/mobile-session";
+import { permissionsForMobileIdentity } from "@/lib/auth/mobile-session";
 import { encryptPrivateText } from "@/lib/security/documents";
 import { mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type GameRuntimeConfig } from "@/lib/games/game-config";
+import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -24,6 +25,13 @@ function asObject(value: unknown): Record<string, unknown> {
     try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
   }
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+export function giftDiamondValue(coinValue: number, giftCoinUnits = 100, receiverDiamondUnits = 97) {
+  if (!Number.isSafeInteger(coinValue) || coinValue < 0 || !Number.isSafeInteger(giftCoinUnits) || giftCoinUnits < 1 || !Number.isSafeInteger(receiverDiamondUnits) || receiverDiamondUnits < 0 || receiverDiamondUnits > giftCoinUnits) {
+    throw new Error("Gift earnings configuration is invalid.");
+  }
+  return Math.floor((coinValue * receiverDiamondUnits) / giftCoinUnits);
 }
 
 function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome", maximumLevel = track === "anchorIncome" ? 200 : 120) {
@@ -365,7 +373,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       whatsappE164: profile.whatsapp_e164, level: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel).level,
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
       followers: Number(profile.followers), following: Number(profile.following),
-      permissions: permissionsForMobileRole(identity.role),
+      permissions: permissionsForMobileIdentity(identity),
     },
     config: {
       features: settings["mobile.features"] ?? {},
@@ -405,7 +413,8 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     coinPurchaseRequests: orderRows[0].map((row) => ({ id: String(row.public_id), userId: identity.publicId, packageId: String(row.package_public_id), sellerId: String(row.seller_public_id), coins: Number(row.coin_amount), pricePaise: Math.round(Number(row.display_price ?? 0) * 100), status: String(row.status).toLowerCase(), createdAt: row.created_at })),
     payoutMethods: payoutRows[0].map((row) => ({ id: String(row.id), type: row.method_type === "UPI" ? "upi" : "bankTransfer", displayName: String(row.display_name), maskedDestination: String(row.masked_destination), verified: Boolean(row.verified) })),
     withdrawalRequests: withdrawalRows[0].map((row) => ({ id: String(row.withdrawal_code), userId: identity.publicId, payoutMethodId: String(row.payout_method_id ?? ""), amount: Number(row.amount), status: String(row.status).toLowerCase(), createdAt: row.requested_at, reviewNote: row.review_reason })),
-    minimumWithdrawal: Number(commerce.minimumWithdrawal ?? 1000),
+    minimumWithdrawal: Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000),
+    withdrawalSlab: Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000),
     followedUserIds: followUserRows[0].map((row) => String(row.public_id)),
     followedAgencyIds: followAgencyRows[0].map((row) => String(row.public_id)),
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
@@ -422,7 +431,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     agencyRankings: agencyRankingRows[0].map((row, index) => ({ rank: index + 1, agency: { id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: "", ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0, estimatedEarnings: Number(row.score), totalLiveMinutes: 0 }, score: Number(row.score), label: "Agency" })),
     posts: completion.posts,
     role: roleName,
-    permissions: permissionsForMobileRole(identity.role),
+    permissions: permissionsForMobileIdentity(identity),
   };
 }
 
@@ -467,10 +476,12 @@ export async function createCoinPurchaseRequest(identity: MobileIdentity, packag
 export async function createWithdrawalRequest(identity: MobileIdentity, amount: number, payout: {
   type: "UPI"; accountHolderName: string; upiId: string;
 } | { type: "BANK"; accountHolderName: string; accountNumber: string; ifsc: string; bankName: string } | { payoutMethodId: string }) {
-  const settings = await settingsMap();
-  const minimum = Number(settings["mobile.commerce"]?.minimumWithdrawal ?? 1000);
-  if (!Number.isSafeInteger(amount) || amount < minimum) throw new Error(`Minimum withdrawal is ${minimum}.`);
+  if (!Number.isSafeInteger(amount) || amount < 1) throw new Error("Choose a valid whole-diamond amount.");
   return withTransaction(async (connection) => {
+    const economy = await loadWithdrawalEconomy(connection);
+    if (amount < economy.slabDiamonds || amount % economy.slabDiamonds !== 0) {
+      throw new Error(`Withdrawals must be exact ${economy.slabDiamonds.toLocaleString("en-IN")} diamond multiples.`);
+    }
     const [eligibleRows] = await connection.query<RowDataPacket[]>(
       `SELECT user.id FROM application_users user WHERE user.id = ? AND (
          EXISTS (SELECT 1 FROM host_profiles host WHERE host.application_user_id = user.id AND host.status = 'ACTIVE')
@@ -518,6 +529,15 @@ export async function createWithdrawalRequest(identity: MobileIdentity, amount: 
        SELECT ?, ?, id, agency_account_id, ?, ?, ? FROM application_users WHERE id = ?`,
       [requestId, requestCode, amount, masked, payoutMethodId, identity.userId],
     );
+    const [requestRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>(
+      "SELECT agency_account_id FROM withdrawal_requests WHERE id = ? LIMIT 1",
+      [requestId],
+    );
+    await captureWithdrawalHierarchy(connection, {
+      withdrawalId: requestId,
+      applicationUserId: identity.userId,
+      agencyAccountId: requestRows[0]?.agency_account_id ?? null,
+    });
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'WITHDRAWAL', 'Withdrawal submitted', ?, 'wallet/withdrawals')", [randomUUID(), identity.userId, `${requestCode} is pending review.`]);
     return { id: requestCode, userId: identity.publicId, payoutMethodId, amount, status: "pending", createdAt: new Date().toISOString() };
   });
@@ -575,7 +595,7 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null; account_status: string })[]>("SELECT agency_account_id, account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!userRows[0] || userRows[0].account_status !== "ACTIVE") throw new Error("This account cannot create a room.");
     const [hostRows] = await connection.query<(RowDataPacket & { status: string })[]>("SELECT status FROM host_profiles WHERE application_user_id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
-    if (hostRows[0] && ["SUSPENDED", "INACTIVE"].includes(hostRows[0].status)) throw new Error("Hosting is suspended or inactive. Contact your Agency or support to restore access.");
+    if (!identity.hostAccessOverride && hostRows[0] && ["SUSPENDED", "INACTIVE"].includes(hostRows[0].status)) throw new Error("Hosting is suspended or inactive. Contact your Agency or support to restore access.");
     const [restrictionRows] = await connection.query<RowDataPacket[]>(
       `SELECT id FROM moderation_restrictions
        WHERE application_user_id = ? AND status = 'ACTIVE'
@@ -584,7 +604,7 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
        LIMIT 1 FOR UPDATE`,
       [identity.userId],
     );
-    if (restrictionRows[0]) throw new Error("Live hosting is temporarily restricted. Check your Nazraa notifications or contact support.");
+    if (!identity.hostAccessOverride && restrictionRows[0]) throw new Error("Live hosting is temporarily restricted. Check your Nazraa notifications or contact support.");
     const [rewardRuleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT id FROM host_reward_rules
        WHERE room_type = ? AND enabled = TRUE AND effective_from <= CURRENT_TIMESTAMP(3)
@@ -614,7 +634,21 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
 export async function sendGift(identity: MobileIdentity, input: { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
-  return withTransaction(async (connection) => {
+  return withIdempotentTransaction(async (connection) => {
+    await connection.execute(
+      `INSERT IGNORE INTO gift_idempotency_requests
+        (idempotency_key, application_user_id, room_code, gift_key, recipient_public_id, quantity)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [idempotencyKey, identity.userId, input.roomCode, input.giftId, input.recipientPublicId, input.quantity],
+    );
+    const [requestRows] = await connection.query<(RowDataPacket & { room_code: string; gift_key: string; recipient_public_id: number; quantity: number })[]>(
+      "SELECT room_code, gift_key, recipient_public_id, quantity FROM gift_idempotency_requests WHERE idempotency_key = ? FOR UPDATE",
+      [idempotencyKey],
+    );
+    const reservedRequest = requestRows[0];
+    if (!reservedRequest || reservedRequest.room_code !== input.roomCode || reservedRequest.gift_key !== input.giftId || String(reservedRequest.recipient_public_id) !== input.recipientPublicId || Number(reservedRequest.quantity) !== input.quantity) {
+      throw new Error("This gift request ID was already used.");
+    }
     const [previousRows] = await connection.query<(RowDataPacket & { amount: number; metadata: unknown })[]>(
       "SELECT amount, metadata FROM ledger_transactions WHERE idempotency_key = ? LIMIT 1 FOR UPDATE",
       [idempotencyKey],
@@ -660,22 +694,30 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
     const gift = giftRows[0]; const recipient = recipientRows[0]; const sender = senderProfileRows[0];
     if (!gift || !recipient || !sender) throw new Error("The gift or active room recipient is unavailable.");
     const total = Number(gift.coin_price) * input.quantity;
+    if (!Number.isSafeInteger(total) || total < 1) throw new Error("This gift price is outside the supported wallet range.");
+    const [economyRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.gift_economy' LIMIT 1",
+    );
+    const giftEconomy = asObject(economyRows[0]?.setting_value);
+    const giftCoinUnits = Number(giftEconomy.giftCoinUnits ?? 100);
+    const receiverDiamondUnits = Number(giftEconomy.receiverDiamondUnits ?? 97);
+    const diamondValue = giftDiamondValue(total, giftCoinUnits, receiverDiamondUnits);
     await ensureWallet(connection, identity.userId, "COIN"); await ensureWallet(connection, recipient.id, "DIAMOND");
     const [senderRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' FOR UPDATE", [identity.userId]);
     const [receiverRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [recipient.id]);
-    if (Number(senderRows[0].available_balance) < total) throw new Error("Not enough social coins.");
+    if (Number(senderRows[0].available_balance) < total) throw new Error("Not enough Coins.");
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [total, senderRows[0].id]);
-    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [total, receiverRows[0].id]);
+    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [diamondValue, receiverRows[0].id]);
     const transferCode = code("GFT");
     await connection.execute(
       `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, metadata)
-       VALUES (?, ?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, JSON_OBJECT('roomCode', ?, 'giftId', ?, 'recipientPublicId', ?, 'quantity', ?))`,
-      [randomUUID(), `${transferCode}-S`, idempotencyKey, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`, input.roomCode, input.giftId, input.recipientPublicId, input.quantity],
+       VALUES (?, ?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, JSON_OBJECT('roomCode', ?, 'giftId', ?, 'recipientPublicId', ?, 'quantity', ?, 'coinValue', ?, 'diamondValue', ?, 'giftCoinUnits', ?, 'receiverDiamondUnits', ?))`,
+      [randomUUID(), `${transferCode}-S`, idempotencyKey, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`, input.roomCode, input.giftId, input.recipientPublicId, input.quantity, total, diamondValue, giftCoinUnits, receiverDiamondUnits],
     );
     await connection.execute(
       `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason)
        VALUES (?, ?, 'DIAMOND', 'GIFT_RECEIVE', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
-      [randomUUID(), `${transferCode}-R`, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`],
+      [randomUUID(), `${transferCode}-R`, identity.userId, recipient.id, diamondValue, `${gift.name} ×${input.quantity}`],
     );
     await connection.execute(
       `UPDATE application_users
@@ -684,14 +726,14 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
        WHERE id = ?`,
       [total, total, identity.userId],
     );
-    await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [total, recipient.id]);
+    await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [diamondValue, recipient.id]);
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     const eventId = randomUUID();
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue],
     );
     const rocket = await recordRocketGift(connection, {
       roomId: room.id,
@@ -709,10 +751,10 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       message: `Sent to ${recipient.full_name}`,
       rocket,
       event: {
-        id: eventId, quantity: input.quantity, value: total, createdAt: new Date().toISOString(),
+        id: eventId, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
         gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
-        receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + total, "anchorIncome").level, vip: Number(recipient.vip_tier) },
+        receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
     };
   });

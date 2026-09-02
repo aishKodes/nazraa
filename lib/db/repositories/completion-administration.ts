@@ -140,7 +140,7 @@ export async function saveDiamondConversionRule(input: { scope: Scope; diamonds:
 }
 
 export async function saveHostRewardRules(input: { scope: Scope; live: number; face: number; party: number; minimumEligibleSeconds: number; reason: string }) {
-  if (![input.live, input.face, input.party].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error("Host reward rates must be non-negative whole coins.");
+  if (![input.live, input.face, input.party].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error("Host reward rates must be non-negative whole Diamonds.");
   if (input.party !== 0) throw new Error("Party Audio hourly reward must remain zero.");
   if (!Number.isSafeInteger(input.minimumEligibleSeconds) || input.minimumEligibleSeconds < 1) throw new Error("Minimum eligible time must be at least one second.");
   await withTransaction(async (connection) => {

@@ -4,6 +4,7 @@ import { Card, MetricCard, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
 import { getDashboardMetrics, getRecentActivity, getRecentLedger, getRevenueSeries } from "@/lib/db/repositories/dashboard";
+import { withdrawalFinance } from "@/lib/db/repositories/withdrawal-finance";
 import { formatCurrency, formatDate, formatNumber } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
@@ -13,19 +14,30 @@ export default async function DashboardPage() {
   const showActivity = can(scope.account.role, "audit.read");
   const showLedger = can(scope.account.role, "transactions.read");
   const showRevenue = can(scope.account.role, "reports.export");
-  const [metrics, activity, ledger, revenue] = await Promise.all([
+  const isAgency = scope.account.role === "AGENCY";
+  const [metrics, activity, ledger, revenue, agencyFinance] = await Promise.all([
     getDashboardMetrics(scope),
     showActivity ? getRecentActivity(scope) : Promise.resolve([]),
     showLedger ? getRecentLedger(scope, 6) : Promise.resolve([]),
     showRevenue ? getRevenueSeries(scope) : Promise.resolve([]),
+    isAgency ? withdrawalFinance(scope) : Promise.resolve(null),
   ]);
+  const agencySummary = agencyFinance?.agencies.find((agency) => agency.id === scope.account.id);
   const max = Math.max(...revenue.map((item) => item.revenue), 1);
   return <>
     <SectionHeading title={`${scope.account.role === "AGENCY" ? "Agency" : scope.account.role === "MONITORING_CS" ? "Monitoring" : "Operations"} overview`} description={scope.isGlobal ? "The entire Nazraa Control Platform." : `Only ${scope.account.fullName}'s permitted branch.`} action={<span className="range-chip">Live scope</span>} />
     <div className="metric-grid">
-      {can(scope.account.role, "users.read") ? <MetricCard label="Users" value={metrics.users} detail="In your scope" icon={<UsersRound size={20} />} /> : null}
-      {can(scope.account.role, "hosts.read") ? <MetricCard label="Active hosts" value={metrics.hosts} detail="Approved or live" icon={<Radio size={20} />} /> : null}
-      {can(scope.account.role, "agencies.read") ? <MetricCard label={scope.account.role === "AGENCY" ? "My Agency" : "Active agencies"} value={metrics.agencies} detail="In your branch" icon={<Building2 size={20} />} /> : null}
+      {isAgency && agencySummary ? <>
+        <MetricCard label="Total Hosts" value={agencySummary.hostCount} detail="Only your Agency" icon={<Radio size={20} />} />
+        <MetricCard label="Host Diamonds" value={formatNumber(agencySummary.availableDiamonds)} detail="Current withdrawable earnings" icon={<WalletCards size={20} />} />
+        <MetricCard label="Withdrawn Diamonds" value={formatNumber(agencySummary.totalWithdrawn)} detail="Completed withdrawals only" icon={<Landmark size={20} />} />
+        <MetricCard label="Host payout" value={formatCurrency(agencySummary.hostPayoutInr)} detail="Completed withdrawals only" icon={<WalletCards size={20} />} />
+        <MetricCard label="Agency commission" value={formatCurrency(agencySummary.agencyCommissionInr)} detail="Completed withdrawals only" icon={<Coins size={20} />} />
+      </> : <>
+        {can(scope.account.role, "users.read") ? <MetricCard label="Users" value={metrics.users} detail="In your scope" icon={<UsersRound size={20} />} /> : null}
+        {can(scope.account.role, "hosts.read") ? <MetricCard label="Active hosts" value={metrics.hosts} detail="Approved or live" icon={<Radio size={20} />} /> : null}
+        {can(scope.account.role, "agencies.read") ? <MetricCard label="Active agencies" value={metrics.agencies} detail="In your branch" icon={<Building2 size={20} />} /> : null}
+      </>}
       {can(scope.account.role, "wallet.read") ? <MetricCard label="My coin inventory" value={metrics.coinInventory} detail="Available to distribute" icon={<Coins size={20} />} /> : null}
       {showLedger ? <MetricCard label="Cash revenue" value={formatCurrency(metrics.revenue)} detail="Completed ledger entries" icon={<WalletCards size={20} />} /> : null}
       {can(scope.account.role, "withdrawals.read") ? <MetricCard label="Pending withdrawals" value={metrics.pendingWithdrawals} detail="In your scope" icon={<Landmark size={20} />} /> : null}

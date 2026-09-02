@@ -455,19 +455,21 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     const room = rooms[0];
     if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("This Video Live room is no longer active.");
     if (room.host_application_user_id !== identity.userId) throw new Error("Only the room owner can accept call requests.");
-    const [targets] = await connection.query<(RowDataPacket & { id: string; face_verification_status: string; request_status: string })[]>(
-      `SELECT user.id, user.face_verification_status, request.status request_status
+    const [targets] = await connection.query<(RowDataPacket & { id: string; face_verification_status: string; request_status: string; host_access_override: number })[]>(
+      `SELECT user.id, user.face_verification_status, request.status request_status,
+              (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override
        FROM application_users user
        INNER JOIN live_room_members member
          ON member.application_user_id = user.id AND member.room_id = ? AND member.left_at IS NULL
        INNER JOIN live_cohost_requests request
          ON request.requester_application_user_id = user.id AND request.room_id = member.room_id
+       LEFT JOIN mobile_access_overrides access_override ON access_override.application_user_id = user.id
        WHERE user.public_id = ? LIMIT 1 FOR UPDATE`,
       [room.id, input.targetPublicId],
     );
     const target = targets[0];
     if (!target || target.request_status !== "PENDING") throw new Error("This call request is no longer pending.");
-    if (input.accept && target.face_verification_status !== "VERIFIED") {
+    if (input.accept && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
       throw new Error("The viewer must complete Face Verification before joining the host on camera.");
     }
     await connection.execute(

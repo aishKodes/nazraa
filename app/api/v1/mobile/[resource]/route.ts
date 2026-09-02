@@ -44,7 +44,7 @@ import {
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
-import { discoveryPosts, privateMessagingForUser, respondToPrivateRequest, searchPrivateMessageRecipients } from "@/lib/db/repositories/mobile-social";
+import { discoveryPosts, privateMessagingForUser, respondToPrivateRequest, searchPrivateMessageRecipients, socialDirectory } from "@/lib/db/repositories/mobile-social";
 import { actOnRoomSeat } from "@/lib/db/repositories/mobile-seats";
 import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDiscoveryPost, markPrivateConversationRead, removeOwnAgencyHost, reportDiscoveryPost, reportPrivateMessage, reviewOwnAgencyJoin, searchAgency, sendPrivateMessage, setPrivateMessageBlock, verifyAgencyParent } from "@/lib/db/repositories/mobile-social";
 import { claimVipDailyReward, purchaseVipTier, rocketSnapshot } from "@/lib/db/repositories/mobile-rewards";
@@ -109,6 +109,13 @@ export async function GET(request: Request, context: { params: Promise<{ resourc
     if (resource === "private-message-directory") {
       const query = z.string().trim().min(2).max(80).parse(new URL(request.url).searchParams.get("q"));
       return NextResponse.json(await searchPrivateMessageRecipients(identity, query), { headers: { "Cache-Control": "private, no-store" } });
+    }
+    if (resource === "social-directory") {
+      const parameters = new URL(request.url).searchParams;
+      const targetPublicId = z.string().regex(/^\d+$/).parse(parameters.get("publicId"));
+      const kind = z.enum(["followers", "following"]).parse(parameters.get("kind"));
+      const after = z.string().regex(/^\d+$/).optional().parse(parameters.get("after") ?? undefined);
+      return NextResponse.json(await socialDirectory(identity, { targetPublicId, kind, after }), { headers: { "Cache-Control": "private, no-store" } });
     }
     if (resource === "game-rounds") {
       const parameters = new URL(request.url).searchParams;

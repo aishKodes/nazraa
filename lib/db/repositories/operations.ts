@@ -6,6 +6,7 @@ import { withTransaction } from "@/lib/db/transaction";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PageRequest, PageResult, Scope } from "@/types/platform";
 import { can } from "@/lib/auth/permissions";
+import { finalizeWithdrawalDistribution } from "@/lib/db/repositories/withdrawal-economy";
 
 function code(prefix: string) {
   return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
@@ -207,8 +208,8 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
   if (input.nextStatus === "COMPLETED" && (input.providerReference?.trim().length ?? 0) < 3) throw new Error("A payout provider reference is required before completion.");
   return withTransaction(async (connection) => {
     const filter = scopeWhere(input.scope, "agency_account_id");
-    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; withdrawal_code: string; payout_method_id: string | null })[]>(
-      `SELECT id, status, amount, application_user_id, withdrawal_code, payout_method_id FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; agency_account_id: string | null; withdrawal_code: string; payout_method_id: string | null })[]>(
+      `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
     );
     const request = rows[0];
@@ -240,6 +241,16 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
          VALUES (?, ?, ?, 'DIAMOND', ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?)`,
         [randomUUID(), code(input.nextStatus === "COMPLETED" ? "PAY" : "REL"), `withdrawal:${request.id}:${input.nextStatus}`, input.nextStatus === "COMPLETED" ? "WITHDRAWAL_PAID" : "WITHDRAWAL_RELEASED", input.nextStatus === "COMPLETED" ? "APPLICATION_USER" : "WITHDRAWAL_RESERVE", request.application_user_id, input.nextStatus === "COMPLETED" ? "PAYOUT_PROVIDER" : "APPLICATION_USER", input.nextStatus === "COMPLETED" ? null : request.application_user_id, amount, input.reason.trim(), input.scope.account.id, JSON.stringify({ withdrawalCode: request.withdrawal_code, balanceBefore: walletBefore, balanceAfter: walletAfter })],
       );
+      if (input.nextStatus === "COMPLETED") {
+        await finalizeWithdrawalDistribution(connection, {
+          withdrawalId: request.id,
+          amount,
+          applicationUserId: request.application_user_id,
+          agencyAccountId: request.agency_account_id,
+          actorAccountId: input.scope.account.id,
+          providerReference: input.providerReference!.trim(),
+        });
+      }
     }
     await connection.execute(
       `UPDATE withdrawal_requests SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ?, provider_reference = COALESCE(?, provider_reference) WHERE id = ?`,

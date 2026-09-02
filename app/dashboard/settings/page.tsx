@@ -11,12 +11,14 @@ import {
   submitRoomFeatureSettings,
   submitRocketSettings,
   submitVipValidity,
+  submitWithdrawalEconomy,
 } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
 import { getSystemSettings } from "@/lib/db/repositories/catalog";
 import { getCompletionAdminSettings } from "@/lib/db/repositories/completion-administration";
 import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config";
+import { parseWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
+  const withdrawal = parseWithdrawalEconomy(settings.find((item) => item.key === "withdrawal.economy")?.value);
   const social = settings.find((item) => item.key === "mobile.social")?.value as { private_message_coin_cost?: number } | undefined;
   const gameSettings = mobileGamesConfig(settings.find((item) => item.key === "mobile.games")?.value);
   const roomFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as {
@@ -51,8 +54,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     <div className="report-grid">
       <Card>
         <ShieldCheck className="report-icon" size={24} />
-        <h2>Cash conversion baseline</h2>
-        <p>Legacy cash-withdrawal display rule. Historic transactions keep their original snapshot.</p>
+        <h2>Legacy diamond display</h2>
+        <p>Compatibility setting for older records only. Current withdrawals use the immutable payout configuration below.</p>
         <form action={submitEconomySettings} className="stack-form full-width">
           <label>Conversion rate<input name="rate" type="number" min="0.0001" step="0.0001" defaultValue={economy?.rate ?? 1} required /></label>
           <label>Minimum diamonds<input name="minimum" type="number" min="1" defaultValue={economy?.minimum ?? 1000} required /></label>
@@ -67,6 +70,24 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <span className="scope-lock">Server controlled</span>
       </Card>
     </div>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>Withdrawal economics</h2><p>Applied only when a withdrawal is completed. Historic payout snapshots never change.</p></div></div>
+      <form action={submitWithdrawalEconomy} className="form-grid">
+        <label>Diamond slab<input name="slabDiamonds" type="number" min="1" required defaultValue={withdrawal.slabDiamonds} /></label>
+        <label>Total USD cents / slab<input name="totalUsdCents" type="number" min="1" required defaultValue={withdrawal.totalUsdCents} /></label>
+        <label>Host USD cents<input name="hostUsdCents" type="number" min="0" required defaultValue={withdrawal.hostUsdCents} /></label>
+        <label>Agency USD cents<input name="agencyUsdCents" type="number" min="0" required defaultValue={withdrawal.agencyUsdCents} /></label>
+        <label>Super Admin USD cents<input name="superAdminUsdCents" type="number" min="0" required defaultValue={withdrawal.superAdminUsdCents} /></label>
+        <label>Admin USD cents<input name="adminUsdCents" type="number" min="0" required defaultValue={withdrawal.adminUsdCents} /></label>
+        <label>BD USD cents<input name="bdUsdCents" type="number" min="0" required defaultValue={withdrawal.bdUsdCents} /></label>
+        <label>Country Manager USD cents<input name="countryManagerUsdCents" type="number" min="0" required defaultValue={withdrawal.countryManagerUsdCents} /></label>
+        <label>Company USD cents<input name="companyUsdCents" type="number" min="0" required defaultValue={withdrawal.companyUsdCents} /></label>
+        <label>USD → INR rate<input name="usdInrRate" type="number" min="0.01" max="1000" step="0.000001" required defaultValue={withdrawal.usdInrRate} /></label>
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the withdrawal configuration changing?" /></label>
+        <label>Confirm<button className="primary-button" type="submit">Save withdrawal economics</button></label>
+      </form>
+    </Card>
 
     <Card className="settings-card">
       <div className="card-title"><div><h2>Daily Rewards</h2><p>Seven-day server-time cycle used by every authenticated user.</p></div></div>
@@ -94,7 +115,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <form action={submitHostRewardRules} className="form-grid">
         <label>Video Live diamonds/hour<input name="live" type="number" min="0" required defaultValue={host("LIVE", 3500)} /></label>
         <label>Face Live diamonds/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 3500)} /></label>
-        <label>Party coins/hour<input name="party" type="number" value="0" readOnly aria-readonly="true" /><span>Audio Party hourly reward remains disabled.</span></label>
+        <label>Party diamonds/hour<input name="party" type="number" value="0" readOnly aria-readonly="true" /><span>Audio Party hourly reward remains disabled.</span></label>
         <label>Minimum eligible seconds<input name="minimumEligibleSeconds" type="number" min="1" max="3600" required defaultValue={minimumEligible} /></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} /></label>
         <label>Confirm<button className="primary-button" type="submit">Save host rewards</button></label>
@@ -207,9 +228,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </Card>
 
     <Card className="settings-card">
-      <div className="card-title"><div><h2>Mobile commerce</h2><p>Approved-seller WhatsApp handoff and the host withdrawal floor.</p></div></div>
+      <div className="card-title"><div><h2>Mobile commerce</h2><p>Approved-seller WhatsApp handoff and the exact Diamond withdrawal slab.</p></div></div>
       <form action={submitCommerceSettings} className="form-grid">
-        <label>Minimum withdrawal<input name="minimumWithdrawal" type="number" min="1" required defaultValue={commerce?.minimumWithdrawal ?? 1000} /></label>
+        <label>Withdrawal slab<input name="minimumWithdrawal" type="number" readOnly required value={withdrawal.slabDiamonds} /><span>Managed by Withdrawal economics above.</span></label>
         <label>Support URL<input name="supportUrl" type="url" defaultValue={commerce?.supportUrl ?? ""} /></label>
         <label>Withdrawal portal URL<input name="withdrawalPortalUrl" type="url" defaultValue={commerce?.withdrawalPortalUrl ?? ""} /></label>
         <label className="span-two">WhatsApp order template<textarea name="whatsappMessageTemplate" required minLength={20} maxLength={1000} rows={7} defaultValue={commerce?.whatsappMessageTemplate ?? "Hello, I want to purchase Nazraa Live coins.\n\nMy User ID: {userId}\nAgency ID: {agencyId}\nSelected Package: {package}\nOrder ID: {orderId}\n\nPlease share payment details."} /></label>

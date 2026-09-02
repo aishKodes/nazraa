@@ -10,6 +10,20 @@ function decision(allowed: boolean, reason: string): LiveAccessDecision {
 
 export class LiveAccessPolicyService {
   static for(identity: MobileIdentity) {
+    if (identity.hostAccessOverride) {
+      return {
+        browse: decision(true, "Owner test access active."),
+        join: decision(true, "Owner test access active."),
+        chat: decision(true, "Owner test access active."),
+        party: decision(true, "Owner test access active."),
+        video: decision(true, "Owner test access active."),
+        face: decision(true, "Owner test access active."),
+        faceVerified: true,
+        agencyApproved: true,
+        agencyAuthorized: true,
+        superAdminAuthorized: true,
+      };
+    }
     const faceVerified = identity.faceVerificationStatus === "VERIFIED";
     const agencyApproved = Boolean(identity.agencyAccountId);
     const party = decision(faceVerified, faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");

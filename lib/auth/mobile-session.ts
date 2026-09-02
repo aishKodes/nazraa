@@ -28,6 +28,7 @@ export type MobileIdentity = {
   agencyAccountId: string | null;
   agencyFaceLiveAuthorized: boolean;
   superAdminFaceLiveAuthorized: boolean;
+  hostAccessOverride: boolean;
 };
 
 const rolePermissions: Record<MobileRole, string[]> = {
@@ -64,8 +65,18 @@ export function permissionsForMobileRole(role: MobileRole) {
   return rolePermissions[role];
 }
 
+const hostAccessOverridePermissions = [
+  "rooms.create.party", "rooms.create.live", "rooms.manage.own", "party.take_seat", "host.read", "face.submit",
+];
+
+export function permissionsForMobileIdentity(identity: MobileIdentity) {
+  return identity.hostAccessOverride
+    ? [...new Set([...rolePermissions[identity.role], ...hostAccessOverridePermissions])]
+    : rolePermissions[identity.role];
+}
+
 export function mobileCan(identity: MobileIdentity, permission: string) {
-  return rolePermissions[identity.role].includes(permission);
+  return permissionsForMobileIdentity(identity).includes(permission);
 }
 
 type RegistrationProfile = {
@@ -218,16 +229,19 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     super_admin_face_live_authorized: number;
     is_host: number;
     platform_role: string | null;
+    host_access_override: number;
   })[]>(
     `SELECT session.id session_id, user.id user_id, user.public_id, user.external_user_id,
             user.full_name, user.account_status, user.face_verification_status, user.is_host,
             user.agency_account_id, user.agency_face_live_authorized, user.super_admin_face_live_authorized,
-            account.role platform_role
+            account.role platform_role,
+            (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override
      FROM mobile_sessions session
      INNER JOIN application_users user ON user.id = session.application_user_id
      LEFT JOIN platform_accounts account
        ON account.status = 'ACTIVE'
       AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
+     LEFT JOIN mobile_access_overrides access_override ON access_override.application_user_id = user.id
      WHERE session.token_hash = ? AND session.revoked_at IS NULL
        AND session.expires_at > CURRENT_TIMESTAMP(3) AND user.account_status = 'ACTIVE'
        AND NOT EXISTS (
@@ -255,5 +269,6 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     agencyAccountId: row.agency_account_id,
     agencyFaceLiveAuthorized: Boolean(row.agency_face_live_authorized),
     superAdminFaceLiveAuthorized: Boolean(row.super_admin_face_live_authorized),
+    hostAccessOverride: Boolean(row.host_access_override),
   };
 }

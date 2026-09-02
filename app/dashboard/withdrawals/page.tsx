@@ -1,4 +1,5 @@
-import { Check, ExternalLink, Landmark } from "lucide-react";
+import Image from "next/image";
+import { Check, Download, ExternalLink, Landmark } from "lucide-react";
 import { submitWithdrawalTransition } from "@/app/actions";
 import { submitPayoutMethodReview } from "@/app/admin-actions";
 import { Pagination } from "@/components/pagination";
@@ -13,23 +14,25 @@ import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
 import { listPayoutMethodReviews } from "@/lib/db/repositories/mobile-administration";
 import { listWithdrawalsPage } from "@/lib/db/repositories/operations";
-import { formatDate, formatNumber } from "@/lib/utils/format";
+import { withdrawalFinance } from "@/lib/db/repositories/withdrawal-finance";
+import { formatCurrency, formatDate, formatNumber } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function WithdrawalsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; success?: string; page?: string }>;
+  searchParams: Promise<{ error?: string; success?: string; page?: string; agencyId?: string }>;
 }) {
   const scope = await requirePermission("withdrawals.read");
-  const { error, success, page: rawPage } = await searchParams;
+  const { error, success, page: rawPage, agencyId } = await searchParams;
   const canReview = can(scope.account.role, "withdrawals.review");
-  const [result, payoutMethods] = await Promise.all([
+  const [result, payoutMethods, finance] = await Promise.all([
     listWithdrawalsPage(scope, {
       page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1),
     }),
     canReview ? listPayoutMethodReviews(scope) : Promise.resolve([]),
+    withdrawalFinance(scope, agencyId),
   ]);
   const withdrawals = result.items;
   return (
@@ -40,6 +43,80 @@ export default async function WithdrawalsPage({
       />
       {success ? <Notice type="success">{success}</Notice> : null}
       {error ? <Notice type="error">{error}</Notice> : null}
+      {finance.agencies.length ? (
+        <>
+          <div className="section-subheading">
+            <h2>Agency earnings</h2>
+            <p>Diamonds are withdrawable Host/Agency earnings. Commissions appear only after payment is completed.</p>
+          </div>
+          <Card>
+            <div className="table-scroll">
+              <table>
+                <thead><tr><th>Agency</th><th className="align-right">Hosts</th><th className="align-right">Available</th><th className="align-right">Completed diamonds</th><th className="align-right">Host payout</th><th className="align-right">Agency commission</th>{scope.account.role === "MASTER" ? <><th className="align-right">Super Admin</th><th className="align-right">Admin</th><th className="align-right">BD</th><th className="align-right">Country Manager</th><th className="align-right">Company</th></> : null}<th>Details</th></tr></thead>
+                <tbody>{finance.agencies.map((agency) => <tr key={agency.id}>
+                  <td><b>{agency.name}</b><small className="mono block">{agency.publicId}</small></td>
+                  <td className="align-right">{formatNumber(agency.hostCount)}</td>
+                  <td className="align-right">{formatNumber(agency.availableDiamonds)} diamonds</td>
+                  <td className="align-right">{formatNumber(agency.totalWithdrawn)}</td>
+                  <td className="align-right">{formatCurrency(agency.hostPayoutInr)}</td>
+                  <td className="align-right">{formatCurrency(agency.agencyCommissionInr)}</td>
+                  {scope.account.role === "MASTER" ? <>
+                    <td className="align-right">{formatCurrency(agency.superAdminInr)}</td>
+                    <td className="align-right">{formatCurrency(agency.adminInr)}</td>
+                    <td className="align-right">{formatCurrency(agency.bdInr)}</td>
+                    <td className="align-right">{formatCurrency(agency.countryManagerInr)}</td>
+                    <td className="align-right">{formatCurrency(agency.companyInr)}</td>
+                  </> : null}
+                  <td><a className="table-link" href={`/dashboard/withdrawals?agencyId=${agency.id}`}>Open</a></td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      ) : null}
+      {finance.selectedAgency ? (
+        <>
+          <div className="section-subheading">
+            <h2>{finance.selectedAgency.name} · Hosts</h2>
+            <p>Current earnings, next withdrawal target, completed host payout, and Agency commission.</p>
+            {scope.account.role === "MASTER" ? <a className="secondary-button" href={`/api/reports/agencies/${finance.selectedAgency.id}`}><Download size={15} />Download CSV</a> : null}
+          </div>
+          <Card>
+            {finance.hosts.length ? <div className="table-scroll"><table>
+              <thead><tr><th>Host</th><th className="align-right">Available diamonds</th><th className="align-right">Pending</th><th className="align-right">Next target</th><th className="align-right">Total withdrawn</th><th className="align-right">Host payout</th><th className="align-right">Agency commission</th></tr></thead>
+              <tbody>{finance.hosts.map((host) => <tr key={host.id}>
+                <td><div className="person">{host.avatarUrl ? <Image className="avatar" src={String(host.avatarUrl)} alt="" width={28} height={28} unoptimized /> : <span className="avatar">{host.name.slice(0, 1)}</span>}<span><b>{host.name}</b><small className="mono">{host.publicId}</small></span></div></td>
+                <td className="align-right">{formatNumber(host.availableDiamonds)}</td>
+                <td className="align-right">{formatNumber(host.pendingDiamonds)}</td>
+                <td className="align-right">{formatNumber(host.nextTarget)}</td>
+                <td className="align-right">{formatNumber(host.totalWithdrawn)}</td>
+                <td className="align-right">{formatCurrency(host.hostPayoutInr)}</td>
+                <td className="align-right">{formatCurrency(host.agencyCommissionInr)}</td>
+              </tr>)}</tbody>
+            </table></div> : <EmptyState title="No Hosts" detail="No active Host is assigned to this Agency." />}
+          </Card>
+          {finance.withdrawals.length ? <Card>
+            <div className="card-title"><div><h2>Permanent payout breakdown</h2><p>The exact hierarchy, USD split, FX rate and INR amounts captured for every request.</p></div></div>
+            <div className="table-scroll"><table>
+              <thead><tr><th>Withdrawal</th><th>Host / hierarchy</th><th>Status</th><th className="align-right">Diamonds</th><th className="align-right">Host</th><th className="align-right">Agency</th><th className="align-right">SA</th><th className="align-right">Admin</th><th className="align-right">BD</th><th className="align-right">CM</th><th className="align-right">Company</th><th>FX / completed</th></tr></thead>
+              <tbody>{finance.withdrawals.map((item) => <tr key={String(item.withdrawal_id)}>
+                <td><b className="mono">{String(item.withdrawal_code)}</b><small className="block">{formatDate(item.requested_at as string)}</small></td>
+                <td><b>{String(item.host_name)}</b><small className="mono block">{String(item.host_public_id)}</small><small className="block">{[item.agency_name, item.bd_name, item.admin_name, item.super_admin_name, item.country_manager_name].filter(Boolean).map(String).join(" → ") || "Unassigned"}</small></td>
+                <td><StatusBadge value={String(item.status)} /></td>
+                <td className="align-right">{formatNumber(Number(item.amount))}</td>
+                <td className="align-right">{item.host_inr == null ? "Pending" : formatCurrency(Number(item.host_inr))}</td>
+                <td className="align-right">{item.agency_inr == null ? "—" : formatCurrency(Number(item.agency_inr))}</td>
+                <td className="align-right">{item.super_admin_inr == null ? "—" : formatCurrency(Number(item.super_admin_inr))}</td>
+                <td className="align-right">{item.admin_inr == null ? "—" : formatCurrency(Number(item.admin_inr))}</td>
+                <td className="align-right">{item.bd_inr == null ? "—" : formatCurrency(Number(item.bd_inr))}</td>
+                <td className="align-right">{item.country_manager_inr == null ? "—" : formatCurrency(Number(item.country_manager_inr))}</td>
+                <td className="align-right">{item.company_inr == null ? "—" : formatCurrency(Number(item.company_inr))}</td>
+                <td>{item.usd_inr_rate == null ? "Not completed" : `$1 = ₹${Number(item.usd_inr_rate).toFixed(2)}`}<small className="block">{formatDate(item.completed_at as string | null)}</small></td>
+              </tr>)}</tbody>
+            </table></div>
+          </Card> : null}
+        </>
+      ) : null}
       {canReview ? (
         <>
           <div className="section-subheading">

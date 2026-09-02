@@ -152,7 +152,7 @@ async function main() {
     for (const kind of ["LIVE", "PARTY", "FACE"]) await root.execute("INSERT INTO host_reward_rules (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by) VALUES (?, ?, 0, 60, TRUE, '2020-01-01', ?)", [randomUUID(), kind, master.account.id]);
     const [hostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
     const hostId = String(hostRows[0].id);
-    const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true };
+    const identity = { userId: ownUser.id, publicId: ownUser.publicId, externalUserId: ownUser.id, fullName: "QA Own Host", role: "HOST" as const, accountStatus: "ACTIVE", faceVerificationStatus: "VERIFIED", agencyAccountId: agency.account.id, agencyFaceLiveAuthorized: true, superAdminFaceLiveAuthorized: true, hostAccessOverride: false };
     const sharedGame = await product.gameSharedRoundState(identity, "luck77");
     assert.equal(sharedGame.game, "luck77");
     assert.equal(sharedGame.controls.enabled, true);
@@ -353,8 +353,8 @@ async function main() {
     passed++;
 
     const withdrawalId = randomUUID();
-    await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance, reserved_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 0, 100)", [randomUUID(), ownUser.id]);
-    await root.execute("INSERT INTO withdrawal_requests (id, withdrawal_code, application_user_id, agency_account_id, amount) VALUES (?, ?, ?, ?, 100)", [withdrawalId, randomUUID(), ownUser.id, agency.account.id]);
+    await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance, reserved_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 0, 100000)", [randomUUID(), ownUser.id]);
+    await root.execute("INSERT INTO withdrawal_requests (id, withdrawal_code, application_user_id, agency_account_id, amount) VALUES (?, ?, ?, ?, 100000)", [withdrawalId, randomUUID(), ownUser.id, agency.account.id]);
     await assert.rejects(ops.transitionWithdrawal({ scope: agency, withdrawalId, nextStatus: "UNDER_REVIEW", reason: "QA Agency cannot approve payout" }));
     await assert.rejects(ops.transitionWithdrawal({ scope: await refresh(cmOther), withdrawalId, nextStatus: "UNDER_REVIEW", reason: "QA cross branch payout" }));
     for (const nextStatus of ["UNDER_REVIEW", "APPROVED", "PROCESSING", "COMPLETED"]) await ops.transitionWithdrawal({ scope: await refresh(cm), withdrawalId, nextStatus, providerReference: "QA-NO-REAL-PAYMENT", reason: "QA payout state transition" });

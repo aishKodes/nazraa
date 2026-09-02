@@ -7,6 +7,7 @@ import { db } from "@/lib/db/pool";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
+import { loadWithdrawalEconomy, validateWithdrawalEconomy, type WithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 
 function operationCode(prefix: string) {
   return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
@@ -321,13 +322,34 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
 }
 
 export async function saveCommerceSettings(input: { scope: Scope; minimumWithdrawal: number; whatsappMessageTemplate: string; supportUrl?: string; withdrawalPortalUrl?: string }) {
-  const value = { coinPurchaseMethod: "AGENCY_WHATSAPP", whatsappMessageTemplate: input.whatsappMessageTemplate, minimumWithdrawal: input.minimumWithdrawal, supportUrl: input.supportUrl || "", withdrawalPortalUrl: input.withdrawalPortalUrl || "" };
   await withTransaction(async (connection) => {
+    const withdrawal = await loadWithdrawalEconomy(connection);
+    const value = { coinPurchaseMethod: "AGENCY_WHATSAPP", whatsappMessageTemplate: input.whatsappMessageTemplate, minimumWithdrawal: withdrawal.slabDiamonds, withdrawalSlab: withdrawal.slabDiamonds, supportUrl: input.supportUrl || "", withdrawalPortalUrl: input.withdrawalPortalUrl || "" };
     await connection.execute(
       `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.commerce', ?, ?)
        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
       [JSON.stringify(value), input.scope.account.id],
     );
     await audit(connection, { scope: input.scope, action: "settings.mobile_commerce", module: "settings", targetType: "system_setting", targetId: input.scope.account.id, reason: "Updated mobile commerce settings", next: value });
+  });
+}
+
+export async function saveWithdrawalEconomy(input: { scope: Scope; reason: string; value: WithdrawalEconomy }) {
+  if (input.scope.account.role !== "MASTER") throw new Error("Only Master can change withdrawal economics.");
+  validateWithdrawalEconomy(input.value);
+  await withTransaction(async (connection) => {
+    const previous = await loadWithdrawalEconomy(connection);
+    await connection.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('withdrawal.economy', ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+      [JSON.stringify(input.value), input.scope.account.id],
+    );
+    await connection.execute(
+      `UPDATE system_settings SET setting_value = JSON_SET(COALESCE(setting_value, JSON_OBJECT()),
+         '$.minimumWithdrawal', ?, '$.withdrawalSlab', ?), updated_by = ?
+       WHERE setting_key = 'mobile.commerce'`,
+      [input.value.slabDiamonds, input.value.slabDiamonds, input.scope.account.id],
+    );
+    await audit(connection, { scope: input.scope, action: "settings.withdrawal_economy", module: "settings", targetType: "system_setting", targetId: "withdrawal.economy", reason: input.reason, previous, next: input.value });
   });
 }

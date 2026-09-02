@@ -394,6 +394,53 @@ export async function searchPrivateMessageRecipients(identity: MobileIdentity, r
   };
 }
 
+export async function socialDirectory(
+  identity: MobileIdentity,
+  input: { targetPublicId: string; kind: "followers" | "following"; after?: string },
+) {
+  const [targetRows] = await db().query<(RowDataPacket & { id: string; public_id: number; full_name: string })[]>(
+    "SELECT id, public_id, full_name FROM application_users WHERE public_id = ? AND account_status = 'ACTIVE' LIMIT 1",
+    [input.targetPublicId],
+  );
+  const target = targetRows[0];
+  if (!target) throw new Error("This profile is no longer available.");
+  const selectedColumn = input.kind === "followers" ? "follow_link.follower_application_user_id" : "follow_link.followed_application_user_id";
+  const ownerColumn = input.kind === "followers" ? "follow_link.followed_application_user_id" : "follow_link.follower_application_user_id";
+  const [rows] = await db().query<RowDataPacket[]>(
+    `SELECT person.public_id, person.full_name, person.country_code, person.language_code,
+            person.level_number, person.consumption_points, person.anchor_income_points, person.vip_tier,
+            person.is_host, person.bio,
+            (SELECT COUNT(*) FROM user_follows followers WHERE followers.followed_application_user_id = person.id) followers,
+            (SELECT COUNT(*) FROM user_follows following WHERE following.follower_application_user_id = person.id) following,
+            CASE WHEN avatar.updated_at IS NOT NULL
+              THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', person.public_id,
+                          '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+              ELSE person.avatar_url END avatar_url
+     FROM user_follows follow_link
+     INNER JOIN application_users person ON person.id = ${selectedColumn} AND person.account_status = 'ACTIVE'
+     LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = person.id
+     WHERE ${ownerColumn} = ?
+       ${input.after ? "AND person.public_id > ?" : ""}
+     ORDER BY person.public_id ASC LIMIT 51`,
+    [target.id, ...(input.after ? [input.after] : [])],
+  );
+  const page = rows.slice(0, 50);
+  return {
+    target: { id: String(target.public_id), name: target.full_name, isSelf: target.id === identity.userId },
+    kind: input.kind,
+    hasMore: rows.length > 50,
+    next: rows.length > 50 ? String(page.at(-1)?.public_id ?? "") : null,
+    people: page.map((row) => ({
+      id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
+      country: row.country_code ?? "", language: row.language_code ?? "en", bio: String(row.bio ?? ""),
+      level: Math.min(120, Math.floor(Math.sqrt(Math.max(0, Number(row.consumption_points ?? 0)) / 500)) + 1),
+      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 500)) + 1),
+      vip: Number(row.vip_tier ?? 0), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0),
+      role: row.is_host ? "host" : "user",
+    })),
+  };
+}
+
 export async function privateMessagingForUser(identity: MobileIdentity, before?: string) {
   try {
     const [messages, settingRows, blocks, usageRows, clockRows] = await Promise.all([

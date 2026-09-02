@@ -94,7 +94,7 @@ export async function purchaseVipTier(identity: MobileIdentity, targetTier: numb
       [identity.userId],
     );
     const wallet = wallets[0];
-    if (!wallet || Number(wallet.available_balance) < price) throw new Error("Not enough social coins for this VIP upgrade.");
+    if (!wallet || Number(wallet.available_balance) < price) throw new Error("Not enough Coins for this VIP upgrade.");
     const ledgerId = randomUUID();
     const code = transactionCode("VIP");
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [price, wallet.id]);

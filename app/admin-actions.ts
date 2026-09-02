@@ -18,7 +18,7 @@ import {
 import { createHostApplication, reviewHostApplication, updateHostGender, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
 import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
-import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
+import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, saveWithdrawalEconomy, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
 import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, saveVipValidity, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { preparePublicImage } from "@/lib/security/public-images";
@@ -576,6 +576,24 @@ export async function submitCommerceSettings(formData: FormData) {
   if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the withdrawal minimum, WhatsApp template, and optional HTTPS URLs."));
   await saveCommerceSettings({ scope, ...parsed.data }); revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Mobile commerce settings saved."));
+}
+
+export async function submitWithdrawalEconomy(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    slabDiamonds: z.coerce.number().int().positive(), totalUsdCents: z.coerce.number().int().positive(),
+    hostUsdCents: z.coerce.number().int().nonnegative(), agencyUsdCents: z.coerce.number().int().nonnegative(),
+    superAdminUsdCents: z.coerce.number().int().nonnegative(), adminUsdCents: z.coerce.number().int().nonnegative(),
+    bdUsdCents: z.coerce.number().int().nonnegative(), countryManagerUsdCents: z.coerce.number().int().nonnegative(),
+    companyUsdCents: z.coerce.number().int().nonnegative(), usdInrRate: z.coerce.number().positive().max(1000),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check every withdrawal allocation, FX rate, and the change reason."));
+  const { reason, ...value } = parsed.data;
+  try { await saveWithdrawalEconomy({ scope, reason, value }); }
+  catch (error) { redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Withdrawal economics could not be saved.")); }
+  revalidatePath("/dashboard/settings"); revalidatePath("/dashboard/withdrawals");
+  redirect(destination("/dashboard/settings", "success", "Withdrawal slab, split, and FX rate saved for future completed withdrawals."));
 }
 
 export async function submitPayoutMethodReview(formData: FormData) {
