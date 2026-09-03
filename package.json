@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test:roles": "tsx scripts/verify-role-matrix.ts",
     "test:integration": "tsx scripts/verify-control-integration.ts",
+    "test:core-mobile": "tsx scripts/verify-core-mobile.ts",
     "test:game-rtp": "tsx scripts/verify-game-rtp.ts",
     "bootstrap:master": "tsx scripts/bootstrap-master.ts",
     "provision:master": "tsx scripts/provision-master.ts",

@@ -176,10 +176,11 @@ async function main() {
     await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "INACTIVE", reason: "QA pause host access" });
     await assert.rejects(product.createRoom(identity, roomInput("party")), /Hosting is suspended/);
     await hostsRepository.updateHostStatus({ scope: agency, hostId, status: "ACTIVE", reason: "QA restore paused host" });
-    // Finalization after suspension cannot continue accruing time/rewards.
+    // Finalization after suspension cannot invent media time or rewards when
+    // no publishing heartbeat was ever received.
     await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = ?", [interruptedRoom.id]);
     await root.execute("UPDATE live_rooms SET ended_at = DATE_ADD((SELECT started_at FROM live_session_accounting WHERE room_id = ?), INTERVAL 60 SECOND) WHERE id = ?", [interruptedRoom.id, interruptedRoom.id]);
-    assert.equal((await liveCompletion.finalizeLiveSession(identity, interruptedRoom.roomCode)).validSeconds, 60);
+    assert.equal((await liveCompletion.finalizeLiveSession(identity, interruptedRoom.roomCode)).validSeconds, 0);
     await root.execute("UPDATE host_profiles SET verification_status = 'VERIFIED' WHERE id = ?", [hostId]);
     passed++;
 

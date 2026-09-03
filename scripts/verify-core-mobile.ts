@@ -492,30 +492,35 @@ async function main() {
       [2.7, 2.9, 2.8][teenWinnerLane],
     );
     assert.equal(
-      Number(teenRound.outcome.grossPayout),
+      Number(teenRound.outcome.rawNormalPayout),
       product.teenPattiLanePayout(
         teenWinnerLane,
         Number(teenRound.bets[String(teenWinnerLane)] ?? 0),
       ),
-      "Teen Patti Pro payout must come only from the strongest winning lane",
+      "Teen Patti Pro raw payout must come only from the strongest winning lane",
+    );
+    assert.equal(
+      Number(teenRound.outcome.grossPayout),
+      Number(teenRound.outcome.normalPayout),
+      "Teen Patti Pro gross return must use the configured fixed-RTP scale",
     );
     const crownRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",
       bets: { "0": 10000, "1": 10000, "2": 0, crown: 10000 },
     });
-    const crownMultiplier = Number(crownRound.outcome.crownMultiplier);
-    const crownWinnerLane = Number(crownRound.outcome.winnerLane);
-    const normalGross = product.teenPattiLanePayout(
-      crownWinnerLane,
-      Number(crownRound.bets[String(crownWinnerLane)] ?? 0),
-    );
+    const normalGross = Number(crownRound.outcome.normalPayout ?? 0);
+    const crownGross = Number(crownRound.outcome.crownPayout ?? 0);
     assert.equal(
       Number(crownRound.outcome.grossPayout),
-      normalGross + Number(crownRound.bets.crown) * crownMultiplier,
-      "Crown must settle independently from the winning normal hand",
+      normalGross + crownGross,
+      "Crown and the winning hand must use the fixed-RTP server scales",
     );
-    assert.equal(Number(crownRound.outcome.commissionablePayout), normalGross, "Crown payout must not enter normal-hand commission base");
+    assert.equal(
+      Number(crownRound.outcome.commissionablePayout),
+      normalGross + crownGross,
+      "The configured winnings deduction must cover the entire game return",
+    );
     await assert.rejects(product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",

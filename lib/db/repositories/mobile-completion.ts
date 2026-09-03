@@ -47,13 +47,16 @@ function roomMediaDelivery(
   const isAudience = row.room_role === "AUDIENCE";
   const requested = row.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming" && participantCount >= threshold
-    : features.facePassivePlaybackMode === "live_streaming";
+    : row.room_type === "FACE" && features.facePassivePlaybackMode === "live_streaming";
   const template = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
-  const enabled = isAudience && requested && mixingEnabled && template.length > 0;
-  const streamId = `nazraa_${String(row.id).replaceAll("-", "_")}`;
+  const mixerPlaybackUrl = typeof row.mixer_playback_url === "string" ? row.mixer_playback_url.trim() : "";
+  const playbackUrl = mixerPlaybackUrl || (template.length > 0 ? template.replaceAll("{streamId}", encodeURIComponent(`nazraa_${String(row.id).replaceAll("-", "")}`)) : "");
+  const mixerActive = row.mixer_status === "ACTIVE";
+  const enabled = isAudience && requested && mixingEnabled && mixerActive && playbackUrl.length > 0;
+  const streamId = `nazraa_${String(row.id).replaceAll("-", "")}`;
   return {
     mode: enabled ? "liveStreaming" : "rtcFallback",
-    playbackUrl: enabled ? template.replaceAll("{streamId}", encodeURIComponent(streamId)) : null,
+    playbackUrl: enabled ? playbackUrl : null,
     streamId: enabled ? streamId : null,
     streamMixingEnabled: mixingEnabled,
     partyStreamingThreshold: threshold,
@@ -65,8 +68,10 @@ function roomMediaDelivery(
           ? "ZEGO stream mixing is not active."
           : !mixingReady
             ? "ZEGO stream mixing is awaiting deployment activation."
-          : template.length === 0
+          : playbackUrl.length === 0
             ? "ZEGO signed playback URL is not configured."
+          : !mixerActive
+            ? "The passive stream is starting; RTC fallback remains active."
             : "Active speakers and hosts remain on RTC.",
   };
 }
@@ -297,7 +302,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
       );
       const successor = admins[0];
       if (!successor) throw new Error("Appoint a Room Admin to keep this Party open, or choose Close Room.");
-      await connection.execute("UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
       await connection.execute("UPDATE live_room_members SET room_role = 'OWNER' WHERE room_id = ? AND application_user_id = ?", [room.id, successor.application_user_id]);
       await connection.execute(
         `UPDATE live_rooms SET host_application_user_id = ?, audience_count = (
@@ -309,7 +314,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
       return { left: true, transferredTo: String(successor.public_id) };
     }
     await connection.execute(
-      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL WHERE room_id = ? AND application_user_id = ?",
+      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
       [room.id, identity.userId],
     );
     if (["LIVE", "FACE"].includes(room.room_type)) {
@@ -346,6 +351,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               room_features.setting_value room_features_json,
               COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 15) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
+              mixer.status mixer_status, mixer.playback_url mixer_playback_url,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
@@ -355,10 +361,19 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
        LEFT JOIN host_reward_rules reward_rule ON reward_rule.id = accounting.reward_rule_id
        LEFT JOIN system_settings room_features ON room_features.setting_key = 'mobile.room_features'
+       LEFT JOIN live_media_mix_tasks mixer ON mixer.room_id = room.id
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [identity.userId, roomCode],
     );
     if (!rows[0]) return { active: false };
+    if (mediaPublishing !== undefined) {
+      await connection.execute(
+        `UPDATE live_room_members
+         SET media_publishing = ?, last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
+         WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
+        [mediaPublishing, rows[0].id, identity.userId],
+      );
+    }
     let rewardSegmentSeconds = Number(rows[0].reward_media_segment_seconds ?? 0);
     let rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
     let rewardEligibleSeconds = Number(rows[0].reward_eligible_seconds ?? 0);
@@ -687,7 +702,7 @@ export async function endLiveCoHost(identity: MobileIdentity, input: { roomCode:
     const target = targets[0];
     if (!target || target.id === room.host_application_user_id) return { status: "ended" };
     await connection.execute(
-      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE, muted_by_staff = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE, muted_by_staff = FALSE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [room.id, target.id],
     );
     await connection.execute(
@@ -1111,7 +1126,7 @@ export async function kickRoomMember(identity: MobileIdentity, input: { roomCode
       throw new Error("Only the Room Owner can remove another Room Admin.");
     }
     await connection.execute(
-      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE WHERE room_id = ? AND application_user_id = ?",
+      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
       [member.room_id, member.target_id],
     );
     if (input.block) {
@@ -1214,7 +1229,10 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
        status = 'FINALIZED', finalized_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
       [session.ended_at, validSeconds, eligibleSeconds, validSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
     );
-    await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [session.room_id]);
+    await connection.execute(
+      "UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE, media_publishing = FALSE WHERE room_id = ?",
+      [session.room_id],
+    );
     await connection.execute(
       "UPDATE live_cohost_requests SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND status IN ('PENDING','ACCEPTED')",
       [session.room_id],

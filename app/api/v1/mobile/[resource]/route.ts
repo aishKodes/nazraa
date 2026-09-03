@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { authenticateMobileRequest, mobileCan } from "@/lib/auth/mobile-session";
 import { publicMobileConfig } from "@/lib/db/repositories/mobile";
@@ -50,8 +50,15 @@ import { applyToCreateAgency, applyToJoinAgency, createDiscoveryPost, deleteDisc
 import { claimVipDailyReward, purchaseVipTier, rocketSnapshot } from "@/lib/db/repositories/mobile-rewards";
 import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
 import { isDatabaseAvailabilityError } from "@/lib/db/pool";
+import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 
 export const dynamic = "force-dynamic";
+
+function scheduleMixerSync(roomCode: string) {
+  after(async () => {
+    try { await syncZegoRoomMixer(roomCode); } catch { /* RTC fallback remains authoritative. */ }
+  });
+}
 
 function errorResponse(error: unknown, status = 400) {
   const transientDatabaseFailure = isDatabaseAvailabilityError(error);
@@ -155,7 +162,9 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     const body = await request.json();
     if (resource === "room-seat") {
       const parsed = z.object({ roomCode: z.string().min(3).max(80), action: z.enum(["request", "accept", "reject", "assign", "leave", "lock", "unlock"]), seatIndex: z.number().int().min(0).max(19).optional(), targetPublicId: z.string().regex(/^\d+$/).optional() }).parse(body);
-      return NextResponse.json(await actOnRoomSeat(identity, parsed));
+      const result = await actOnRoomSeat(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "private-message-request") {
       const parsed = z.object({ targetPublicId: z.string().regex(/^\d+$/), accept: z.boolean() }).parse(body);
@@ -305,31 +314,43 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     }
     if (resource === "room-join") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), password: z.string().regex(/^(\d{4}|\d{6}|\d{10})$/).optional() }).parse(body);
-      return NextResponse.json(await joinLiveRoom(identity, parsed.roomCode, parsed.password));
+      const result = await joinLiveRoom(identity, parsed.roomCode, parsed.password);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-leave") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
-      return NextResponse.json(await leaveLiveRoom(identity, parsed.roomCode));
+      const result = await leaveLiveRoom(identity, parsed.roomCode);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-presence") {
       const parsed = z.object({
         roomCode: z.string().trim().min(3).max(80),
         mediaPublishing: z.boolean().optional(),
       }).parse(body);
-      return NextResponse.json(await refreshRoomPresence(identity, parsed.roomCode, parsed.mediaPublishing));
+      const result = await refreshRoomPresence(identity, parsed.roomCode, parsed.mediaPublishing);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-admins") {
       if (!mobileCan(identity, "rooms.manage.own")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), makeAdmin: z.boolean() }).parse(body);
-      return NextResponse.json(await setRoomAdmin(identity, parsed));
+      const result = await setRoomAdmin(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-kick") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), block: z.boolean().default(false) }).parse(body);
-      return NextResponse.json(await kickRoomMember(identity, parsed));
+      const result = await kickRoomMember(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-microphone") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), muted: z.boolean() }).parse(body);
-      return NextResponse.json(await setRoomMemberMuted(identity, parsed));
+      const result = await setRoomMemberMuted(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "room-interactions") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80), targetPublicId: z.string().regex(/^\d+$/), interactionKey: z.string().trim().regex(/^[a-z0-9_-]{2,40}$/) }).parse(body);
@@ -372,18 +393,24 @@ export async function POST(request: Request, context: { params: Promise<{ resour
         targetPublicId: z.string().regex(/^\d+$/),
         accept: z.boolean(),
       }).parse(body);
-      return NextResponse.json(await respondLiveCoHost(identity, parsed));
+      const result = await respondLiveCoHost(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "live-cohost-end") {
       const parsed = z.object({
         roomCode: z.string().trim().min(3).max(80),
         targetPublicId: z.string().regex(/^\d+$/).optional(),
       }).parse(body);
-      return NextResponse.json(await endLiveCoHost(identity, parsed));
+      const result = await endLiveCoHost(identity, parsed);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "live-end") {
       const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
-      return NextResponse.json(await finalizeLiveSession(identity, parsed.roomCode));
+      const result = await finalizeLiveSession(identity, parsed.roomCode);
+      scheduleMixerSync(parsed.roomCode);
+      return NextResponse.json(result);
     }
     if (resource === "gifts") {
       if (!mobileCan(identity, "gifts.send")) return errorResponse(new Error("Forbidden."), 403);
