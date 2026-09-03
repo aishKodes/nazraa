@@ -112,7 +112,11 @@ export async function authorizeRoomRtc(
     if (!input.canPublish && passiveRole && publicStreamActive) {
       throw new Error("Passive audience media is delivered by the public Live stream; RTC access is not issued.");
     }
-    if (!input.canPublish && passiveRole && passiveCount > fallbackCeiling) {
+    // Never make a working room unavailable merely because CDN/mixing has not
+    // been activated. The ceiling is only a short transition guard while a
+    // configured public stream is expected to take over. When mixing is off,
+    // RTC fallback remains the functional production transport for everyone.
+    if (!input.canPublish && passiveRole && mixerConfigured && streamingRequested && passiveCount > fallbackCeiling) {
       throw new Error("The safe RTC fallback audience limit is reached while the public Live stream starts. Please retry shortly.");
     }
 

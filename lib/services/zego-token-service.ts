@@ -24,9 +24,12 @@ export class ZegoTokenService {
     const payload = JSON.stringify({
       room_id: input.roomId,
       privilege: { 1: 1, 2: input.canPublish ? 1 : 0 },
-      // A publish-capable token is scoped to the one deterministic stream the
-      // mixer expects. Passive fallback tokens cannot publish any stream.
-      stream_id_list: input.canPublish && input.streamId ? [input.streamId] : null,
+      // Keep stream validation disabled until ZEGO has explicitly enabled the
+      // Published Stream ID authentication feature for this project. Server
+      // media roles still control the publish privilege below; sending a
+      // stream list before ZEGO enables that product makes otherwise-valid
+      // RTC room logins fail on production devices.
+      stream_id_list: null,
     });
     const plainText = JSON.stringify({
       app_id: this.appId,
