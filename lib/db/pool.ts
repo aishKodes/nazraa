@@ -53,13 +53,19 @@ const transientCodes = new Set([
   "EPIPE",
   "PROTOCOL_CONNECTION_LOST",
   "PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR",
+  "PROTOCOL_ENQUEUE_AFTER_QUIT",
 ]);
 
 export function isTransientDatabaseError(error: unknown) {
   if (!error || typeof error !== "object") return false;
   const code = "code" in error ? String(error.code) : "";
   const syscall = "syscall" in error ? String(error.syscall) : "";
-  return transientCodes.has(code) || (code === "ETIMEDOUT" && syscall === "connect");
+  const message = "message" in error ? String(error.message) : "";
+  return (
+    transientCodes.has(code) ||
+    (code === "ETIMEDOUT" && syscall === "connect") ||
+    /pool is closed/i.test(message)
+  );
 }
 
 export function isDatabaseAvailabilityError(error: unknown) {
@@ -72,7 +78,17 @@ export function isDatabaseAvailabilityError(error: unknown) {
 function discardPool() {
   const pool = global.nazraaPool;
   global.nazraaPool = undefined;
-  if (pool) void pool.end().catch(() => undefined);
+  if (!pool) return;
+
+  // A warm Vercel instance can serve concurrent requests. Ending the shared
+  // pool immediately here interrupts requests that already borrowed it and
+  // turns one connection timeout into a burst of `Pool is closed` failures.
+  // Detach it now so retries receive a fresh pool, then close it only after
+  // in-flight work has had time to finish.
+  const closeTimer = setTimeout(() => {
+    void pool.end().catch(() => undefined);
+  }, 60_000);
+  closeTimer.unref();
 }
 
 /** Retry connection/read failures only. Never wrap a non-idempotent mutation. */
