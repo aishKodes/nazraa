@@ -92,21 +92,34 @@ async function pruneInactiveRooms() {
            SELECT 1 FROM live_room_members active_member
            WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
              AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE
-         ) FOR UPDATE`,
+         )`,
     );
     if (!staleRows.length) return;
     const ids = staleRows.map((row) => row.id);
     const placeholders = ids.map(() => "?").join(",");
     await connection.execute(
-      `UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id IN (${placeholders})`,
+      `UPDATE live_rooms room
+       SET room.status = 'ENDED', room.ended_at = COALESCE(room.ended_at, CURRENT_TIMESTAMP(3)), room.audience_count = 0
+       WHERE room.id IN (${placeholders}) AND room.status IN ('ACTIVE','LOCKED')
+         AND NOT EXISTS (
+           SELECT 1 FROM live_room_members active_member
+           WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
+             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE
+         )`,
       ids,
     );
     await connection.execute(
-      `UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), audience_count = 0 WHERE id IN (${placeholders})`,
+      `UPDATE live_room_members member
+       INNER JOIN live_rooms room ON room.id = member.room_id AND room.status = 'ENDED'
+       SET member.left_at = COALESCE(member.left_at, CURRENT_TIMESTAMP(3)), member.muted = TRUE
+       WHERE member.room_id IN (${placeholders})`,
       ids,
     );
     await connection.execute(
-      `UPDATE live_session_accounting SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)), status = IF(status = 'ACTIVE', 'VOID', status) WHERE room_id IN (${placeholders})`,
+      `UPDATE live_session_accounting accounting
+       INNER JOIN live_rooms room ON room.id = accounting.room_id AND room.status = 'ENDED'
+       SET accounting.ended_at = COALESCE(accounting.ended_at, CURRENT_TIMESTAMP(3)), accounting.status = IF(accounting.status = 'ACTIVE', 'VOID', accounting.status)
+       WHERE accounting.room_id IN (${placeholders})`,
       ids,
     );
   });

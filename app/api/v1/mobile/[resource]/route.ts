@@ -65,9 +65,13 @@ function scheduleMixerSync(roomCode: string) {
 function errorResponse(error: unknown, status = 400) {
   const transientDatabaseFailure = isDatabaseAvailabilityError(error);
   const rawMessage = error instanceof Error ? error.message : "Request failed.";
+  const errorCode = typeof error === "object" && error !== null && "code" in error
+    ? String(error.code)
+    : "";
   const internalDatabaseFailure =
     /collation|sql|unknown column|database|er_[a-z_]+/i.test(rawMessage) ||
-    (typeof error === "object" && error !== null && "code" in error);
+    errorCode.startsWith("ER_") ||
+    ["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EPIPE", "PROTOCOL_CONNECTION_LOST"].includes(errorCode);
   const hideInternalDetails = transientDatabaseFailure || internalDatabaseFailure || status >= 500;
   if (hideInternalDetails) console.error("Mobile API request failed", error);
   return NextResponse.json(
