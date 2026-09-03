@@ -67,6 +67,11 @@ export function AppShell({ account, children }: { account: SessionAccount; child
   const visibleGroups = navigationGroups
     .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)) }))
     .filter((group) => group.items.length);
+  const quickSearchTarget = account.role === "COIN_SELLER"
+    ? "/dashboard/wallet"
+    : account.role === "MONITORING_CS"
+      ? "/dashboard/monitoring"
+      : "/dashboard/hosts";
   const mobileItems = visibleItems.slice(0, 4);
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
@@ -93,7 +98,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     <main className="main-area">
       <header className="topbar">
         <button className="mobile-menu" type="button" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={20} /></button>
-        <form className="quick-search" action={account.role === "COIN_SELLER" ? "/dashboard/wallet" : "/dashboard/monitoring"}><Search size={18} /><input ref={searchRef} name="q" aria-label="User or host search" placeholder={account.role === "COIN_SELLER" ? "Search user name or ID" : "Search user or host ID"} /><kbd>⌘ K</kbd></form>
+        <form className="quick-search" action={quickSearchTarget}><Search size={18} /><input ref={searchRef} name="q" aria-label="User or host search" placeholder={account.role === "COIN_SELLER" ? "Search user name or ID" : "Search user or host ID"} /><kbd>⌘ K</kbd></form>
         <div className="top-actions"><span className="role-context"><Gauge size={16} />{roleLabel(account.role)}</span></div>
       </header>
       <div className="page-content">{children}</div>

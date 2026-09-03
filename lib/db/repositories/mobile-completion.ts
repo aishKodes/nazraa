@@ -370,7 +370,7 @@ async function finalizeStaleLiveSession(roomCode: string) {
          host_member.last_seen_at < TIMESTAMPADD(SECOND,
            -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
            CURRENT_TIMESTAMP(3))
-         OR (accounting.media_publishing = TRUE AND accounting.last_media_heartbeat_at < TIMESTAMPADD(SECOND,
+         AND (accounting.id IS NULL OR accounting.last_media_heartbeat_at IS NULL OR accounting.last_media_heartbeat_at < TIMESTAMPADD(SECOND,
            -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
            CURRENT_TIMESTAMP(3)))
        )
@@ -395,7 +395,10 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               accounting.media_segment_seconds reward_media_segment_seconds,
               accounting.valid_media_seconds reward_valid_media_seconds,
               accounting.eligible_duration_seconds reward_eligible_seconds,
+              accounting.reward_coins reward_coins_paid,
+              accounting.reward_rule_id reward_rule_id,
               reward_rule.coins_per_hour reward_diamonds_per_hour,
+              reward_rule.minimum_eligible_seconds reward_minimum_eligible_seconds,
               room_features.setting_value room_features_json,
               COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
@@ -460,20 +463,69 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       const gapSeconds = lastHeartbeat == null
         ? 0
         : Math.max(0, Math.floor((serverTime.getTime() - lastHeartbeat.getTime()) / 1000));
-      const acceptedDelta = wasPublishing && gapSeconds <= reconnectGrace ? gapSeconds : 0;
+      // A single false SDK heartbeat is not proof that the broadcast ended.
+      // Preserve the continuous segment through the configured reconnect grace
+      // and only break it after the grace has genuinely elapsed.
+      const acceptedDelta = gapSeconds <= reconnectGrace && (wasPublishing || publishingNow)
+        ? gapSeconds
+        : 0;
       rewardSegmentSeconds += acceptedDelta;
       rewardValidSeconds += acceptedDelta;
-      if ((wasPublishing && gapSeconds > reconnectGrace) || (wasPublishing && !publishingNow)) {
+      const disconnectedBeyondGrace = !wasPublishing && !publishingNow && gapSeconds > reconnectGrace;
+      const resumedBeyondGrace = !wasPublishing && publishingNow && gapSeconds > reconnectGrace;
+      const missedPublishingHeartbeat = wasPublishing && gapSeconds > reconnectGrace;
+      if (disconnectedBeyondGrace || resumedBeyondGrace || missedPublishingHeartbeat) {
         rewardEligibleSeconds += Math.floor(rewardSegmentSeconds / 3600) * 3600;
         rewardSegmentSeconds = 0;
       }
+      const heartbeatAnchor = publishingNow || wasPublishing || gapSeconds > reconnectGrace || lastHeartbeat == null
+        ? serverTime
+        : lastHeartbeat;
       await connection.execute(
         `UPDATE live_session_accounting
          SET media_publishing = ?, last_media_heartbeat_at = ?,
              media_segment_seconds = ?, valid_media_seconds = ?, eligible_duration_seconds = ?
          WHERE id = ? AND status = 'ACTIVE'`,
-        [publishingNow, serverTime, rewardSegmentSeconds, rewardValidSeconds, rewardEligibleSeconds, rows[0].reward_accounting_id],
+        [publishingNow, heartbeatAnchor, rewardSegmentSeconds, rewardValidSeconds, rewardEligibleSeconds, rows[0].reward_accounting_id],
       );
+
+      // Settle every completed continuous hour immediately. This is entirely
+      // server-authoritative, survives an app restart, and no longer depends
+      // on the room eventually reaching the close/finalize path.
+      const rewardRate = Number(rows[0].reward_diamonds_per_hour ?? 3500);
+      const minimumEligibleSeconds = Math.max(3600, Number(rows[0].reward_minimum_eligible_seconds ?? 3600));
+      const completedRewardHours = rewardEligibleSeconds + rewardSegmentSeconds >= minimumEligibleSeconds
+        ? Math.floor((rewardEligibleSeconds + rewardSegmentSeconds) / 3600)
+        : 0;
+      const totalRewardDiamonds = completedRewardHours * rewardRate;
+      const alreadyPaidDiamonds = Number(rows[0].reward_coins_paid ?? 0);
+      const rewardDue = Math.max(0, totalRewardDiamonds - alreadyPaidDiamonds);
+      if (rewardDue > 0) {
+        const ledgerId = randomUUID();
+        const rewardCode = code("HST");
+        const idempotencyKey = `HOST-HOUR:${rows[0].reward_accounting_id}:${completedRewardHours}`;
+        await ensureWallet(connection, identity.userId, "DIAMOND");
+        await connection.execute(
+          "UPDATE wallet_balances SET available_balance = available_balance + ? WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'",
+          [rewardDue, identity.userId],
+        );
+        await connection.execute(
+          `INSERT INTO ledger_transactions
+            (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
+           VALUES (?, ?, ?, 'DIAMOND', 'HOST_HOURLY_DIAMONDS', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
+          [ledgerId, rewardCode, idempotencyKey, identity.userId, rewardDue, `${rows[0].room_type} • through ${completedRewardHours} completed continuous hour(s)`],
+        );
+        await connection.execute(
+          "UPDATE live_session_accounting SET reward_coins = ?, reward_ledger_id = ? WHERE id = ? AND status = 'ACTIVE'",
+          [totalRewardDiamonds, ledgerId, rows[0].reward_accounting_id],
+        );
+        await connection.execute(
+          "INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'HOST_REWARD', 'Live reward credited', ?, 'wallet/rewards')",
+          [randomUUID(), identity.userId, `${rewardDue.toLocaleString("en-IN")} Diamonds credited for completed Live hour${rewardDue === rewardRate ? "" : "s"}.`],
+        );
+        rows[0].reward_coins_paid = totalRewardDiamonds;
+        rows[0].diamond_balance = Number(rows[0].diamond_balance ?? 0) + rewardDue;
+      }
     }
     const [requests] = await connection.query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, request.seat_index, request.status
@@ -1366,12 +1418,14 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       accounting_id: string; room_id: string; room_type: "LIVE" | "PARTY" | "FACE"; started_at: Date; ended_at: Date;
       status: string; host_application_user_id: string; reward_rule_id: string | null; valid_duration_seconds: number;
       eligible_duration_seconds: number; reward_coins: number; transaction_code: string | null;
+      reward_ledger_id: string | null;
       media_publishing: number; last_media_heartbeat_at: Date | null; media_segment_seconds: number;
       valid_media_seconds: number; media_reconnect_grace_seconds: number;
     })[]>(
       `SELECT accounting.id accounting_id, room.id room_id, accounting.room_type, accounting.started_at,
               accounting.status, accounting.host_application_user_id, accounting.reward_rule_id,
               accounting.valid_duration_seconds, accounting.eligible_duration_seconds, accounting.reward_coins,
+              accounting.reward_ledger_id,
               accounting.media_publishing, accounting.last_media_heartbeat_at,
               accounting.media_segment_seconds, accounting.valid_media_seconds,
               COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
@@ -1422,17 +1476,18 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
     // discarded when the Live ends (59m = 0, 60m = 3,500, 120m = 7,000).
     const eligibleSeconds = completedHours * 3600;
     const rewardCoins = session.room_type === "PARTY" ? 0 : completedHours * Number(rule.coins_per_hour);
-    let ledgerId: string | null = null;
-    let rewardCode: string | null = null;
-    if (rewardCoins > 0) {
+    const newlyEarnedDiamonds = Math.max(0, rewardCoins - Number(session.reward_coins ?? 0));
+    let ledgerId: string | null = session.reward_ledger_id ?? null;
+    let rewardCode: string | null = session.transaction_code ?? null;
+    if (newlyEarnedDiamonds > 0) {
       await ensureWallet(connection, identity.userId, "DIAMOND");
       ledgerId = randomUUID(); rewardCode = code("HST");
-      await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [rewardCoins, identity.userId]);
+      await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [newlyEarnedDiamonds, identity.userId]);
       await connection.execute(
         `INSERT INTO ledger_transactions
-          (id, transaction_code, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
-         VALUES (?, ?, 'DIAMOND', 'HOST_HOURLY_DIAMONDS', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
-        [ledgerId, rewardCode, identity.userId, rewardCoins, `${session.room_type} • ${completedHours} completed continuous hour(s)`],
+          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
+         VALUES (?, ?, ?, 'DIAMOND', 'HOST_HOURLY_DIAMONDS', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
+        [ledgerId, rewardCode, `HOST-FINAL:${session.accounting_id}:${completedHours}`, identity.userId, newlyEarnedDiamonds, `${session.room_type} • ${completedHours} completed continuous hour(s)`],
       );
     }
     await connection.execute(

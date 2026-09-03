@@ -707,17 +707,18 @@ async function main() {
     await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [liveRewardRoomId, rewardHost.userId]);
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET media_publishing = TRUE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 3600, valid_media_seconds = 3600 WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
+    const rewardDiamondsBefore = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
     const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode, true);
     assert.ok(liveProgress.liveRewardProgress);
     assert.equal(liveProgress.liveRewardProgress!.rewardDiamondsPerHour, 3500);
     assert.ok(liveProgress.liveRewardProgress!.continuousSeconds >= 3599);
     assert.ok(liveProgress.liveRewardProgress!.secondsUntilNextReward >= 1 && liveProgress.liveRewardProgress!.secondsUntilNextReward <= 3600);
-    const rewardDiamondsBefore = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
+    assert.equal((await product.mobileBootstrap(rewardHost)).wallet.diamonds, rewardDiamondsBefore + 3500, "a completed Live hour must credit automatically without waiting for room close");
     const finalizedLive = await rooms.finalizeLiveSession(rewardHost, liveRewardCode);
     assert.equal(finalizedLive.rewardCoins, 3500);
     assert.equal((await rooms.finalizeLiveSession(rewardHost, liveRewardCode)).alreadyFinalized, true, "finalization retry must be idempotent");
     const rewardBootstrap = await product.mobileBootstrap(rewardHost);
-    assert.equal(rewardBootstrap.wallet.diamonds, rewardDiamondsBefore + 3500);
+    assert.equal(rewardBootstrap.wallet.diamonds, rewardDiamondsBefore + 3500, "finalization must not duplicate an automatically settled hour");
     assert.equal(rewardBootstrap.wallet.coins, 5000, "Host Live rewards must not mint spendable social coins");
     assert.equal(rewardBootstrap.hostRewardHistory[0].rewardCoins, 3500);
 
