@@ -8,6 +8,7 @@ import { scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
 import { loadWithdrawalEconomy, validateWithdrawalEconomy, type WithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { can } from "@/lib/auth/permissions";
 
 function operationCode(prefix: string) {
   return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
@@ -214,11 +215,10 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
 
 export async function listFaceVerificationRequests(scope: Scope, page = 1) {
   const filter = scopeWhere(scope, "user.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; user_status: string; selfie_document_id: string | null; document_mime_type: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; agency_face_live_authorized: number; super_admin_face_live_authorized: number; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
+  const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; user_status: string; selfie_document_id: string | null; document_mime_type: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
     `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name, user.country_code,
             request.status, user.face_verification_status user_status, request.selfie_document_id,
             document.mime_type document_mime_type, request.provider, request.liveness_score, request.match_score,
-            user.agency_face_live_authorized, user.super_admin_face_live_authorized,
             request.review_reason, request.created_at, request.reviewed_at
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
@@ -241,7 +241,7 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1) {
      ), request.created_at DESC LIMIT 26 OFFSET ?`,
     [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
-  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.user_status, requestStatus: row.status, documentId: row.selfie_document_id, documentMimeType: row.document_mime_type, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), agencyAuthorized: Boolean(row.agency_face_live_authorized), superAdminAuthorized: Boolean(row.super_admin_face_live_authorized), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
+  return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.user_status, requestStatus: row.status, documentId: row.selfie_document_id, documentMimeType: row.document_mime_type, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
 }
 
 export async function listPayoutMethodReviews(scope: Scope) {
@@ -274,18 +274,28 @@ export async function reviewPayoutMethod(input: { scope: Scope; methodId: string
 }
 
 export async function reviewFaceVerification(input: { scope: Scope; requestId: string; decision: "VERIFIED" | "REJECTED"; reason: string }) {
+  if (!can(input.scope.account.role, "face_verification.manage")) throw new Error("Your role cannot review Face Verification.");
   const filter = scopeWhere(input.scope, "user.agency_account_id");
   await withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; selfie_document_id: string | null; status: string; user_status: string })[]>(
+    const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; selfie_document_id: string | null; status: string; user_status: string; host_verification_status: string | null; agency_authorized: number; super_admin_authorized: number })[]>(
       `SELECT request.id, request.application_user_id, request.selfie_document_id, request.status,
-              user.face_verification_status user_status
+              user.face_verification_status user_status,
+              host.verification_status host_verification_status,
+              user.agency_face_live_authorized agency_authorized,
+              user.super_admin_face_live_authorized super_admin_authorized
        FROM face_verification_requests request INNER JOIN application_users user ON user.id = request.application_user_id
+       LEFT JOIN host_profiles host ON host.application_user_id = user.id
        WHERE request.id = ? AND ${filter.clause} FOR UPDATE`,
       [input.requestId, ...filter.values],
     );
     const request = rows[0];
     if (!request) throw new Error("Face verification request was not found in your permitted scope.");
-    if (request.user_status === input.decision && request.status === input.decision) return;
+    const alreadyCanonical = request.user_status === input.decision
+      && request.status === input.decision
+      && request.host_verification_status === input.decision
+      && Boolean(request.agency_authorized) === (input.decision === "VERIFIED")
+      && Boolean(request.super_admin_authorized) === (input.decision === "VERIFIED");
+    if (alreadyCanonical) return;
     await connection.execute(
       `UPDATE face_verification_requests
        SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ?,
@@ -297,10 +307,17 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
     await connection.execute(
       `UPDATE application_users
        SET face_verification_status = ?,
-           agency_face_live_authorized = CASE WHEN ? = 'VERIFIED' THEN agency_face_live_authorized ELSE FALSE END,
-           super_admin_face_live_authorized = CASE WHEN ? = 'VERIFIED' THEN super_admin_face_live_authorized ELSE FALSE END
+           agency_face_live_authorized = (? = 'VERIFIED'),
+           super_admin_face_live_authorized = (? = 'VERIFIED')
        WHERE id = ?`,
       [input.decision, input.decision, input.decision, request.application_user_id],
+    );
+    await connection.execute(
+      `INSERT INTO host_profiles (id, application_user_id, agency_account_id, status, verification_status)
+       SELECT UUID(), user.id, user.agency_account_id, 'ACTIVE', ?
+       FROM application_users user WHERE user.id = ?
+       ON DUPLICATE KEY UPDATE verification_status = VALUES(verification_status)`,
+      [input.decision, request.application_user_id],
     );
     await connection.execute(
       `UPDATE private_documents document
@@ -310,14 +327,21 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
       [input.decision, request.application_user_id],
     );
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'FACE_VERIFICATION', ?, ?, 'face')", [randomUUID(), request.application_user_id, input.decision === "VERIFIED" ? "Face verification approved" : "Face verification needs attention", input.decision === "VERIFIED" ? "Your Face Live verification is active." : input.reason]);
-    const [persistedRows] = await connection.query<(RowDataPacket & { face_verification_status: string })[]>(
-      "SELECT face_verification_status FROM application_users WHERE id = ? LIMIT 1",
+    const [persistedRows] = await connection.query<(RowDataPacket & { face_verification_status: string; agency_face_live_authorized: number; super_admin_face_live_authorized: number; host_verification_status: string | null })[]>(
+      `SELECT user.face_verification_status, user.agency_face_live_authorized,
+              user.super_admin_face_live_authorized, host.verification_status host_verification_status
+       FROM application_users user LEFT JOIN host_profiles host ON host.application_user_id = user.id
+       WHERE user.id = ? LIMIT 1`,
       [request.application_user_id],
     );
-    if (persistedRows[0]?.face_verification_status !== input.decision) {
+    const persisted = persistedRows[0];
+    if (persisted?.face_verification_status !== input.decision
+      || persisted.host_verification_status !== input.decision
+      || Boolean(persisted.agency_face_live_authorized) !== (input.decision === "VERIFIED")
+      || Boolean(persisted.super_admin_face_live_authorized) !== (input.decision === "VERIFIED")) {
       throw new Error("Verification was not persisted. No success was recorded.");
     }
-    await audit(connection, { scope: input.scope, action: "face_verification.review", module: "face_verification", targetType: "face_verification_request", targetId: request.id, reason: input.reason, previous: { status: request.status }, next: { status: input.decision } });
+    await audit(connection, { scope: input.scope, action: "face_verification.review", module: "face_verification", targetType: "face_verification_request", targetId: request.id, reason: input.reason, previous: { status: request.status, userStatus: request.user_status, hostStatus: request.host_verification_status }, next: { status: input.decision, liveAccessVerification: input.decision } });
   });
 }
 

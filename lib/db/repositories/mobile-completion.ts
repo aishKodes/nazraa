@@ -306,7 +306,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
     const room = rooms[0];
     if (!room) return { left: true };
     if (room.host_application_user_id === identity.userId) {
-      if (room.room_type !== "PARTY") throw new Error("Use Close Room to end a Video or Face Live session.");
+      if (room.room_type !== "PARTY") throw new Error("Use Close Room to end a Face Live session.");
       const [admins] = await connection.query<(RowDataPacket & { application_user_id: string; public_id: number })[]>(
         `SELECT member.application_user_id, user.public_id FROM live_room_members member
          INNER JOIN application_users user ON user.id = member.application_user_id AND user.account_status = 'ACTIVE'
@@ -1440,7 +1440,21 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
         result.embeddingReference, result.livenessScore, result.matchScore, duplicateUserId,
         effectiveStatus === "VERIFIED" ? new Date() : null, result.reason],
     );
-    await connection.execute("UPDATE application_users SET face_verification_status = ? WHERE id = ?", [effectiveStatus, identity.userId]);
+    await connection.execute(
+      `UPDATE application_users
+       SET face_verification_status = ?,
+           agency_face_live_authorized = (? = 'VERIFIED'),
+           super_admin_face_live_authorized = (? = 'VERIFIED')
+       WHERE id = ?`,
+      [effectiveStatus, effectiveStatus, effectiveStatus, identity.userId],
+    );
+    await connection.execute(
+      `INSERT INTO host_profiles (id, application_user_id, agency_account_id, status, verification_status)
+       SELECT UUID(), user.id, user.agency_account_id, 'ACTIVE', ?
+       FROM application_users user WHERE user.id = ?
+       ON DUPLICATE KEY UPDATE verification_status = VALUES(verification_status)`,
+      [effectiveStatus === "VERIFIED" ? "VERIFIED" : "PENDING", identity.userId],
+    );
     if (result.status === "DUPLICATE") {
       await connection.execute(
         "INSERT INTO risk_flags (id, application_user_id, severity, rule_key, summary) VALUES (?, ?, 'HIGH', 'DUPLICATE_FACE', ?)",

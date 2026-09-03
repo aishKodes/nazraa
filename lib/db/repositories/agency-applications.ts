@@ -117,8 +117,17 @@ export async function reviewAgencyCreation(input: { scope: Scope; applicationId:
       const parentId = application.parent_account_id;
       const [parents] = await connection.query<RowDataPacket[]>("SELECT id FROM platform_accounts WHERE id = ? AND role IN ('ADMIN','BD') AND status = 'ACTIVE' LIMIT 1", [parentId]);
       if (!parents[0]) throw new Error("The verified Admin/BD parent is no longer active.");
-      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
+      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null; external_user_id: string; public_id: number })[]>("SELECT agency_account_id, external_user_id, public_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
       if (users[0]?.agency_account_id) throw new Error("The applicant is already linked to an Agency.");
+      if (!users[0]) throw new Error("The applicant account no longer exists.");
+      const [ownedAgencies] = await connection.query<RowDataPacket[]>(
+        `SELECT id FROM platform_accounts
+         WHERE role = 'AGENCY'
+           AND (application_user_id = ? OR application_user_id = ? OR application_user_id = ?)
+         LIMIT 1 FOR SHARE`,
+        [application.application_user_id, users[0].external_user_id, String(users[0].public_id)],
+      );
+      if (ownedAgencies.length) throw new Error("The applicant already owns an Agency. Each Nazraa account can own only one Agency.");
       const [openMemberships] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_membership_applications WHERE application_user_id = ? AND status IN ('PENDING','APPROVED') LIMIT 1", [application.application_user_id]);
       if (openMemberships.length) throw new Error("Resolve the applicant's existing Agency membership request first.");
       agencyAccountId = randomUUID();

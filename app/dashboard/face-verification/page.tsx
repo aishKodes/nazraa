@@ -1,7 +1,7 @@
 import { countryName } from "@/lib/countries";
 import Image from "next/image";
 import { FileText, ScanFace } from "lucide-react";
-import { submitFaceLiveAuthorization, submitFaceVerificationReview } from "@/app/admin-actions";
+import { submitFaceVerificationReview } from "@/app/admin-actions";
 import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
@@ -17,40 +17,21 @@ export default async function FaceVerificationPage({ searchParams }: { searchPar
   const page = Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1);
   const rows = await listFaceVerificationRequests(scope, page);
   const requests = rows.slice(0, 25);
-  const manageLegacy = can(scope.account.role, "face_verification.manage");
-  const authorize = can(scope.account.role, "face_live.authorize");
-  const authorizationTypes = scope.account.role === "AGENCY"
-    ? ["AGENCY_FACE_LIVE"] as const
-    : ["SUPER_ADMIN", "COUNTRY_MANAGER"].includes(scope.account.role)
-      ? ["SUPER_ADMIN_FACE_LIVE"] as const
-      : ["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"] as const;
+  const mayReview = can(scope.account.role, "face_verification.manage");
 
   return <>
-    <SectionHeading title="Face verification & Live access" description="Review one current Face Verification record per user. Selfies remain encrypted and are visible only to authorized reviewers." />
+    <SectionHeading title="Face verification" description="One approval applies everywhere. A verified Host does not need separate Agency, Admin, or Super Admin verification." />
     {success ? <Notice type="success">{success}</Notice> : null}
     {error ? <Notice type="error">{error}</Notice> : null}
     <Card>{requests.length ? <div className="table-scroll"><table><thead><tr>
-      <th>Request</th><th>User</th><th>Capture mode</th><th>Evidence</th><th>Submitted</th><th>Status</th><th>Live authorization</th>{manageLegacy ? <th>Legacy exception</th> : null}
+      <th>User</th><th>Selfie</th><th>Submitted</th><th>Status</th>{mayReview ? <th>Decision</th> : null}
     </tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
-      <td data-label="Request" className="mono">{request.publicId}</td>
       <td data-label="User"><b>{request.fullName}</b><small className="mono block">{request.userPublicId} · {countryName(request.country)}</small></td>
-      <td data-label="Capture">{request.provider ?? "Legacy"}<small className="block">Single secure selfie</small></td>
       <td data-label="Selfie">{request.documentId && request.documentMimeType?.startsWith("image/") ? <a className="verification-thumb-link" href={`/api/documents/${request.documentId}?inline=1`} target="_blank" rel="noreferrer"><Image className="verification-thumb" src={`/api/documents/${request.documentId}?preview=1`} alt={`${request.fullName} verification selfie`} width={64} height={64} unoptimized /><span><b>Selfie uploaded</b><small>Tap to inspect</small></span></a> : request.documentId ? <a className="verification-file-link" href={`/api/documents/${request.documentId}`} target="_blank" rel="noreferrer"><FileText size={22} /><span><b>File uploaded</b><small>Tap to inspect</small></span></a> : <span className="verification-missing">Selfie missing</span>}</td>
       <td data-label="Submitted">{formatDate(request.createdAt)}</td>
       <td data-label="Status"><StatusBadge value={request.status} />{request.requestStatus !== request.status ? <small className="block">Latest capture: {request.requestStatus}</small> : null}{request.reviewReason ? <small className="block">{request.reviewReason}</small> : null}</td>
-      <td data-label="Live access">
-        <small className="block">Agency: {request.agencyAuthorized ? "APPROVED" : "LOCKED"}</small>
-        <small className="block">Super Admin: {request.superAdminAuthorized ? "APPROVED" : "LOCKED"}</small>
-        {authorize && request.status === "VERIFIED" ? <form action={submitFaceLiveAuthorization} className="inline-review">
-          <input type="hidden" name="userPublicId" value={request.userPublicId} />
-          <select name="authorizationType" required defaultValue=""><option value="" disabled>Authorization…</option>{authorizationTypes.map((type) => <option key={type}>{type}</option>)}</select>
-          <select name="approved" defaultValue="true"><option value="true">Approve</option><option value="false">Revoke</option></select>
-          <input name="reason" required minLength={5} maxLength={500} placeholder="Authorization reason" />
-          <button className="table-button" type="submit">Save</button>
-        </form> : null}
-      </td>
-      {manageLegacy ? <td data-label="Review"><form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue={request.status === "VERIFIED" ? "VERIFIED" : ""} required><option value="" disabled>Decision…</option><option value="VERIFIED">Approve / enable</option><option value="REJECTED">Reject / disable</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Required audit reason" /><button className="table-button" type="submit">Apply</button></form></td> : null}
+      {mayReview ? <td data-label="Decision">{request.status === "VERIFIED" ? <><span className="verification-approved">Verified once · active everywhere</span><details className="row-action"><summary>Correct a wrong approval</summary><form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><input type="hidden" name="decision" value="REJECTED" /><input name="reason" minLength={5} maxLength={500} required placeholder="Why this approval is being revoked" /><button className="danger-button" type="submit">Reject verification</button></form></details></> : <form action={submitFaceVerificationReview} className="inline-review"><input type="hidden" name="requestId" value={request.id} /><select name="decision" defaultValue="" required><option value="" disabled>Choose decision</option><option value="VERIFIED">Approve</option><option value="REJECTED">Reject</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Reason" /><button className="table-button" type="submit">Save</button></form>}</td> : null}
     </tr>)}</tbody></table></div> : <EmptyState title="No Face Verification activity" detail="Automatic mobile verification results will appear here without creating fake queue data." />}<Pagination path="/dashboard/face-verification" page={page} hasNext={rows.length > 25} /></Card>
-    <p className="footnote"><ScanFace size={14} />Government ID is not part of normal Face Verification. Video/Face Live needs verified + approved Agency + Agency authorization + Super Admin authorization.</p>
+    <p className="footnote"><ScanFace size={14} />A verified Host can use Party Audio. Face Live additionally requires membership in an approved Agency; it never requires another verification decision.</p>
   </>;
 }

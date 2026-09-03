@@ -55,7 +55,6 @@ for (const child of roles) {
 assert.deepEqual(rolesCreatableBy("COUNTRY_MANAGER"), ["SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER"]);
 assert.equal(rolesAssignableBy("COUNTRY_MANAGER").includes("SUPER_ADMIN"), true);
 assert.equal(can("AGENCY", "hosts.review"), true);
-assert.equal(can("AGENCY", "face_live.authorize"), true);
 assert.equal(can("COUNTRY_MANAGER", "agencies.review"), true);
 assert.equal(can("COUNTRY_MANAGER", "documents.upload"), true);
 assert.deepEqual(rolesCreatableBy("SUPER_ADMIN"), ["ADMIN", "BD", "AGENCY"]);

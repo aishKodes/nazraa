@@ -32,7 +32,6 @@ async function main() {
     const mobileAdministration = await import("@/lib/db/repositories/mobile-administration");
     const dashboard = await import("@/lib/db/repositories/dashboard");
     const catalog = await import("@/lib/db/repositories/catalog");
-    const completion = await import("@/lib/db/repositories/completion-administration");
     const mobileSession = await import("@/lib/auth/mobile-session");
     const liveAccess = await import("@/lib/services/live-access-policy");
     const password = "Local-QA-Only-2026!";
@@ -289,9 +288,7 @@ async function main() {
     await root.execute("INSERT INTO agency_membership_applications (id, application_user_id, agency_account_id) VALUES (?, ?, ?)", [joinId, joiner.id, agency.account.id]);
     await assert.rejects(agencies.reviewAgencyJoin({ scope: agencyOther, applicationId: joinId, decision: "APPROVED", reason: "QA reject foreign Agency" }));
     await agencies.reviewAgencyJoin({ scope: agency, applicationId: joinId, decision: "APPROVED", reason: "QA accept own host application" });
-    await completion.setFaceLiveAuthorization({ scope: agency, userPublicId: ownUser.publicId, authorizationType: "AGENCY_FACE_LIVE", approved: true, reason: "QA own host authorization" });
-    await completion.setFaceLiveAuthorization({ scope: await refresh(cm), userPublicId: ownUser.publicId, authorizationType: "SUPER_ADMIN_FACE_LIVE", approved: true, reason: "QA team Live authorization" });
-    await assert.rejects(completion.setFaceLiveAuthorization({ scope: await refresh(cm), userPublicId: otherUser.publicId, authorizationType: "SUPER_ADMIN_FACE_LIVE", approved: true, reason: "QA cannot authorize other branch" }));
+    assert.equal(liveAccess.LiveAccessPolicyService.for({ ...identity, agencyFaceLiveAuthorized: false, superAdminFaceLiveAuthorized: false }).face.allowed, true, "Legacy secondary authorization flags must not require repeated verification");
     const olderFaceRequest = randomUUID();
     const currentFaceRequest = randomUUID();
     await root.execute("UPDATE application_users SET face_verification_status = 'PENDING' WHERE id = ?", [ownUser.id]);
@@ -303,11 +300,16 @@ async function main() {
     const visibleFaceRows = await mobileAdministration.listFaceVerificationRequests(await refresh(cm));
     assert.equal(visibleFaceRows.filter((entry) => entry.userPublicId === ownUser.publicId).length, 1, "Panel shows only the current Face Verification row per user");
     assert.equal(visibleFaceRows.find((entry) => entry.userPublicId === ownUser.publicId)?.status, "VERIFIED");
+    const [verifiedFaceRows] = await root.query<RowDataPacket[]>("SELECT user.face_verification_status, user.agency_face_live_authorized, user.super_admin_face_live_authorized, host.verification_status FROM application_users user INNER JOIN host_profiles host ON host.application_user_id = user.id WHERE user.id = ?", [ownUser.id]);
+    assert.deepEqual([verifiedFaceRows[0].face_verification_status, Number(verifiedFaceRows[0].agency_face_live_authorized), Number(verifiedFaceRows[0].super_admin_face_live_authorized), verifiedFaceRows[0].verification_status], ["VERIFIED", 1, 1, "VERIFIED"], "One review synchronizes every legacy verification field");
+    await assert.rejects(mobileAdministration.reviewFaceVerification({ scope: agency, requestId: currentFaceRequest, decision: "REJECTED", reason: "QA Agency cannot override verification" }), /cannot review/);
     await mobileAdministration.reviewFaceVerification({ scope: master, requestId: currentFaceRequest, decision: "REJECTED", reason: "QA Master rejects incorrect selfie" });
     const [rejectedFaceRows] = await root.query<RowDataPacket[]>("SELECT face_verification_status, agency_face_live_authorized, super_admin_face_live_authorized FROM application_users WHERE id = ?", [ownUser.id]);
     assert.equal(rejectedFaceRows[0].face_verification_status, "REJECTED");
     assert.equal(Number(rejectedFaceRows[0].agency_face_live_authorized), 0);
     assert.equal(Number(rejectedFaceRows[0].super_admin_face_live_authorized), 0);
+    const [rejectedHostRows] = await root.query<RowDataPacket[]>("SELECT verification_status FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
+    assert.equal(rejectedHostRows[0].verification_status, "REJECTED");
     assert.equal((await mobileAdministration.listFaceVerificationRequests(master)).find((entry) => entry.userPublicId === ownUser.publicId)?.status, "REJECTED");
     await mobileAdministration.reviewFaceVerification({ scope: master, requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA Master restores corrected selfie" });
     passed++;
@@ -334,6 +336,11 @@ async function main() {
     assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
     assert.equal((await monitoring.listModerationHistory(await refresh(cs), [ownUser.id]))[0].status, "EXPIRED");
+    const restored = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 60, reason: "QA temporary Live restriction to restore" });
+    await ops.restoreLiveAccess({ scope: await refresh(cs), restrictionId: restored.restrictionId, reason: "QA CS restores temporary restriction" });
+    assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
+    assert.equal((await monitoring.listModerationHistory(await refresh(cs), [ownUser.id]))[0].status, "REVOKED");
+    assert.equal((await ops.listAuditPage(master)).items.some((entry) => entry.action === "moderation.live_access_restored" && entry.actorRole === "MONITORING_CS"), true, "Master audit sees CS moderation");
     passed++;
 
     const token = randomUUID();
@@ -348,6 +355,8 @@ async function main() {
     const devices = await monitoring.listUserDevices(await refresh(cm), ownUser.id);
     assert.ok(devices[0].blockId);
     await monitoring.unblockUserDevice({ scope: await refresh(cm), blockId: devices[0].blockId, reason: "QA own device restored" });
+    assert.ok(await mobileSession.authenticateMobileRequest(request), "Unblocking a device restores its still-valid session");
+    await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS still cannot block" }), /Only Master or the assigned Country Manager/);
     passed++;
 
     await ops.adjustPlatformCoinInventory({ scope: master, accountId: master.account.id, direction: "ADD", amount: 1000, reason: "QA generate inventory", idempotencyKey: randomUUID() });

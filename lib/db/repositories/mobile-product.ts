@@ -308,16 +308,27 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT account.id, account.public_id, account.full_name, account.status, account.country_code,
+              (account.id = user.agency_account_id) linked_membership,
               owner.public_id owner_public_id, owner.full_name owner_name,
               COUNT(host.id) host_count, COALESCE(SUM(host.live_minutes_30d), 0) total_live_minutes,
               COALESCE(SUM(host.gifts_value_30d), 0) estimated_earnings
-       FROM application_users user INNER JOIN platform_accounts account ON account.id = user.agency_account_id
+       FROM application_users user INNER JOIN platform_accounts account
+         ON account.id = user.agency_account_id
+         OR (account.role = 'AGENCY' AND (
+           account.application_user_id = user.id
+           OR account.application_user_id = user.external_user_id
+           OR account.application_user_id = CAST(user.public_id AS CHAR)
+         ))
        LEFT JOIN application_users owner
          ON owner.id = account.application_user_id
          OR owner.external_user_id = account.application_user_id
          OR CAST(owner.public_id AS CHAR) = account.application_user_id
        LEFT JOIN host_profiles host ON host.agency_account_id = account.id
-       WHERE user.id = ? GROUP BY account.id, account.public_id, account.full_name, account.status, account.country_code, owner.public_id, owner.full_name LIMIT 1`,
+       WHERE user.id = ? AND account.role = 'AGENCY'
+       GROUP BY account.id, account.public_id, account.full_name, account.status, account.country_code,
+                owner.public_id, owner.full_name, user.agency_account_id
+       ORDER BY linked_membership DESC, (account.status = 'ACTIVE') DESC
+       LIMIT 1`,
       [identity.userId],
     ),
     db().query<RowDataPacket[]>(

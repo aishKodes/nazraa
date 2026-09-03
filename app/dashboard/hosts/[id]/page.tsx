@@ -30,7 +30,7 @@ export default async function HostDetailPage({ params, searchParams }: { params:
           <label>Change reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for identity correction" /></label>
           <button className="secondary-button" type="submit">Change gender</button>
         </form><hr className="form-divider" />
-        <div className="card-title"><div><h2>Hosting status</h2><p>Suspending or pausing ends current rooms and blocks new Video, Party and Face Live rooms. Verification status is not changed.</p></div></div>
+        <div className="card-title"><div><h2>Hosting status</h2><p>Suspending or pausing ends current rooms and blocks new Face Live and Party Audio rooms. Verification status is not changed.</p></div></div>
         <form action={submitHostStatus} className="stack-form"><input type="hidden" name="hostId" value={host.id} />
           <label>New hosting status<select name="status" required defaultValue={host.status === "SUSPENDED" || host.status === "INACTIVE" ? "ACTIVE" : "SUSPENDED"}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="SUSPENDED">Suspended</option></select></label>
           <label>Hosting status reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for this status change" /></label>

@@ -799,6 +799,20 @@ async function main() {
     const createdAgencyId = String(createdAgencyRows[0].id);
     const createdAgencyPublicId = String(createdAgencyRows[0].public_id);
     const agencyOwner = { ...stranger, role: "AGENCY_OWNER" as const, agencyAccountId: createdAgencyId };
+    await root.execute("UPDATE application_users SET agency_account_id = NULL WHERE id = ?", [stranger.userId]);
+    await root.execute("UPDATE host_profiles SET agency_account_id = NULL WHERE application_user_id = ?", [stranger.userId]);
+    await assert.rejects(
+      social.applyToCreateAgency(stranger, { ...agencyInput, name: "Forbidden Second Agency" }),
+      /already own/,
+      "an Agency Owner must not be able to submit a second creation request even if a stale membership link is missing",
+    );
+    await assert.rejects(
+      social.applyToJoinAgency(stranger, createdAgencyPublicId),
+      /already own/,
+      "an Agency Owner must not be able to join another Agency even if a stale membership link is missing",
+    );
+    await root.execute("UPDATE application_users SET agency_account_id = ? WHERE id = ?", [createdAgencyId, stranger.userId]);
+    await root.execute("UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?", [createdAgencyId, stranger.userId]);
     const directoryEntry = await social.searchAgency(createdAgencyPublicId);
     assert.equal(directoryEntry.owner?.id, stranger.publicId);
     assert.equal(directoryEntry.owner?.name, stranger.fullName);

@@ -79,11 +79,25 @@ export async function verifyAgencyParent(publicId: string) {
   return { id: String(parent.public_id), name: parent.full_name, role: parent.role === "BD" ? "BD" : "Admin" };
 }
 
+async function agencyOwnedByIdentity(connection: PoolConnection, identity: MobileIdentity) {
+  const [rows] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
+    `SELECT account.id, account.full_name
+     FROM platform_accounts account
+     WHERE account.role = 'AGENCY'
+       AND (account.application_user_id = ? OR account.application_user_id = ? OR account.application_user_id = ?)
+     LIMIT 1 FOR SHARE`,
+    [identity.userId, identity.externalUserId, identity.publicId],
+  );
+  return rows[0] ?? null;
+}
+
 export async function applyToJoinAgency(identity: MobileIdentity, publicId: string) {
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!users[0]) throw new Error("Your Nazraa account was not found.");
     if (users[0].agency_account_id) throw new Error("Your Agency Owner must remove you before you can join another Agency.");
+    const ownedAgency = await agencyOwnedByIdentity(connection, identity);
+    if (ownedAgency) throw new Error(`You already own ${ownedAgency.full_name}. An Agency Owner cannot join or create another Agency.`);
     const [agencies] = await connection.query<(RowDataPacket & { id: string; full_name: string; owner_user_id: string | null })[]>(
       `SELECT agency.id, agency.full_name,
               (SELECT owner.id FROM application_users owner
@@ -249,7 +263,10 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
   const encryptedAadhaar = encryptPrivateText(aadhaar);
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    if (!users[0]) throw new Error("Your Nazraa account was not found.");
     if (users[0]?.agency_account_id) throw new Error("This account is already linked to an Agency.");
+    const ownedAgency = await agencyOwnedByIdentity(connection, identity);
+    if (ownedAgency) throw new Error(`You already own ${ownedAgency.full_name}. Each Nazraa account can own only one Agency.`);
     const [openMemberships] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_membership_applications WHERE application_user_id = ? AND status IN ('PENDING','APPROVED') LIMIT 1", [identity.userId]);
     if (openMemberships.length) throw new Error("Your existing Agency membership request must be resolved first.");
     const [pending] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [identity.userId]);

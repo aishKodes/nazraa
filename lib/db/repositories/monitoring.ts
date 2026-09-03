@@ -124,11 +124,20 @@ export async function blockUserDevice(input: { scope: Scope; sessionId: string; 
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; device_id_hash: string | null; device_label: string | null })[]>(
       `SELECT session.id, session.application_user_id, session.device_id_hash, session.device_label
        FROM mobile_sessions session INNER JOIN application_users u ON u.id = session.application_user_id
-       WHERE session.id = ? AND ${scoped.clause} LIMIT 1 FOR UPDATE`,
+       WHERE session.id = ? AND session.revoked_at IS NULL
+         AND session.expires_at > CURRENT_TIMESTAMP(3) AND ${scoped.clause} LIMIT 1 FOR UPDATE`,
       [input.sessionId, ...scoped.values],
     );
     const session = rows[0];
-    if (!session) throw new Error("Device was not found in your permitted branch.");
+    if (!session) throw new Error("An active device session was not found in your permitted branch.");
+    const [existingBlocks] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM mobile_device_blocks
+       WHERE application_user_id = ? AND status = 'ACTIVE'
+         AND (mobile_session_id = ? OR (? IS NOT NULL AND device_id_hash = ?))
+       LIMIT 1 FOR UPDATE`,
+      [session.application_user_id, session.id, session.device_id_hash, session.device_id_hash],
+    );
+    if (existingBlocks[0]) throw new Error("This device is already blocked.");
     const blockId = randomUUID();
     await connection.execute(
       `INSERT INTO mobile_device_blocks
@@ -159,6 +168,20 @@ export async function unblockUserDevice(input: { scope: Scope; blockId: string; 
     const block = rows[0];
     if (!block) throw new Error("Active device block was not found in your permitted branch.");
     await connection.execute("UPDATE mobile_device_blocks SET status = 'REVOKED', revoked_by = ?, revoked_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [input.scope.account.id, block.id]);
+    if (block.mobile_session_id) {
+      await connection.execute(
+        `UPDATE mobile_sessions session SET session.revoked_at = NULL
+         WHERE session.id = ? AND session.expires_at > CURRENT_TIMESTAMP(3)
+           AND NOT EXISTS (
+             SELECT 1 FROM mobile_device_blocks active_block
+             WHERE active_block.application_user_id = session.application_user_id
+               AND active_block.status = 'ACTIVE'
+               AND (active_block.mobile_session_id = session.id
+                 OR (session.device_id_hash IS NOT NULL AND active_block.device_id_hash = session.device_id_hash))
+           )`,
+        [block.mobile_session_id],
+      );
+    }
     await connection.execute(
       `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, reason)
        VALUES (?, ?, ?, 'device.unblock', 'devices', 'mobile_session', ?, ?)`,

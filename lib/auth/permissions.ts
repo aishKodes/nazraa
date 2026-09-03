@@ -40,7 +40,6 @@ export type Permission =
   | "documents.manage"
   | "face_verification.read"
   | "face_verification.manage"
-  | "face_live.authorize"
   | "gifts.read"
   | "gifts.manage"
   | "banners.read"
@@ -64,7 +63,7 @@ const master: Permission[] = [
   "coin_packages.manage", "sellers.manage", "withdrawals.read", "withdrawals.review",
   "transactions.read", "rooms.read", "rooms.restrict", "rooms.manage", "documents.read",
   "documents.upload", "documents.manage", "face_verification.read", "face_verification.manage",
-  "face_live.authorize", "gifts.read", "gifts.manage", "banners.read", "banners.manage",
+  "gifts.read", "gifts.manage", "banners.read", "banners.manage",
   "notifications.read", "notifications.manage", "support.read", "support.manage", "reports.export",
   "audit.read", "risk.read", "risk.manage", "settings.manage",
 ];
@@ -77,7 +76,7 @@ const countryManager: Permission[] = [
   "wallet.read", "coins.allocate", "coins.transfer", "coin_orders.read", "coin_orders.manage",
   "sellers.manage", "withdrawals.read", "withdrawals.review", "transactions.read", "rooms.read",
   "rooms.restrict", "rooms.manage", "documents.read", "documents.manage", "face_verification.read",
-  "face_verification.manage", "face_live.authorize", "support.read", "support.manage", "reports.export",
+  "face_verification.manage", "support.read", "support.manage", "reports.export",
   "audit.read", "risk.read", "risk.manage",
 ];
 
@@ -88,7 +87,7 @@ const superAdmin: Permission[] = [
   "agencies.review", "hierarchy.read", "monitoring.read", "wallet.read", "coins.allocate",
   "coins.transfer", "coin_orders.read", "coin_orders.manage", "withdrawals.read", "withdrawals.review",
   "transactions.read", "rooms.read", "rooms.restrict", "rooms.manage", "documents.read",
-  "documents.manage", "face_verification.read", "face_verification.manage", "face_live.authorize",
+  "documents.manage", "face_verification.read", "face_verification.manage",
   "support.read", "support.manage", "reports.export", "audit.read", "risk.read", "risk.manage",
 ];
 
@@ -112,7 +111,7 @@ const grants: Record<Role, Permission[]> = {
     "dashboard.read", "users.read", "users.moderate", "hosts.read", "hosts.review", "agencies.read", "agencies.review",
     "monitoring.read", "wallet.read", "coins.transfer", "coin_orders.read", "coin_orders.manage",
     "withdrawals.read", "transactions.read", "rooms.read", "rooms.restrict", "documents.read",
-    "documents.upload", "face_verification.read", "face_live.authorize", "support.read", "reports.export",
+    "documents.upload", "face_verification.read", "support.read", "reports.export",
   ],
   COIN_SELLER: [
     "dashboard.read", "wallet.read", "coins.transfer", "coin_orders.read", "coin_orders.manage", "transactions.read",

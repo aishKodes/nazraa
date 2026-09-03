@@ -433,6 +433,7 @@ export async function listPresenceIncidents(scope: Scope) {
 }
 
 export async function restoreLiveAccess(input: { scope: Scope; restrictionId: string; reason: string }) {
+  if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restore Live access.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear review reason.");
   const filter = scopeWhere(input.scope, "user.agency_account_id");
   return withTransaction(async (connection) => {
@@ -442,13 +443,13 @@ export async function restoreLiveAccess(input: { scope: Scope; restrictionId: st
       `SELECT restriction.id, restriction.application_user_id, user.full_name
        FROM moderation_restrictions restriction
        INNER JOIN application_users user ON user.id = restriction.application_user_id
-       WHERE restriction.id = ? AND restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+       WHERE restriction.id = ? AND restriction.restriction_type = 'TEMP_LIVE_BAN'
          AND restriction.status = 'ACTIVE' AND ${filter.clause}
        LIMIT 1 FOR UPDATE`,
       [input.restrictionId, ...filter.values],
     );
     const restriction = rows[0];
-    if (!restriction) throw new Error("The active Live suspension was not found in your scope.");
+    if (!restriction) throw new Error("The active temporary Live restriction was not found in your scope.");
     await connection.execute(
       "UPDATE moderation_restrictions SET status = 'REVOKED', ends_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
       [restriction.id],

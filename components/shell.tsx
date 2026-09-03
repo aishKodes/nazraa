@@ -46,14 +46,27 @@ const navigationByRole: Record<Role, NavItem[]> = {
   BD: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.risk, common.support],
   AGENCY: [common.overview, common.agencies, common.hosts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.face, common.support],
   COIN_SELLER: [common.overview, common.wallet, common.commerce, common.transactions],
-  MONITORING_CS: [common.overview, common.monitoring, common.rooms, common.support, common.risk, common.audit],
+  // CS work is intentionally concentrated in one search-first workspace.
+  // Master still sees every CS action through the platform audit trail.
+  MONITORING_CS: [common.overview, common.monitoring, common.support],
 };
+
+const navigationGroups = [
+  { label: "Core", items: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
+  { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.withdrawals] },
+  { label: "Safety", items: [common.monitoring, common.rooms, common.face, common.risk, common.support, common.audit] },
+  { label: "Platform", items: [common.reports, common.gifts, common.banners, common.notifications, common.settings] },
+] satisfies { label: string; items: NavItem[] }[];
 
 export function AppShell({ account, children }: { account: SessionAccount; children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
   const visibleItems = navigationByRole[account.role];
+  const visibleHrefs = new Set(visibleItems.map((item) => item.href));
+  const visibleGroups = navigationGroups
+    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)) }))
+    .filter((group) => group.items.length);
   const mobileItems = visibleItems.slice(0, 4);
   useEffect(() => {
     function focusSearch(event: KeyboardEvent) {
@@ -70,8 +83,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     <aside className={`sidebar ${menuOpen ? "open" : ""}`} aria-label="Main menu">
       <div className="sidebar-brand-row"><Link href="/dashboard" className="brand" aria-label="Nazraa Control home"><Image className="brand-logo" src="/nazraa-logo.jpg" width={34} height={34} alt="" priority /><span>Nazraa <em>Control</em></span></Link><button className="sidebar-close" type="button" onClick={() => setMenuOpen(false)} aria-label="Close navigation"><X size={20} /></button></div>
       <nav aria-label="Primary navigation">
-        <p className="nav-caption">Workspace</p>
-        {visibleItems.map((item) => { const Icon = item.icon; const active = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href); return <Link href={item.href} key={item.href} className={`nav-link ${active ? "active" : ""}`} onClick={() => setMenuOpen(false)}><Icon size={18} /><span>{item.label}</span></Link>; })}
+        {visibleGroups.map((group) => <div className="nav-group" key={group.label}><p className="nav-caption">{group.label}</p>{group.items.map((item) => { const Icon = item.icon; const active = item.href === "/dashboard" ? pathname === item.href : pathname.startsWith(item.href); return <Link href={item.href} key={item.href} className={`nav-link ${active ? "active" : ""}`} onClick={() => setMenuOpen(false)}><Icon size={18} /><span>{item.label}</span></Link>; })}</div>)}
       </nav>
       <div className="sidebar-bottom">
         <div className="account-chip"><span className="avatar small">{initials(account.fullName)}</span><span><b>{account.fullName}</b><small>{roleLabel(account.role)}</small></span></div>

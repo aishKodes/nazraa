@@ -1,5 +1,6 @@
 import { Ban, Clock3, Laptop, Search, ShieldAlert } from "lucide-react";
 import { submitDeviceBlock, submitDeviceUnblock, submitPermanentUserBan, submitTemporaryRestriction } from "@/app/actions";
+import { submitRestoreLiveAccess } from "@/app/admin-actions";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
@@ -38,6 +39,7 @@ export default async function MonitoringPage({ searchParams }: {
       <div className="monitor-actions">
         {mayRestrict && !user.restrictionId && user.status !== "BANNED" ? <details className="moderation"><summary><Ban size={15} />Temporary Live block</summary><form action={submitTemporaryRestriction}><input type="hidden" name="applicationUserId" value={user.id} /><input type="hidden" name="returnTo" value="monitoring" /><select name="durationMinutes" defaultValue="30"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Reason" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm</label><button className="danger-button" type="submit">Apply block</button></form></details> : null}
         {mayPermanentlyBan && user.status !== "BANNED" ? <details className="moderation permanent-action"><summary><ShieldAlert size={15} />Permanent ban</summary><form action={submitPermanentUserBan}><input type="hidden" name="applicationUserId" value={user.id} /><input name="reason" minLength={5} maxLength={500} required placeholder="Permanent-ban reason" /><input name="confirmation" pattern="BAN" required placeholder="Type BAN" /><button className="danger-button" type="submit">Permanently ban</button></form></details> : null}
+        {mayRestrict && user.restrictionId ? <details className="moderation"><summary>Restore Live access</summary><form action={submitRestoreLiveAccess}><input type="hidden" name="restrictionId" value={user.restrictionId} /><input type="hidden" name="returnTo" value="monitoring" /><input name="reason" minLength={5} maxLength={500} required placeholder="Restoration reason" /><button className="secondary-button" type="submit">Restore now</button></form></details> : null}
       </div>
     </Card>)}</div> : <Card><EmptyState title="No user found" detail="Try an exact ID or a name/phone prefix. Results never cross your hierarchy branch." /></Card>}
 

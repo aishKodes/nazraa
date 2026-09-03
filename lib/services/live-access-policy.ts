@@ -37,14 +37,16 @@ export class LiveAccessPolicyService {
     const agencyApproved = Boolean(identity.agencyAccountId);
     const partyAllowed = faceVerified && !hostingRestricted;
     const party = decision(partyAllowed, hostingRestricted ? restrictionReason : faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");
-    const managedLiveAllowed = faceVerified && agencyApproved && identity.agencyFaceLiveAuthorized && identity.superAdminFaceLiveAuthorized && !hostingRestricted;
+    // Face verification is the single authoritative verification decision.
+    // The two legacy authorization columns are retained only for older app
+    // versions and must never make a verified Host repeat approval in several
+    // panels. Agency membership remains a separate business eligibility rule.
+    const managedLiveAllowed = faceVerified && agencyApproved && !hostingRestricted;
     const managedLiveReason =
       hostingRestricted ? restrictionReason
         : !faceVerified ? "Complete automatic Face Verification first."
-        : !agencyApproved ? "Join an approved Agency to unlock Video or Face Live."
-          : !identity.agencyFaceLiveAuthorized ? "Your Agency must authorize Video and Face Live access."
-            : !identity.superAdminFaceLiveAuthorized ? "Super Admin authorization is still required."
-              : "Video and Face Live access active.";
+        : !agencyApproved ? "Join an approved Agency to unlock Face Live."
+          : "Face Live access active.";
     const video = decision(managedLiveAllowed, managedLiveReason);
     const face = decision(managedLiveAllowed, managedLiveReason);
     return {
@@ -56,8 +58,10 @@ export class LiveAccessPolicyService {
       face,
       faceVerified,
       agencyApproved,
-      agencyAuthorized: identity.agencyFaceLiveAuthorized,
-      superAdminAuthorized: identity.superAdminFaceLiveAuthorized,
+      // Backward-compatible response fields now reflect the canonical status,
+      // so old clients do not display obsolete secondary approval locks.
+      agencyAuthorized: faceVerified && agencyApproved,
+      superAdminAuthorized: faceVerified,
     };
   }
 }

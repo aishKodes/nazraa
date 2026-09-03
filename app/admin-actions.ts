@@ -19,7 +19,7 @@ import { createHostApplication, reviewHostApplication, updateHostGender, updateH
 import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, saveWithdrawalEconomy, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
-import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, saveVipValidity, setFaceLiveAuthorization } from "@/lib/db/repositories/completion-administration";
+import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, saveVipValidity } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { preparePublicImage } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
@@ -194,7 +194,7 @@ export async function submitHostStatus(formData: FormData) {
   if (!parsed.success) redirect(destination("/dashboard/hosts", "error", "Choose a host status, enter a clear reason and confirm the change."));
   try { await updateHostStatus({ scope, ...parsed.data }); } catch (error) { redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "error", error instanceof Error ? error.message : "Host status could not be updated.")); }
   revalidatePath("/dashboard", "layout");
-  redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", parsed.data.status === "ACTIVE" ? "Hosting restored. Other verification and moderation requirements still apply." : "Hosting blocked and current rooms ended. New Video, Party and Face Live rooms cannot be created."));
+  redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", parsed.data.status === "ACTIVE" ? "Hosting restored. Verification and moderation requirements still apply." : "Hosting blocked and current rooms ended. New Face Live and Party Audio rooms cannot be created."));
 }
 
 export async function submitCreateGift(formData: FormData) {
@@ -495,20 +495,23 @@ export async function submitRoomStatus(formData: FormData) {
 }
 
 export async function submitRestoreLiveAccess(formData: FormData) {
-  const scope = await requirePermission("rooms.manage");
+  const scope = await requirePermission("rooms.restrict");
   const parsed = z.object({
     restrictionId: z.string().uuid(),
     reason: z.string().trim().min(5).max(500),
+    returnTo: z.enum(["rooms", "monitoring"]).catch("rooms"),
   }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/rooms", "error", "Provide a valid Live suspension and review reason."));
+  const path = `/dashboard/${parsed.success ? parsed.data.returnTo : "rooms"}`;
+  if (!parsed.success) redirect(destination(path, "error", "Provide a valid temporary Live restriction and review reason."));
   let result: Awaited<ReturnType<typeof restoreLiveAccess>>;
   try {
-    result = await restoreLiveAccess({ scope, ...parsed.data });
+    result = await restoreLiveAccess({ scope, restrictionId: parsed.data.restrictionId, reason: parsed.data.reason });
   } catch (error) {
-    redirect(destination("/dashboard/rooms", "error", error instanceof Error ? error.message : "Live access could not be restored."));
+    redirect(destination(path, "error", error instanceof Error ? error.message : "Live access could not be restored."));
   }
   revalidatePath("/dashboard/rooms");
-  redirect(destination("/dashboard/rooms", "success", `${result.userName}'s Live access was restored.`));
+  revalidatePath("/dashboard/monitoring");
+  redirect(destination(path, "success", `${result.userName}'s Live access was restored.`));
 }
 
 export async function submitDocumentReview(formData: FormData) {
@@ -658,14 +661,4 @@ export async function submitHostRewardRules(formData: FormData) {
   await saveHostRewardRules({ scope, ...parsed.data, live: parsed.data.face });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Host reward rules saved and audited."));
-}
-
-export async function submitFaceLiveAuthorization(formData: FormData) {
-  const scope = await requirePermission("face_live.authorize");
-  const parsed = z.object({ userPublicId: z.string().regex(/^\d+$/), authorizationType: z.enum(["AGENCY_FACE_LIVE", "SUPER_ADMIN_FACE_LIVE"]), approved: z.enum(["true", "false"]).transform((value) => value === "true"), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/face-verification", "error", "Choose an authorization decision and provide a clear reason."));
-  try { await setFaceLiveAuthorization({ scope, ...parsed.data }); }
-  catch (error) { redirect(destination("/dashboard/face-verification", "error", error instanceof Error ? error.message : "Face Live authorization could not be saved.")); }
-  revalidatePath("/dashboard/face-verification");
-  redirect(destination("/dashboard/face-verification", "success", "Face Live authorization saved and audited."));
 }
