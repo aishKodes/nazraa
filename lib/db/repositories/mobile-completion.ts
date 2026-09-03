@@ -331,7 +331,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
   });
 }
 
-export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string, mediaPublishing = false) {
+export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string, mediaPublishing?: boolean) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
@@ -363,6 +363,10 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     let rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
     let rewardEligibleSeconds = Number(rows[0].reward_eligible_seconds ?? 0);
     if (rows[0].room_role === "OWNER" && rows[0].room_type !== "PARTY" && rows[0].reward_accounting_id) {
+      // Releases before 2.4.16 did not include this field. Their host-only,
+      // in-room heartbeat remains the compatibility signal until the current
+      // build is published; current clients always send an explicit value.
+      const publishingNow = mediaPublishing ?? true;
       const wasPublishing = Boolean(rows[0].reward_media_publishing);
       const lastHeartbeat = rows[0].reward_last_media_heartbeat_at
         ? new Date(rows[0].reward_last_media_heartbeat_at as string | Date)
@@ -375,7 +379,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       const acceptedDelta = wasPublishing && gapSeconds <= reconnectGrace ? gapSeconds : 0;
       rewardSegmentSeconds += acceptedDelta;
       rewardValidSeconds += acceptedDelta;
-      if ((wasPublishing && gapSeconds > reconnectGrace) || (wasPublishing && !mediaPublishing)) {
+      if ((wasPublishing && gapSeconds > reconnectGrace) || (wasPublishing && !publishingNow)) {
         rewardEligibleSeconds += Math.floor(rewardSegmentSeconds / 3600) * 3600;
         rewardSegmentSeconds = 0;
       }
@@ -384,7 +388,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
          SET media_publishing = ?, last_media_heartbeat_at = ?,
              media_segment_seconds = ?, valid_media_seconds = ?, eligible_duration_seconds = ?
          WHERE id = ? AND status = 'ACTIVE'`,
-        [Boolean(mediaPublishing), serverTime, rewardSegmentSeconds, rewardValidSeconds, rewardEligibleSeconds, rows[0].reward_accounting_id],
+        [publishingNow, serverTime, rewardSegmentSeconds, rewardValidSeconds, rewardEligibleSeconds, rows[0].reward_accounting_id],
       );
     }
     const [requests] = await connection.query<RowDataPacket[]>(

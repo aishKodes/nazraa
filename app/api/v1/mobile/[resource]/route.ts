@@ -314,7 +314,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "room-presence") {
       const parsed = z.object({
         roomCode: z.string().trim().min(3).max(80),
-        mediaPublishing: z.boolean().default(false),
+        mediaPublishing: z.boolean().optional(),
       }).parse(body);
       return NextResponse.json(await refreshRoomPresence(identity, parsed.roomCode, parsed.mediaPublishing));
     }
