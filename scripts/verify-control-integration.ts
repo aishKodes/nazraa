@@ -394,6 +394,22 @@ async function main() {
     await admin.permanentlyRemovePlatformAccount({ scope: master, accountId: removable.account.id, reason: "QA remove unused account", confirmed: true });
     await assert.rejects(admin.updateAccountStatus({ scope: await refresh(cm), accountId: removable.account.id, nextStatus: "ACTIVE", reason: "QA permanent removal cannot reactivate" }));
     passed++;
+
+    await root.execute("DELETE FROM administrative_balance_resets WHERE reset_key = 'LAUNCH_BALANCE_RESET_2026_09_03'");
+    await root.execute("DELETE FROM audit_logs WHERE action = 'LAUNCH_BALANCE_RESET'");
+    await root.execute("UPDATE wallet_balances SET available_balance = 123 WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [ownUser.id]);
+    await root.execute("UPDATE wallet_balances SET available_balance = 456, reserved_balance = 100000 WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [ownUser.id]);
+    const launchResetSql = await readFile("db/migrations/0035_face_live_reward_and_launch_balance_reset.sql", "utf8");
+    await root.query(launchResetSql);
+    const [resetBalances] = await root.query<RowDataPacket[]>("SELECT asset_type, available_balance, reserved_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? ORDER BY asset_type", [ownUser.id]);
+    assert.deepEqual(resetBalances.map((row) => [row.asset_type, Number(row.available_balance), Number(row.reserved_balance)]), [["COIN", 0, 0], ["DIAMOND", 0, 100000]], "launch reset clears only spendable balances and preserves reserved funds");
+    const [resetLedgerBeforeRetry] = await root.query<RowDataPacket[]>("SELECT COUNT(*) count FROM ledger_transactions WHERE transaction_type = 'LAUNCH_BALANCE_RESET'");
+    await root.query(launchResetSql);
+    const [resetLedgerAfterRetry] = await root.query<RowDataPacket[]>("SELECT COUNT(*) count FROM ledger_transactions WHERE transaction_type = 'LAUNCH_BALANCE_RESET'");
+    assert.equal(Number(resetLedgerAfterRetry[0].count), Number(resetLedgerBeforeRetry[0].count), "launch reset retry must never create duplicate ledger entries");
+    const [resetAudit] = await root.query<RowDataPacket[]>("SELECT COUNT(*) count FROM audit_logs WHERE action = 'LAUNCH_BALANCE_RESET'");
+    assert.equal(Number(resetAudit[0].count), 1);
+    passed++;
     console.log(`PASS: ${passed} integration groups; 8 roles, hierarchy/promotion, Agency approvals, authorization, restrictions/expiry, devices, coins, payouts, bans, deletion, SQL queries.`);
     if (process.env.NAZRAA_QA_KEEP === "1") {
       keep = true;

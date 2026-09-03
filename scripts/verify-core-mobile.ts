@@ -193,14 +193,20 @@ async function main() {
     const faceRoomCode = `QAF${Date.now()}`;
     await product.createRoom(owner, { roomCode: faceRoomCode, kind: "face", title: "QA Face Broadcast", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
     await rooms.joinLiveRoom(guest, faceRoomCode);
+    await rooms.joinLiveRoom(stranger, faceRoomCode);
     await assert.rejects(rooms.roomPublishingDecision(guest, faceRoomCode), /audio request/);
     await rooms.requestLiveCoHost(guest, faceRoomCode);
+    await rooms.requestLiveCoHost(stranger, faceRoomCode);
+    assert.equal((await rooms.refreshRoomPresence(owner, faceRoomCode)).coHostRequests?.length, 2);
     await rooms.respondLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: guest.publicId, accept: true });
+    await rooms.respondLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: stranger.publicId, accept: true });
     assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "speaker");
     assert.equal((await rooms.roomPublishingDecision(guest, faceRoomCode)).allowed, true);
+    assert.equal((await rooms.refreshRoomPresence(owner, faceRoomCode)).participants?.filter((participant: { roomRole: string }) => participant.roomRole === "speaker").length, 2);
     await rooms.endLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: guest.publicId });
     assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "audience");
-    console.log("PASS Face Live broadcast roles: viewer request, owner accept, audio speaker grant, owner disconnect");
+    assert.equal((await rooms.refreshRoomPresence(stranger, faceRoomCode)).roomRole, "speaker", "disconnecting B must not disconnect audio guest C");
+    console.log("PASS Face Live broadcast roles: Host A, Viewer B/C requests, multiple audio speaker grants, targeted owner disconnect");
 
     await product.setFollow(owner, "user", guest.publicId, true);
     const followers = await social.socialDirectory(guest, { targetPublicId: guest.publicId, kind: "followers" });
@@ -619,6 +625,11 @@ async function main() {
     await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [liveRewardRoomId, rewardHost.userId]);
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
+    const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode);
+    assert.ok(liveProgress.liveRewardProgress);
+    assert.equal(liveProgress.liveRewardProgress!.rewardDiamondsPerHour, 3500);
+    assert.ok(liveProgress.liveRewardProgress!.continuousSeconds >= 3599);
+    assert.ok(liveProgress.liveRewardProgress!.secondsUntilNextReward >= 1 && liveProgress.liveRewardProgress!.secondsUntilNextReward <= 3600);
     const rewardDiamondsBefore = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
     const finalizedLive = await rooms.finalizeLiveSession(rewardHost, liveRewardCode);
     assert.equal(finalizedLive.rewardCoins, 3500);
@@ -627,6 +638,21 @@ async function main() {
     assert.equal(rewardBootstrap.wallet.diamonds, rewardDiamondsBefore + 3500);
     assert.equal(rewardBootstrap.wallet.coins, 5000, "Host Live rewards must not mint spendable social coins");
     assert.equal(rewardBootstrap.hostRewardHistory[0].rewardCoins, 3500);
+
+    async function finalizedRewardFor(seconds: number) {
+      const roomCode = `REWARD${seconds}${Date.now()}`;
+      const roomId = randomUUID();
+      await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'FACE', 'QA Exact Reward', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, roomCode, rewardHost.userId]);
+      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [roomId, rewardHost.userId]);
+      await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'FACE', DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND), id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), roomId, rewardHost.userId, seconds]);
+      return rooms.finalizeLiveSession(rewardHost, roomCode);
+    }
+    const partialHour = await finalizedRewardFor(3599);
+    assert.equal(partialHour.rewardCoins, 0, "59 continuous minutes must earn zero Diamonds");
+    assert.equal(partialHour.eligibleSeconds, 0, "an unfinished hour must not carry over");
+    const twoHours = await finalizedRewardFor(7200);
+    assert.equal(twoHours.rewardCoins, 7000, "two completed continuous hours must earn exactly 7,000 Diamonds");
+    assert.equal(twoHours.eligibleSeconds, 7200);
 
     await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 500000) ON DUPLICATE KEY UPDATE available_balance = 500000, reserved_balance = 0", [randomUUID(), rewardHost.userId]);
     const socialCoinsBeforeWithdrawal = (await product.mobileBootstrap(rewardHost)).wallet.coins;

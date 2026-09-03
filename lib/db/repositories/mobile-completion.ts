@@ -285,13 +285,19 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
 export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
-      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, member.room_role, member.seat_index, member.muted, member.muted_by_staff,
+      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
+              member.room_role, member.seat_index, member.muted, member.muted_by_staff,
+              accounting.started_at reward_started_at, reward_rule.coins_per_hour reward_diamonds_per_hour,
+              GREATEST(0, TIMESTAMPDIFF(SECOND, accounting.started_at, CURRENT_TIMESTAMP(3))) reward_continuous_seconds,
+              CURRENT_TIMESTAMP(3) reward_server_time,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'DIAMOND' LIMIT 1), 0) diamond_balance
        FROM live_rooms room
        INNER JOIN live_room_members member ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
+       LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
+       LEFT JOIN host_reward_rules reward_rule ON reward_rule.id = accounting.reward_rule_id
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [identity.userId, roomCode],
     );
@@ -435,10 +441,20 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     );
     return {
       active: true,
+      serverTime: rows[0].reward_server_time,
       roomRole: String(rows[0].room_role).toLowerCase(), seatIndex: rows[0].seat_index,
       muted: Boolean(rows[0].muted), staffMuted: Boolean(rows[0].muted_by_staff), chatLocked: Boolean(rows[0].chat_locked),
       themeIndex: Number(rows[0].theme_index), themeEnabled: Boolean(rows[0].theme_enabled),
       audioJoinRequestsEnabled: Boolean(rows[0].audio_join_requests_enabled),
+      liveRewardProgress: rows[0].room_role === "OWNER" && rows[0].room_type !== "PARTY" && rows[0].reward_started_at
+        ? {
+            rewardDiamondsPerHour: Number(rows[0].reward_diamonds_per_hour ?? 3500),
+            continuousSeconds: Number(rows[0].reward_continuous_seconds ?? 0),
+            completedHours: Math.floor(Number(rows[0].reward_continuous_seconds ?? 0) / 3600),
+            secondsUntilNextReward: 3600 - (Number(rows[0].reward_continuous_seconds ?? 0) % 3600),
+            serverTime: rows[0].reward_server_time,
+          }
+        : null,
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
@@ -530,6 +546,15 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     }
     if (input.accept && room.room_type === "LIVE" && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
       throw new Error("The viewer must complete Face Verification before joining this Video Live.");
+    }
+    if (input.accept && room.room_type === "FACE") {
+      const [speakerRows] = await connection.query<(RowDataPacket & { count: number })[]>(
+        "SELECT COUNT(*) count FROM live_room_members WHERE room_id = ? AND room_role = 'SPEAKER' AND left_at IS NULL",
+        [room.id],
+      );
+      if (Number(speakerRows[0]?.count ?? 0) >= 4) {
+        throw new Error("Face Live already has the maximum 4 audio guests.");
+      }
     }
     await connection.execute(
       `UPDATE live_cohost_requests SET status = ?, responded_at = CURRENT_TIMESTAMP(3),
@@ -1054,8 +1079,13 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
     );
     const rule = ruleRows[0];
     if (!rule) throw new Error("The host reward rule is unavailable.");
-    const eligibleSeconds = validSeconds >= Number(rule.minimum_eligible_seconds) ? validSeconds : 0;
-    const rewardCoins = session.room_type === "PARTY" ? 0 : Math.floor(eligibleSeconds * Number(rule.coins_per_hour) / 3600);
+    const completedHours = validSeconds >= Math.max(3600, Number(rule.minimum_eligible_seconds))
+      ? Math.floor(validSeconds / 3600)
+      : 0;
+    // Only whole, continuous hours qualify. An unfinished hour is intentionally
+    // discarded when the Live ends (59m = 0, 60m = 3,500, 120m = 7,000).
+    const eligibleSeconds = completedHours * 3600;
+    const rewardCoins = session.room_type === "PARTY" ? 0 : completedHours * Number(rule.coins_per_hour);
     let ledgerId: string | null = null;
     let rewardCode: string | null = null;
     if (rewardCoins > 0) {
@@ -1066,7 +1096,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
         `INSERT INTO ledger_transactions
           (id, transaction_code, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
          VALUES (?, ?, 'DIAMOND', 'HOST_HOURLY_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
-        [ledgerId, rewardCode, identity.userId, rewardCoins, `${session.room_type} • ${eligibleSeconds} eligible seconds`],
+        [ledgerId, rewardCode, identity.userId, rewardCoins, `${session.room_type} • ${completedHours} completed continuous hour(s)`],
       );
     }
     await connection.execute(
@@ -1080,7 +1110,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       [session.room_id],
     );
     await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, ?), audience_count = 0 WHERE id = ?", [session.ended_at, session.room_id]);
-    return { transactionId: rewardCode, roomType: session.room_type.toLowerCase(), validSeconds, eligibleSeconds, rewardCoins };
+    return { transactionId: rewardCode, roomType: session.room_type.toLowerCase(), validSeconds, eligibleSeconds, rewardCoins, rewardDiamonds: rewardCoins, completedHours };
   });
 }
 
