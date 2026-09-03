@@ -158,8 +158,9 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     room_role: string;
     muted: number;
     media_publishing: number;
+    publisher_room_code: string;
   })[]>(
-    `SELECT user.public_id, member.room_role, member.muted,
+    `SELECT user.public_id, member.room_role, member.muted, ? publisher_room_code,
             CASE WHEN member.room_role = 'OWNER' THEN ?
               ELSE (member.media_publishing
                 AND member.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
@@ -169,21 +170,63 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
      WHERE member.room_id = ? AND member.left_at IS NULL
        AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
      ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
-    [room.host_media_publishing, room.id],
+    [room.room_code, room.host_media_publishing, room.id],
   );
   const audienceCount = members.filter((member) => member.room_role === "AUDIENCE").length;
-  const activePublishers = members.filter((member) =>
+  const localPublishers = members.filter((member) =>
     ["OWNER", "ADMIN", "SPEAKER"].includes(member.room_role) && Boolean(member.media_publishing),
   );
-  const hasHost = activePublishers.some((member) => member.room_role === "OWNER");
+  const [pkPublishers] = room.room_type === "FACE"
+    ? await db().query<(RowDataPacket & {
+        public_id: number;
+        room_role: string;
+        muted: number;
+        media_publishing: number;
+        publisher_room_code: string;
+      })[]>(
+        `SELECT user.public_id, member.room_role, member.muted,
+                other_room.room_code publisher_room_code,
+                CASE WHEN member.room_role = 'OWNER' THEN
+                  (COALESCE(accounting.media_publishing, FALSE)
+                    AND accounting.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
+                  ELSE (member.media_publishing
+                    AND member.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
+                END media_publishing
+         FROM live_pk_sessions pk
+         INNER JOIN live_rooms other_room
+           ON other_room.id = CASE WHEN pk.source_room_id = ? THEN pk.target_room_id ELSE pk.source_room_id END
+         INNER JOIN live_room_members member ON member.room_id = other_room.id AND member.left_at IS NULL
+         INNER JOIN application_users user ON user.id = member.application_user_id
+         LEFT JOIN live_session_accounting accounting ON accounting.room_id = other_room.id AND accounting.status = 'ACTIVE'
+         WHERE pk.status = 'ACTIVE' AND (pk.source_room_id = ? OR pk.target_room_id = ?)
+           AND other_room.status IN ('ACTIVE','LOCKED')
+           AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+           AND member.room_role IN ('OWNER','ADMIN','SPEAKER')
+         ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
+        [room.id, room.id, room.id],
+      )
+    : [[]];
+  const allPublishers = [...localPublishers, ...pkPublishers.filter((member) => Boolean(member.media_publishing))];
+  const orderedPublishers = [
+    ...allPublishers.filter((member) => member.room_role === "OWNER"),
+    ...allPublishers.filter((member) => member.room_role !== "OWNER"),
+  ].filter((member, index, all) =>
+    all.findIndex((candidate) => candidate.public_id === member.public_id && candidate.publisher_room_code === member.publisher_room_code) === index,
+  ).slice(0, 9);
+  const hasHost = localPublishers.some((member) => member.room_role === "OWNER");
   const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost && audienceCount > 0 &&
     (room.room_type !== "PARTY" || audienceCount >= threshold);
-  const inputs: MixInput[] = activePublishers.map((member, index) => {
+  const hostCount = orderedPublishers.filter((member) => member.room_role === "OWNER").length;
+  let hostIndex = 0;
+  const inputs: MixInput[] = orderedPublishers.map((member) => {
     const hostVideo = room.room_type !== "PARTY" && member.room_role === "OWNER";
+    const currentHostIndex = hostVideo ? hostIndex++ : -1;
+    const left = hostCount > 1 ? currentHostIndex * 360 : 0;
+    const right = hostCount > 1 ? Math.min(720, left + 360) : 720;
     return {
-      StreamId: `${room.room_code}_${member.public_id}_main`,
+      StreamId: `${member.publisher_room_code}_${member.public_id}_main`,
       ContentControl: hostVideo ? 0 : 1,
-      ...(hostVideo ? { RectInfo: { Top: 0, Left: 0, Bottom: 1280, Right: 720, Layer: index } } : {}),
+      ...(hostVideo ? { RectInfo: { Top: 0, Left: left, Bottom: 1280, Right: right, Layer: currentHostIndex } } : {}),
     };
   });
   const desiredHash = createHash("sha256").update(JSON.stringify({ shouldRun, inputs })).digest("hex");

@@ -935,6 +935,46 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
   });
 }
 
+export async function activatePkSession(identity: MobileIdentity, sessionId: string) {
+  return withTransaction(async (connection) => {
+    const [sessions] = await connection.query<(RowDataPacket & {
+      id: string;
+      status: string;
+      source_host_id: string;
+      source_room_code: string;
+      target_room_code: string;
+      source_status: string;
+      target_status: string;
+    })[]>(
+      `SELECT session.id, session.status,
+              source.host_application_user_id source_host_id,
+              source.room_code source_room_code, target.room_code target_room_code,
+              source.status source_status, target.status target_status
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       WHERE session.id = ? LIMIT 1 FOR UPDATE`,
+      [sessionId],
+    );
+    const session = sessions[0];
+    if (!session || session.source_host_id !== identity.userId) {
+      throw new Error("Only the requesting Host can start this PK session.");
+    }
+    if (!["ACTIVE", "LOCKED"].includes(session.source_status) || !["ACTIVE", "LOCKED"].includes(session.target_status)) {
+      throw new Error("Both Hosts must still be Live to start PK.");
+    }
+    if (session.status === "ACTIVE") {
+      return { id: session.id, status: "active", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+    }
+    if (session.status !== "REQUESTED") throw new Error("This PK invitation is no longer pending.");
+    await connection.execute(
+      "UPDATE live_pk_sessions SET status = 'ACTIVE', started_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+      [session.id],
+    );
+    return { id: session.id, status: "active", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+  });
+}
+
 export async function closePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {
   return finalizePkSession(identity, input);
 }

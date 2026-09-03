@@ -26,6 +26,7 @@ import {
   requestLiveCoHost,
   respondLiveCoHost,
   endLiveCoHost,
+  activatePkSession,
   createPkSession,
   exchangeDiamonds,
   finalizeLiveSession,
@@ -360,9 +361,19 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       const parsed = z.object({ sourceRoomCode: z.string().trim().min(3).max(80), targetRoomCode: z.string().trim().min(3).max(80), mode: z.string().trim().min(2).max(32), durationMinutes: z.number().int() }).parse(body);
       return NextResponse.json(await createPkSession(identity, parsed), { status: 201 });
     }
+    if (resource === "pk-start") {
+      const parsed = z.object({ sessionId: z.string().uuid() }).parse(body);
+      const result = await activatePkSession(identity, parsed.sessionId);
+      scheduleMixerSync(result.sourceRoomCode);
+      scheduleMixerSync(result.targetRoomCode);
+      return NextResponse.json(result);
+    }
     if (resource === "pk-end") {
       const parsed = z.object({ sessionId: z.string().uuid(), completed: z.boolean() }).parse(body);
-      return NextResponse.json(await closePkSession(identity, parsed));
+      const result = await closePkSession(identity, parsed);
+      scheduleMixerSync(result.sourceRoomCode);
+      scheduleMixerSync(result.targetRoomCode);
+      return NextResponse.json(result);
     }
     if (resource === "face-presence") {
       const parsed = z.object({
