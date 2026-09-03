@@ -409,6 +409,14 @@ async function main() {
     const targetRoomId = String(pkRooms.find((row) => row.room_code === targetLiveCode)?.id);
     const [giftCatalog] = await root.query<RowDataPacket[]>("SELECT id FROM gift_catalog WHERE gift_key = 'qa_rose' LIMIT 1");
     const rejectedInvite = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+    const sourcePkPresence = await rooms.refreshRoomPresence(owner, sourceLiveCode, true);
+    const targetPkPresence = await rooms.refreshRoomPresence(roomAdmin, targetLiveCode, true);
+    assert.equal(sourcePkPresence.pkSession?.id, rejectedInvite.id);
+    assert.equal(sourcePkPresence.pkSession?.isSourceRoom, true);
+    assert.equal(targetPkPresence.pkSession?.id, rejectedInvite.id);
+    assert.equal(targetPkPresence.pkSession?.isSourceRoom, false);
+    assert.equal(sourcePkPresence.pkSession?.sourceStreamId, `${sourceLiveCode}_${owner.publicId}_main`);
+    assert.equal(targetPkPresence.pkSession?.targetStreamId, `${targetLiveCode}_${roomAdmin.publicId}_main`);
     await assert.rejects(
       rooms.respondPkSession(owner, { sessionId: rejectedInvite.id, accept: true }),
       /Only the invited Host/,

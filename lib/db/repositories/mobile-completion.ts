@@ -566,6 +566,22 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        ORDER BY request.requested_at LIMIT 25`,
       [rows[0].id, identity.userId, rows[0].room_role === "OWNER" ? 1 : 0],
     );
+    const [pkSessions] = await connection.query<RowDataPacket[]>(
+      `SELECT session.id, session.status, session.mode, session.duration_minutes,
+              session.created_at, session.started_at,
+              source.room_code source_room_code, target.room_code target_room_code,
+              source_user.public_id source_host_public_id, source_user.full_name source_host_name,
+              target_user.public_id target_host_public_id, target_user.full_name target_host_name
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       INNER JOIN application_users source_user ON source_user.id = source.host_application_user_id
+       INNER JOIN application_users target_user ON target_user.id = target.host_application_user_id
+       WHERE session.status IN ('REQUESTED','ACTIVE')
+         AND (session.source_room_id = ? OR session.target_room_id = ?)
+       ORDER BY session.created_at DESC LIMIT 1`,
+      [rows[0].id, rows[0].id],
+    );
     const [messages] = await connection.query<RowDataPacket[]>(
       `SELECT message.id, user.full_name, user.vip_tier, message.body, message.created_at FROM live_room_messages message
        INNER JOIN application_users user ON user.id = message.sender_application_user_id
@@ -709,6 +725,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         [rows[0].id, identity.userId],
       );
     }
+    const pkSession = pkSessions[0];
     return {
       active: true,
       serverTime: rows[0].reward_server_time,
@@ -727,6 +744,23 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         : null,
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
       mediaDelivery,
+      pkSession: pkSession
+        ? {
+            id: String(pkSession.id),
+            status: String(pkSession.status).toLowerCase(),
+            mode: String(pkSession.mode),
+            durationMinutes: Number(pkSession.duration_minutes),
+            requestedAt: pkSession.created_at,
+            startedAt: pkSession.started_at,
+            sourceRoomCode: String(pkSession.source_room_code),
+            targetRoomCode: String(pkSession.target_room_code),
+            sourceHost: { id: String(pkSession.source_host_public_id), name: String(pkSession.source_host_name) },
+            targetHost: { id: String(pkSession.target_host_public_id), name: String(pkSession.target_host_name) },
+            sourceStreamId: `${String(pkSession.source_room_code)}_${String(pkSession.source_host_public_id)}_main`,
+            targetStreamId: `${String(pkSession.target_room_code)}_${String(pkSession.target_host_public_id)}_main`,
+            isSourceRoom: String(pkSession.source_room_code) === roomCode,
+          }
+        : null,
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
       coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url, status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
