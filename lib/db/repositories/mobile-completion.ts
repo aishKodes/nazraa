@@ -37,6 +37,10 @@ function roomMediaDelivery(
 ) {
   const features = jsonObject(row.room_features_json);
   const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
+  const reconnectGraceSeconds = Math.max(5, Math.min(60, Number(features.mediaReconnectGraceSeconds ?? 60)));
+  const passiveBackgroundGraceSeconds = Math.max(5, Math.min(60, Number(features.passiveBackgroundGraceSeconds ?? 15)));
+  const maxFaceAudioGuests = Math.max(1, Math.min(12, Number(features.maxFaceAudioGuests ?? 4)));
+  const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 20)));
   // The panel flag is an operator preference. The deployment gate proves that
   // the ZEGO project, mixer output and signed playback endpoint are actually
   // ready. Never move an audience member away from the working RTC fallback
@@ -60,6 +64,10 @@ function roomMediaDelivery(
     streamId: enabled ? streamId : null,
     streamMixingEnabled: mixingEnabled,
     partyStreamingThreshold: threshold,
+    reconnectGraceSeconds,
+    passiveBackgroundGraceSeconds,
+    maxFaceAudioGuests,
+    rtcPassiveFallbackCeiling,
     fallbackReason: enabled
       ? null
       : !requested
@@ -260,13 +268,17 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
     const requestedRole = room.host_application_user_id === identity.userId
       ? "OWNER"
       : "AUDIENCE";
+    const requestedMediaRole = room.room_type === "PARTY"
+      ? requestedRole === "OWNER" ? "PARTY_OWNER" : "PASSIVE_LISTENER"
+      : requestedRole === "OWNER" ? "HOST" : "PASSIVE_VIEWER";
     await connection.execute(
-      `INSERT INTO live_room_members (room_id, application_user_id, room_role, muted, left_at, last_seen_at)
-       VALUES (?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
+      `INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, left_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
        ON DUPLICATE KEY UPDATE seat_index = IF(left_at IS NULL, seat_index, NULL),
          room_role = IF(room_role IN ('OWNER','ADMIN') OR left_at IS NULL, room_role, VALUES(room_role)),
+         media_role = IF(left_at IS NULL, media_role, VALUES(media_role)),
          muted = IF(left_at IS NULL, muted, VALUES(muted)), muted_by_staff = IF(left_at IS NULL, muted_by_staff, FALSE), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
-      [room.id, identity.userId, requestedRole, requestedRole === "AUDIENCE"],
+      [room.id, identity.userId, requestedRole, requestedMediaRole, requestedRole === "AUDIENCE"],
     );
     await connection.execute(
       `UPDATE live_rooms SET audience_count = (
@@ -274,11 +286,14 @@ export async function joinLiveRoom(identity: MobileIdentity, roomCode: string, p
        ) WHERE id = ?`,
       [room.id, room.id],
     );
-    const [members] = await connection.query<(RowDataPacket & { room_role: string })[]>(
-      "SELECT room_role FROM live_room_members WHERE room_id = ? AND application_user_id = ? LIMIT 1",
+    const [members] = await connection.query<(RowDataPacket & { room_role: string; media_role: string })[]>(
+      "SELECT room_role, media_role FROM live_room_members WHERE room_id = ? AND application_user_id = ? LIMIT 1",
       [room.id, identity.userId],
     );
-    return { role: String(members[0].room_role).toLowerCase() };
+    return {
+      role: String(members[0].room_role).toLowerCase(),
+      mediaRole: String(members[0].media_role).toLowerCase(),
+    };
   });
 }
 
@@ -302,8 +317,8 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
       );
       const successor = admins[0];
       if (!successor) throw new Error("Appoint a Room Admin to keep this Party open, or choose Close Room.");
-      await connection.execute("UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
-      await connection.execute("UPDATE live_room_members SET room_role = 'OWNER' WHERE room_id = ? AND application_user_id = ?", [room.id, successor.application_user_id]);
+      await connection.execute("UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_role = 'PASSIVE_LISTENER', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_room_members SET room_role = 'OWNER', media_role = 'PARTY_OWNER' WHERE room_id = ? AND application_user_id = ?", [room.id, successor.application_user_id]);
       await connection.execute(
         `UPDATE live_rooms SET host_application_user_id = ?, audience_count = (
           SELECT COUNT(*) FROM live_room_members WHERE room_id = ? AND left_at IS NULL
@@ -311,11 +326,15 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
         [successor.application_user_id, room.id, room.id],
       );
       await connection.execute("UPDATE live_session_accounting SET host_application_user_id = ? WHERE room_id = ? AND status = 'ACTIVE'", [successor.application_user_id, room.id]);
+      await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
       return { left: true, transferredTo: String(successor.public_id) };
     }
     await connection.execute(
-      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
-      [room.id, identity.userId],
+      `UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL,
+         media_role = IF(? = 'PARTY', 'PASSIVE_LISTENER', 'PASSIVE_VIEWER'), media_publishing = FALSE
+       WHERE room_id = ? AND application_user_id = ?`,
+      [room.room_type, room.id, identity.userId],
     );
     if (["LIVE", "FACE"].includes(room.room_type)) {
       await connection.execute(
@@ -332,15 +351,44 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
        ) WHERE id = ?`,
       [room.id, room.id],
     );
+    await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+    await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     return { left: true };
   });
 }
 
+async function finalizeStaleLiveSession(roomCode: string) {
+  const [rows] = await db().query<(RowDataPacket & { host_application_user_id: string })[]>(
+    `SELECT room.host_application_user_id
+     FROM live_rooms room
+     INNER JOIN live_room_members host_member
+       ON host_member.room_id = room.id AND host_member.application_user_id = room.host_application_user_id
+     LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
+     LEFT JOIN system_settings settings ON settings.setting_key = 'mobile.room_features'
+     WHERE room.room_code = ? AND room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
+       AND (
+         host_member.last_seen_at < TIMESTAMPADD(SECOND,
+           -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
+           CURRENT_TIMESTAMP(3))
+         OR (accounting.media_publishing = TRUE AND accounting.last_media_heartbeat_at < TIMESTAMPADD(SECOND,
+           -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
+           CURRENT_TIMESTAMP(3)))
+       )
+     LIMIT 1`,
+    [roomCode],
+  );
+  if (!rows[0]) return;
+  // The finalizer only reads userId from the identity and rechecks/locks the
+  // active session, so the server can close a crashed broadcaster cleanly.
+  await finalizeLiveSession({ userId: rows[0].host_application_user_id } as MobileIdentity, roomCode);
+}
+
 export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string, mediaPublishing?: boolean) {
+  await finalizeStaleLiveSession(roomCode);
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
-              member.room_role, member.seat_index, member.muted, member.muted_by_staff,
+              member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
               accounting.id reward_accounting_id, accounting.started_at reward_started_at,
               accounting.media_publishing reward_media_publishing,
               accounting.last_media_heartbeat_at reward_last_media_heartbeat_at,
@@ -349,7 +397,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               accounting.eligible_duration_seconds reward_eligible_seconds,
               reward_rule.coins_per_hour reward_diamonds_per_hour,
               room_features.setting_value room_features_json,
-              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 15) media_reconnect_grace_seconds,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
               mixer.status mixer_status, mixer.playback_url mixer_playback_url,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
@@ -366,13 +414,35 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       [identity.userId, roomCode],
     );
     if (!rows[0]) return { active: false };
+    const reconnectGrace = Math.max(5, Math.min(60, Number(rows[0].media_reconnect_grace_seconds ?? 60)));
+    await connection.execute(
+      `UPDATE live_room_members
+       SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', muted = TRUE,
+           muted_by_staff = FALSE, media_publishing = FALSE
+       WHERE room_id = ? AND media_role = 'AUDIO_GUEST'
+         AND application_user_id <> ? AND left_at IS NULL
+         AND last_seen_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))`,
+      [rows[0].id, identity.userId, reconnectGrace],
+    );
+    await connection.execute(
+      `UPDATE live_cohost_requests request
+       INNER JOIN live_room_members member
+         ON member.room_id = request.room_id AND member.application_user_id = request.requester_application_user_id
+       SET request.status = 'ENDED', request.ended_at = CURRENT_TIMESTAMP(3)
+       WHERE request.room_id = ? AND request.status = 'ACCEPTED'
+         AND member.media_role = 'PASSIVE_VIEWER'`,
+      [rows[0].id],
+    );
     if (mediaPublishing !== undefined) {
+      const publishAuthorized = ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(String(rows[0].media_role));
+      const effectivePublishing = mediaPublishing && publishAuthorized && !Boolean(rows[0].muted);
       await connection.execute(
         `UPDATE live_room_members
          SET media_publishing = ?, last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
          WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
-        [mediaPublishing, rows[0].id, identity.userId],
+        [effectivePublishing, rows[0].id, identity.userId],
       );
+      mediaPublishing = effectivePublishing;
     }
     let rewardSegmentSeconds = Number(rows[0].reward_media_segment_seconds ?? 0);
     let rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
@@ -390,7 +460,6 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       const gapSeconds = lastHeartbeat == null
         ? 0
         : Math.max(0, Math.floor((serverTime.getTime() - lastHeartbeat.getTime()) / 1000));
-      const reconnectGrace = Math.max(5, Math.min(60, Number(rows[0].media_reconnect_grace_seconds ?? 15)));
       const acceptedDelta = wasPublishing && gapSeconds <= reconnectGrace ? gapSeconds : 0;
       rewardSegmentSeconds += acceptedDelta;
       rewardValidSeconds += acceptedDelta;
@@ -417,6 +486,15 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       `UPDATE live_cohost_requests SET status = 'EXPIRED', ended_at = CURRENT_TIMESTAMP(3)
        WHERE room_id = ? AND status = 'PENDING'
          AND requested_at < CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE`,
+      [rows[0].id],
+    );
+    await connection.execute(
+      `UPDATE live_room_members member
+       LEFT JOIN live_cohost_requests request
+         ON request.room_id = member.room_id AND request.requester_application_user_id = member.application_user_id
+       SET member.media_role = 'PASSIVE_VIEWER'
+       WHERE member.room_id = ? AND member.media_role = 'AUDIO_REQUESTED'
+         AND (request.status IS NULL OR request.status <> 'PENDING')`,
       [rows[0].id],
     );
     const [coHostRequests] = await connection.query<RowDataPacket[]>(
@@ -452,7 +530,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       `SELECT user.public_id, user.full_name,
               LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level,
               LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level,
-              user.vip_tier, user.country_code, user.language_code, member.room_role, member.seat_index, member.muted, member.muted_by_staff,
+              user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
@@ -543,10 +621,46 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        ORDER BY cycle.completed_at ASC LIMIT 10`,
       [rows[0].id],
     );
+    const audienceCount = participants.filter((member) => String(member.room_role) === "AUDIENCE").length;
+    const mediaDelivery = roomMediaDelivery(rows[0], audienceCount);
+    const currentMediaRole = String(rows[0].media_role);
+    const publishingRole = ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(currentMediaRole);
+    const activeMedia = publishingRole ? mediaPublishing === true : true;
+    const usageType = rows[0].room_type === "FACE"
+      ? currentMediaRole === "HOST"
+        ? "FACE_HOST_RTC"
+        : currentMediaRole === "AUDIO_GUEST"
+          ? "FACE_AUDIO_GUEST_RTC"
+          : mediaDelivery.mode === "liveStreaming" ? "FACE_PASSIVE_STREAM" : "FACE_PASSIVE_RTC_FALLBACK"
+      : rows[0].room_type === "PARTY"
+        ? ["PARTY_OWNER", "RTC_SPEAKER"].includes(currentMediaRole)
+          ? "PARTY_SPEAKER_RTC"
+          : mediaDelivery.mode === "liveStreaming" ? "PARTY_PASSIVE_STREAM" : "PARTY_PASSIVE_RTC_FALLBACK"
+        : currentMediaRole === "HOST" || currentMediaRole === "AUDIO_GUEST"
+          ? "FACE_HOST_RTC"
+          : "FACE_PASSIVE_RTC_FALLBACK";
+    if (activeMedia) {
+      await connection.execute(
+        `INSERT INTO live_media_usage
+          (room_id, application_user_id, usage_type, duration_seconds, first_seen_at, last_seen_at, ended_at)
+         VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), NULL)
+         ON DUPLICATE KEY UPDATE
+           duration_seconds = duration_seconds + IF(
+             TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)) BETWEEN 0 AND 10,
+             TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)), 0),
+           last_seen_at = CURRENT_TIMESTAMP(3), ended_at = NULL`,
+        [rows[0].id, identity.userId, usageType],
+      );
+    } else {
+      await connection.execute(
+        "UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND ended_at IS NULL",
+        [rows[0].id, identity.userId],
+      );
+    }
     return {
       active: true,
       serverTime: rows[0].reward_server_time,
-      roomRole: String(rows[0].room_role).toLowerCase(), seatIndex: rows[0].seat_index,
+      roomRole: String(rows[0].room_role).toLowerCase(), mediaRole: currentMediaRole.toLowerCase(), seatIndex: rows[0].seat_index,
       muted: Boolean(rows[0].muted), staffMuted: Boolean(rows[0].muted_by_staff), chatLocked: Boolean(rows[0].chat_locked),
       themeIndex: Number(rows[0].theme_index), themeEnabled: Boolean(rows[0].theme_enabled),
       audioJoinRequestsEnabled: Boolean(rows[0].audio_join_requests_enabled),
@@ -560,17 +674,14 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
           }
         : null,
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
-      mediaDelivery: roomMediaDelivery(
-        rows[0],
-        participants.filter((member) => String(member.room_role) === "AUDIENCE").length,
-      ),
+      mediaDelivery,
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
       coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url, status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
       messages: messages.reverse().map((row) => ({ id: String(row.id), actor: String(row.full_name), actorVip: Number(row.vip_tier), body: String(row.body), createdAt: row.created_at })),
       participants: participants.map((member) => ({
         user: { id: String(member.public_id), name: String(member.full_name), avatarUrl: member.avatar_url, country: member.country_code ?? "", language: member.language_code ?? "", level: Number(member.consumption_level), anchorLevel: Number(member.anchor_level), vip: Number(member.vip_tier), followers: Number(member.followers ?? 0), following: Number(member.following ?? 0) },
-        roomRole: String(member.room_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), staffMuted: Boolean(member.muted_by_staff), receivedGiftValue: Number(member.received_gift_value),
+        roomRole: String(member.room_role).toLowerCase(), mediaRole: String(member.media_role).toLowerCase(), seatIndex: member.seat_index == null ? null : Number(member.seat_index), muted: Boolean(member.muted), staffMuted: Boolean(member.muted_by_staff), receivedGiftValue: Number(member.received_gift_value),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id), quantity: Number(event.quantity), value: Number(event.coin_value), createdAt: event.created_at,
@@ -621,14 +732,22 @@ export async function requestLiveCoHost(identity: MobileIdentity, roomCode: stri
          responded_at = NULL, responder_application_user_id = NULL, ended_at = NULL`,
       [randomUUID(), room.id, identity.userId],
     );
+    if (room.room_type === "FACE") {
+      await connection.execute(
+        "UPDATE live_room_members SET media_role = 'AUDIO_REQUESTED', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE' AND left_at IS NULL",
+        [room.id, identity.userId],
+      );
+    }
     return { status: "pending" };
   });
 }
 
 export async function respondLiveCoHost(identity: MobileIdentity, input: { roomCode: string; targetPublicId: string; accept: boolean }) {
   return withTransaction(async (connection) => {
-    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string })[]>(
-      "SELECT id, room_type, host_application_user_id FROM live_rooms WHERE room_code = ? AND status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE",
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; room_features_json: unknown })[]>(
+      `SELECT room.id, room.room_type, room.host_application_user_id, settings.setting_value room_features_json
+       FROM live_rooms room LEFT JOIN system_settings settings ON settings.setting_key = 'mobile.room_features'
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [input.roomCode],
     );
     const room = rooms[0];
@@ -656,12 +775,13 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       throw new Error("The viewer must complete Face Verification before joining this Video Live.");
     }
     if (input.accept && room.room_type === "FACE") {
+      const maxAudioGuests = Math.max(1, Math.min(12, Number(jsonObject(room.room_features_json).maxFaceAudioGuests ?? 4)));
       const [speakerRows] = await connection.query<(RowDataPacket & { count: number })[]>(
         "SELECT COUNT(*) count FROM live_room_members WHERE room_id = ? AND room_role = 'SPEAKER' AND left_at IS NULL",
         [room.id],
       );
-      if (Number(speakerRows[0]?.count ?? 0) >= 4) {
-        throw new Error("Face Live already has the maximum 4 audio guests.");
+      if (Number(speakerRows[0]?.count ?? 0) >= maxAudioGuests) {
+        throw new Error(`Face Live already has the maximum ${maxAudioGuests} audio guests.`);
       }
     }
     await connection.execute(
@@ -671,8 +791,17 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       [input.accept ? "ACCEPTED" : "REJECTED", identity.userId, input.accept, room.id, target.id],
     );
     await connection.execute(
-      "UPDATE live_room_members SET room_role = ?, muted = ?, muted_by_staff = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
-      [input.accept ? "SPEAKER" : "AUDIENCE", !input.accept, room.id, target.id],
+      `UPDATE live_room_members SET room_role = ?,
+         media_role = CASE
+           WHEN ? = 'FACE' AND ? THEN 'AUDIO_GUEST'
+           WHEN ? = 'FACE' THEN 'PASSIVE_VIEWER'
+           WHEN ? THEN 'AUDIO_GUEST'
+           ELSE 'PASSIVE_VIEWER'
+         END,
+         muted = ?, muted_by_staff = FALSE, media_publishing = FALSE
+       WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
+      [input.accept ? "SPEAKER" : "AUDIENCE", room.room_type, input.accept,
+        room.room_type, input.accept, !input.accept, room.id, target.id],
     );
     return {
       status: input.accept ? "accepted" : "rejected",
@@ -702,9 +831,11 @@ export async function endLiveCoHost(identity: MobileIdentity, input: { roomCode:
     const target = targets[0];
     if (!target || target.id === room.host_application_user_id) return { status: "ended" };
     await connection.execute(
-      "UPDATE live_room_members SET room_role = 'AUDIENCE', muted = TRUE, muted_by_staff = FALSE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
+      "UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', muted = TRUE, muted_by_staff = FALSE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [room.id, target.id],
     );
+    await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND can_publish = TRUE", [room.id, target.id]);
+    await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND usage_type = 'FACE_AUDIO_GUEST_RTC'", [room.id, target.id]);
     await connection.execute(
       `UPDATE live_cohost_requests
        SET status = CASE WHEN status = 'PENDING' THEN 'CANCELED' ELSE 'ENDED' END,
@@ -783,13 +914,13 @@ export async function setRoomAdmin(identity: MobileIdentity, input: { roomCode: 
       );
       if (Number(countRows[0].count) >= 3) throw new Error("A Party Room can have at most three Room Admins.");
       await connection.execute(
-        `INSERT INTO live_room_members (room_id, application_user_id, room_role, muted, left_at)
-         VALUES (?, ?, 'ADMIN', TRUE, NULL)
-         ON DUPLICATE KEY UPDATE room_role = 'ADMIN', left_at = NULL`,
+        `INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, left_at)
+         VALUES (?, ?, 'ADMIN', 'PASSIVE_LISTENER', TRUE, NULL)
+         ON DUPLICATE KEY UPDATE room_role = 'ADMIN', media_role = IF(seat_index IS NULL, 'PASSIVE_LISTENER', 'RTC_SPEAKER'), left_at = NULL`,
         [room.id, target.id],
       );
     } else {
-      await connection.execute("UPDATE live_room_members SET room_role = 'AUDIENCE' WHERE room_id = ? AND application_user_id = ? AND room_role = 'ADMIN'", [room.id, target.id]);
+      await connection.execute("UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = IF(seat_index IS NULL, 'PASSIVE_LISTENER', 'RTC_SPEAKER') WHERE room_id = ? AND application_user_id = ? AND room_role = 'ADMIN'", [room.id, target.id]);
     }
     await connection.execute(
       `INSERT INTO audit_logs
@@ -839,9 +970,10 @@ export async function setRoomMemberMuted(identity: MobileIdentity, input: { room
     }
     await connection.execute(
       `UPDATE live_room_members
-       SET muted = ?, muted_by_staff = IF(?, muted_by_staff, ?)
+       SET muted = ?, muted_by_staff = IF(?, muted_by_staff, ?),
+           media_publishing = IF(?, FALSE, media_publishing)
        WHERE room_id = ? AND application_user_id = ?`,
-      [input.muted, selfAction, input.muted, member.room_id, member.target_id],
+      [input.muted, selfAction, input.muted, input.muted, member.room_id, member.target_id],
     );
     if (!selfAction) {
       await connection.execute(
@@ -1166,9 +1298,11 @@ export async function kickRoomMember(identity: MobileIdentity, input: { roomCode
       throw new Error("Only the Room Owner can remove another Room Admin.");
     }
     await connection.execute(
-      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
+      "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, media_role = IF(media_role IN ('PARTY_OWNER','PASSIVE_LISTENER','MIC_REQUESTED','RTC_SPEAKER'), 'PASSIVE_LISTENER', 'PASSIVE_VIEWER'), media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
       [member.room_id, member.target_id],
     );
+    await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [member.room_id, member.target_id]);
+    await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [member.room_id, member.target_id]);
     if (input.block) {
       await connection.execute(
         `INSERT INTO live_room_blocks (room_id, application_user_id, blocked_by_application_user_id)
@@ -1201,7 +1335,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
               accounting.valid_duration_seconds, accounting.eligible_duration_seconds, accounting.reward_coins,
               accounting.media_publishing, accounting.last_media_heartbeat_at,
               accounting.media_segment_seconds, accounting.valid_media_seconds,
-              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 15) media_reconnect_grace_seconds,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
               ledger.transaction_code,
               COALESCE(room.ended_at, accounting.ended_at, CURRENT_TIMESTAMP(3)) ended_at
        FROM live_session_accounting accounting INNER JOIN live_rooms room ON room.id = accounting.room_id
@@ -1222,7 +1356,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
         alreadyFinalized: true,
       };
     }
-    const reconnectGrace = Math.max(5, Math.min(60, Number(session.media_reconnect_grace_seconds ?? 15)));
+    const reconnectGrace = Math.max(5, Math.min(60, Number(session.media_reconnect_grace_seconds ?? 60)));
     const [heartbeatRows] = await connection.query<(RowDataPacket & { seconds: number })[]>(
       "SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, CURRENT_TIMESTAMP(3))) seconds",
       [session.last_media_heartbeat_at ?? session.started_at],
@@ -1273,6 +1407,8 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       "UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE, media_publishing = FALSE WHERE room_id = ?",
       [session.room_id],
     );
+    await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ?", [session.room_id]);
+    await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ?", [session.room_id]);
     await connection.execute(
       "UPDATE live_cohost_requests SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND status IN ('PENDING','ACCEPTED')",
       [session.room_id],

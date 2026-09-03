@@ -282,7 +282,11 @@ export async function saveRoomFeatureSettings(input: {
   partyPassivePlaybackMode: "dynamic_rtc_fallback" | "live_streaming";
   partyStreamingThreshold: number;
   streamMixingEnabled: boolean;
+  pkCompositeStreamingEnabled: boolean;
   mediaReconnectGraceSeconds: number;
+  passiveBackgroundGraceSeconds: number;
+  maxFaceAudioGuests: number;
+  rtcPassiveFallbackCeiling: number;
 }) {
   await auditedMutation({
     scope: input.scope,
@@ -329,7 +333,11 @@ export async function saveRoomFeatureSettings(input: {
           partyPassivePlaybackMode: input.partyPassivePlaybackMode,
           partyStreamingThreshold: input.partyStreamingThreshold,
           streamMixingEnabled: input.streamMixingEnabled,
+          pkCompositeStreamingEnabled: input.pkCompositeStreamingEnabled,
           mediaReconnectGraceSeconds: input.mediaReconnectGraceSeconds,
+          passiveBackgroundGraceSeconds: input.passiveBackgroundGraceSeconds,
+          maxFaceAudioGuests: input.maxFaceAudioGuests,
+          rtcPassiveFallbackCeiling: input.rtcPassiveFallbackCeiling,
         }), input.scope.account.id],
       );
     },

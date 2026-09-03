@@ -40,7 +40,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     partyPassivePlaybackMode?: "dynamic_rtc_fallback" | "live_streaming";
     partyStreamingThreshold?: number;
     streamMixingEnabled?: boolean;
+    pkCompositeStreamingEnabled?: boolean;
     mediaReconnectGraceSeconds?: number;
+    passiveBackgroundGraceSeconds?: number;
+    maxFaceAudioGuests?: number;
+    rtcPassiveFallbackCeiling?: number;
   } | undefined;
   const interactions = roomFeatures?.interactions ?? [
     { key: "kiss", label: "Kiss", emoji: "💋", enabled: true },
@@ -206,7 +210,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
         <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 9} /><span>Below this member count, Party remains RTC.</span></label>
         <label>ZEGO stream mixing<select name="streamMixingEnabled" defaultValue={String(roomFeatures?.streamMixingEnabled === true)}><option value="false">Inactive / fallback</option><option value="true">Ready when deployment is activated</option></select><span>The app stays on RTC fallback until the deployment activation gate and signed playback URL are both present.</span></label>
-        <label>Media reconnect grace (seconds)<input name="mediaReconnectGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.mediaReconnectGraceSeconds ?? 15} /></label>
+        <label>PK composite stream<select name="pkCompositeStreamingEnabled" defaultValue={String(roomFeatures?.pkCompositeStreamingEnabled !== false)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+        <label>Media reconnect grace (seconds)<input name="mediaReconnectGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.mediaReconnectGraceSeconds ?? 60} /></label>
+        <label>Passive background grace (seconds)<input name="passiveBackgroundGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.passiveBackgroundGraceSeconds ?? 15} /></label>
+        <label>Maximum Face audio guests<input name="maxFaceAudioGuests" type="number" min="1" max="12" required defaultValue={roomFeatures?.maxFaceAudioGuests ?? 4} /></label>
+        <label>Safe passive RTC fallback ceiling<input name="rtcPassiveFallbackCeiling" type="number" min="1" max="100" required defaultValue={roomFeatures?.rtcPassiveFallbackCeiling ?? 20} /><span>When CDN is unavailable, additional passive viewers are refused instead of silently creating unlimited RTC cost.</span></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
       </form>
     </Card>

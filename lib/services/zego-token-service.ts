@@ -16,12 +16,18 @@ export class ZegoTokenService {
     return Number.isSafeInteger(this.appId) && this.appId > 0 && Buffer.byteLength(this.serverSecret) === 32;
   }
 
-  generateRoomToken(input: { userId: string; roomId: string; canPublish: boolean; ttlSeconds?: number }) {
+  generateRoomToken(input: { userId: string; roomId: string; canPublish: boolean; ttlSeconds?: number; streamId?: string | null }) {
     if (!this.isConfigured) throw new Error("ZEGO server token signing is not configured.");
     const ttlSeconds = Math.min(7200, Math.max(300, input.ttlSeconds ?? 3600));
     const createdAt = Math.floor(Date.now() / 1000);
     const expiresAt = createdAt + ttlSeconds;
-    const payload = JSON.stringify({ room_id: input.roomId, privilege: { 1: 1, 2: input.canPublish ? 1 : 0 }, stream_id_list: null });
+    const payload = JSON.stringify({
+      room_id: input.roomId,
+      privilege: { 1: 1, 2: input.canPublish ? 1 : 0 },
+      // A publish-capable token is scoped to the one deterministic stream the
+      // mixer expects. Passive fallback tokens cannot publish any stream.
+      stream_id_list: input.canPublish && input.streamId ? [input.streamId] : null,
+    });
     const plainText = JSON.stringify({
       app_id: this.appId,
       user_id: input.userId,

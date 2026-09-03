@@ -634,8 +634,8 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       [randomUUID(), roomId, identity.userId, roomType, rewardRuleRows[0].id],
     );
     await connection.execute(
-      "INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)",
-      [roomId, identity.userId],
+      "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', ?, FALSE)",
+      [roomId, identity.userId, roomType === "PARTY" ? "PARTY_OWNER" : "HOST"],
     );
   });
   return { id: roomId, roomCode: input.roomCode, status: "ACTIVE" };

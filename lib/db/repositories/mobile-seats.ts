@@ -16,10 +16,18 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       [identity.userId, input.roomCode]);
     const room = rooms[0];
     if (!room) throw new Error("Join this active Party room first.");
-    await connection.execute("UPDATE live_room_members SET seat_index = NULL WHERE room_id = ? AND (left_at IS NOT NULL OR last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)", [room.id]);
+    await connection.execute(
+      `UPDATE live_room_members SET seat_index = NULL, muted = TRUE, media_publishing = FALSE,
+         room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role),
+         media_role = CASE WHEN room_role = 'OWNER' THEN 'PARTY_OWNER' ELSE 'PASSIVE_LISTENER' END
+       WHERE room_id = ? AND (left_at IS NOT NULL OR last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE)`,
+      [room.id],
+    );
     if (input.action === "leave") {
-      await connection.execute("UPDATE live_room_members SET seat_index = NULL, muted = TRUE, room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_room_members SET seat_index = NULL, muted = TRUE, media_publishing = FALSE, room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role), media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'PASSIVE_LISTENER') WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
       await connection.execute("UPDATE live_seat_requests SET status = 'EXPIRED' WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND can_publish = TRUE", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND usage_type = 'PARTY_SPEAKER_RTC'", [room.id, identity.userId]);
       return { status: "left" };
     }
     if (input.action === "lock" || input.action === "unlock") {
@@ -38,6 +46,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
           [room.id, index, identity.userId],
         );
         await connection.execute("UPDATE live_seat_requests SET status = 'REJECTED' WHERE room_id = ? AND seat_index = ? AND status = 'PENDING'", [room.id, index]);
+        await connection.execute("UPDATE live_room_members member INNER JOIN live_seat_requests request ON request.room_id = member.room_id AND request.application_user_id = member.application_user_id SET member.media_role = 'PASSIVE_LISTENER' WHERE request.room_id = ? AND request.seat_index = ? AND request.status = 'REJECTED' AND member.room_role = 'AUDIENCE'", [room.id, index]);
       } else {
         await connection.execute("DELETE FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ?", [room.id, index]);
       }
@@ -51,10 +60,11 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       const [occupied] = await connection.query<RowDataPacket[]>("SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND application_user_id != ? AND left_at IS NULL", [room.id, index, identity.userId]);
       if (occupied.length) throw new Error("That seat is already reserved. Choose another seat.");
       if (["OWNER", "ADMIN"].includes(room.room_role)) {
-        await connection.execute("UPDATE live_room_members SET seat_index = ?, muted = FALSE WHERE room_id = ? AND application_user_id = ?", [index, room.id, identity.userId]);
+        await connection.execute("UPDATE live_room_members SET seat_index = ?, muted = FALSE, media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'RTC_SPEAKER') WHERE room_id = ? AND application_user_id = ?", [index, room.id, identity.userId]);
         return { status: "accepted", seatIndex: index };
       }
       await connection.execute("INSERT INTO live_seat_requests (room_id, application_user_id, seat_index) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE seat_index = VALUES(seat_index), status = 'PENDING', requested_at = CURRENT_TIMESTAMP(3)", [room.id, identity.userId, index]);
+      await connection.execute("UPDATE live_room_members SET media_role = 'MIC_REQUESTED', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE'", [room.id, identity.userId]);
       return { status: "pending", seatIndex: index };
     }
     if (!["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the room owner or a room admin can decide mic requests.");
@@ -80,7 +90,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       if (occupied.length) throw new Error("That seat is already reserved. Choose another seat.");
       await connection.execute(
         `UPDATE live_room_members
-         SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role), seat_index = ?, muted = FALSE
+         SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role), media_role = 'RTC_SPEAKER', seat_index = ?, muted = FALSE
          WHERE room_id = ? AND application_user_id = ?`,
         [index, room.id, target.id],
       );
@@ -105,9 +115,12 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       if (locked.length) throw new Error("Unlock this seat before accepting the request.");
       const [occupied] = await connection.query<RowDataPacket[]>("SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND application_user_id != ? AND left_at IS NULL", [room.id, request.seat_index, request.application_user_id]);
       if (occupied.length) throw new Error("That seat was taken. Ask the user to choose another seat.");
-      await connection.execute("UPDATE live_room_members SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role), seat_index = ?, muted = FALSE WHERE room_id = ? AND application_user_id = ?", [request.seat_index, room.id, request.application_user_id]);
+      await connection.execute("UPDATE live_room_members SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role), media_role = 'RTC_SPEAKER', seat_index = ?, muted = FALSE WHERE room_id = ? AND application_user_id = ?", [request.seat_index, room.id, request.application_user_id]);
     }
     await connection.execute("UPDATE live_seat_requests SET status = ? WHERE room_id = ? AND application_user_id = ?", [input.action === "accept" ? "ACCEPTED" : "REJECTED", room.id, request.application_user_id]);
+    if (input.action === "reject") {
+      await connection.execute("UPDATE live_room_members SET media_role = 'PASSIVE_LISTENER', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE'", [room.id, request.application_user_id]);
+    }
     return { status: input.action === "accept" ? "accepted" : "rejected" };
   });
 }

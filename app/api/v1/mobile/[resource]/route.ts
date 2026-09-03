@@ -35,7 +35,6 @@ import {
   leaveLiveRoom,
   markMobileNotificationsRead,
   refreshRoomPresence,
-  roomPublishingDecision,
   sendRoomChat,
   sendRoomInteraction,
   setRoomAdmin,
@@ -52,6 +51,7 @@ import { claimVipDailyReward, purchaseVipTier, rocketSnapshot } from "@/lib/db/r
 import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
 import { isDatabaseAvailabilityError } from "@/lib/db/pool";
 import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
+import { authorizeRoomRtc } from "@/lib/services/room-media-authority";
 
 export const dynamic = "force-dynamic";
 
@@ -463,8 +463,21 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     }
     if (resource === "zego-token") {
       const parsed = z.object({ roomId: z.string().trim().min(1).max(80), publish: z.boolean() }).parse(body);
-      if (parsed.publish) await roomPublishingDecision(identity, parsed.roomId);
-      return NextResponse.json(new ZegoTokenService().generateRoomToken({ userId: identity.publicId, roomId: parsed.roomId, canPublish: parsed.publish }));
+      const authorization = await authorizeRoomRtc(identity, {
+        roomCode: parsed.roomId,
+        canPublish: parsed.publish,
+      });
+      return NextResponse.json({
+        ...new ZegoTokenService().generateRoomToken({
+          userId: identity.publicId,
+          roomId: parsed.roomId,
+          canPublish: parsed.publish,
+          ttlSeconds: authorization.ttlSeconds,
+          streamId: authorization.streamId,
+        }),
+        mediaRole: authorization.mediaRole,
+        publishMode: authorization.publishMode,
+      });
     }
     return errorResponse(new Error("Mobile mutation not found."), 404);
   } catch (error) { return errorResponse(error); }

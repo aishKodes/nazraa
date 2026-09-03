@@ -27,12 +27,23 @@ type MixerPlan = {
 };
 
 function jsonObject(value: unknown): Record<string, unknown> {
+  if (Buffer.isBuffer(value)) {
+    try { return JSON.parse(value.toString("utf8")) as Record<string, unknown>; } catch { return {}; }
+  }
   if (typeof value === "string") {
     try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
   }
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function enabled(value: unknown) {
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
+function disabled(value: unknown) {
+  return value === false || value === 0 || value === "0" || value === "false";
 }
 
 /**
@@ -149,19 +160,21 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   if (!room) return null;
   const features = jsonObject(room.room_features_json);
   const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
-  const featureEnabled = features.streamMixingEnabled === true;
+  const featureEnabled = enabled(features.streamMixingEnabled);
   const playbackRequested = room.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming"
     : room.room_type === "FACE" && features.facePassivePlaybackMode === "live_streaming";
+  const pkCompositeEnabled = !disabled(features.pkCompositeStreamingEnabled);
   const [members] = await db().query<(RowDataPacket & {
     public_id: number;
     room_role: string;
+    media_role: string;
     muted: number;
     media_publishing: number;
     publisher_room_code: string;
   })[]>(
-    `SELECT user.public_id, member.room_role, member.muted, ? publisher_room_code,
-            CASE WHEN member.room_role = 'OWNER' THEN ?
+    `SELECT user.public_id, member.room_role, member.media_role, member.muted, ? publisher_room_code,
+            CASE WHEN member.media_role IN ('HOST','PARTY_OWNER') THEN ?
               ELSE (member.media_publishing
                 AND member.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
             END media_publishing
@@ -174,19 +187,20 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   );
   const audienceCount = members.filter((member) => member.room_role === "AUDIENCE").length;
   const localPublishers = members.filter((member) =>
-    ["OWNER", "ADMIN", "SPEAKER"].includes(member.room_role) && Boolean(member.media_publishing),
+    ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(member.media_role) && Boolean(member.media_publishing),
   );
-  const [pkPublishers] = room.room_type === "FACE"
+  const [pkPublishers] = room.room_type === "FACE" && pkCompositeEnabled
     ? await db().query<(RowDataPacket & {
         public_id: number;
         room_role: string;
+        media_role: string;
         muted: number;
         media_publishing: number;
         publisher_room_code: string;
       })[]>(
-        `SELECT user.public_id, member.room_role, member.muted,
+        `SELECT user.public_id, member.room_role, member.media_role, member.muted,
                 other_room.room_code publisher_room_code,
-                CASE WHEN member.room_role = 'OWNER' THEN
+                CASE WHEN member.media_role = 'HOST' THEN
                   (COALESCE(accounting.media_publishing, FALSE)
                     AND accounting.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
                   ELSE (member.media_publishing
@@ -201,25 +215,25 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
          WHERE pk.status = 'ACTIVE' AND (pk.source_room_id = ? OR pk.target_room_id = ?)
            AND other_room.status IN ('ACTIVE','LOCKED')
            AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
-           AND member.room_role IN ('OWNER','ADMIN','SPEAKER')
-         ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
+           AND member.media_role IN ('HOST','AUDIO_GUEST')
+         ORDER BY member.media_role = 'HOST' DESC, member.joined_at`,
         [room.id, room.id, room.id],
       )
     : [[]];
   const allPublishers = [...localPublishers, ...pkPublishers.filter((member) => Boolean(member.media_publishing))];
   const orderedPublishers = [
-    ...allPublishers.filter((member) => member.room_role === "OWNER"),
-    ...allPublishers.filter((member) => member.room_role !== "OWNER"),
+    ...allPublishers.filter((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role)),
+    ...allPublishers.filter((member) => !["HOST", "PARTY_OWNER"].includes(member.media_role)),
   ].filter((member, index, all) =>
     all.findIndex((candidate) => candidate.public_id === member.public_id && candidate.publisher_room_code === member.publisher_room_code) === index,
   ).slice(0, 9);
-  const hasHost = localPublishers.some((member) => member.room_role === "OWNER");
+  const hasHost = localPublishers.some((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role));
   const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost && audienceCount > 0 &&
     (room.room_type !== "PARTY" || audienceCount >= threshold);
-  const hostCount = orderedPublishers.filter((member) => member.room_role === "OWNER").length;
+  const hostCount = orderedPublishers.filter((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role)).length;
   let hostIndex = 0;
   const inputs: MixInput[] = orderedPublishers.map((member) => {
-    const hostVideo = room.room_type !== "PARTY" && member.room_role === "OWNER";
+    const hostVideo = room.room_type !== "PARTY" && member.media_role === "HOST";
     const currentHostIndex = hostVideo ? hostIndex++ : -1;
     const left = hostCount > 1 ? currentHostIndex * 360 : 0;
     const right = hostCount > 1 ? Math.min(720, left + 360) : 720;
@@ -290,11 +304,20 @@ export async function syncZegoRoomMixer(roomCode: string) {
     const playInfo = result.Data?.PlayInfo?.[0];
     const playbackUrl = playInfo?.HLS ?? playInfo?.FLV ?? null;
     await db().execute(
-      `UPDATE live_media_mix_tasks
-       SET applied_hash = ?, status = ?, playback_url = COALESCE(?, playback_url),
-           last_error = NULL, last_synced_at = CURRENT_TIMESTAMP(3)
-       WHERE room_id = ? AND sequence_number = ?`,
-      [plan.desiredHash, plan.shouldRun ? "ACTIVE" : "INACTIVE", playbackUrl, plan.roomId, plan.sequence],
+      plan.shouldRun
+        ? `UPDATE live_media_mix_tasks
+           SET applied_hash = ?, status = 'ACTIVE', playback_url = COALESCE(?, playback_url),
+               last_error = NULL, last_synced_at = CURRENT_TIMESTAMP(3),
+               active_started_at = COALESCE(active_started_at, CURRENT_TIMESTAMP(3)), stopped_at = NULL
+           WHERE room_id = ? AND sequence_number = ?`
+        : `UPDATE live_media_mix_tasks
+           SET applied_hash = ?, status = 'INACTIVE', playback_url = COALESCE(?, playback_url),
+               last_error = NULL, last_synced_at = CURRENT_TIMESTAMP(3),
+               active_duration_seconds = active_duration_seconds + IF(active_started_at IS NULL, 0,
+                 GREATEST(0, TIMESTAMPDIFF(SECOND, active_started_at, CURRENT_TIMESTAMP(3)))),
+               active_started_at = NULL, stopped_at = CURRENT_TIMESTAMP(3)
+           WHERE room_id = ? AND sequence_number = ?`,
+      [plan.desiredHash, playbackUrl, plan.roomId, plan.sequence],
     );
     return { status: plan.shouldRun ? "active" as const : "stopped" as const };
   } catch (error) {

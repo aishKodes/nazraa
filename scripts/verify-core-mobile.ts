@@ -36,6 +36,7 @@ async function main() {
     );
     const social = await import("@/lib/db/repositories/mobile-social");
     const rooms = await import("@/lib/db/repositories/mobile-completion");
+    const mediaAuthority = await import("@/lib/services/room-media-authority");
     const rewards = await import("@/lib/db/repositories/mobile-rewards");
     const completionAdmin = await import("@/lib/db/repositories/completion-administration");
     const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
@@ -194,6 +195,14 @@ async function main() {
     await product.createRoom(owner, { roomCode: faceRoomCode, kind: "face", title: "QA Face Broadcast", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
     await rooms.joinLiveRoom(guest, faceRoomCode);
     await rooms.joinLiveRoom(stranger, faceRoomCode);
+    const hostMediaGrant = await mediaAuthority.authorizeRoomRtc(owner, { roomCode: faceRoomCode, canPublish: true });
+    assert.equal(hostMediaGrant.mediaRole, "HOST");
+    assert.equal(hostMediaGrant.publishMode, "video_audio");
+    assert.equal(hostMediaGrant.streamId, `${faceRoomCode}_${owner.publicId}_main`);
+    await assert.rejects(mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: true }), /Audio Request/);
+    const fallbackViewerGrant = await mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: false });
+    assert.equal(fallbackViewerGrant.mediaRole, "PASSIVE_VIEWER");
+    assert.equal(fallbackViewerGrant.publishMode, "none");
     await assert.rejects(rooms.roomPublishingDecision(guest, faceRoomCode), /audio request/);
     await rooms.requestLiveCoHost(guest, faceRoomCode);
     await rooms.requestLiveCoHost(stranger, faceRoomCode);
@@ -202,11 +211,52 @@ async function main() {
     await rooms.respondLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: stranger.publicId, accept: true });
     assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "speaker");
     assert.equal((await rooms.roomPublishingDecision(guest, faceRoomCode)).allowed, true);
+    const audioGuestGrant = await mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: true });
+    assert.equal(audioGuestGrant.mediaRole, "AUDIO_GUEST");
+    assert.equal(audioGuestGrant.publishMode, "audio_only");
     assert.equal((await rooms.refreshRoomPresence(owner, faceRoomCode)).participants?.filter((participant: { roomRole: string }) => participant.roomRole === "speaker").length, 2);
     await rooms.endLiveCoHost(owner, { roomCode: faceRoomCode, targetPublicId: guest.publicId });
     assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).roomRole, "audience");
     assert.equal((await rooms.refreshRoomPresence(stranger, faceRoomCode)).roomRole, "speaker", "disconnecting B must not disconnect audio guest C");
-    console.log("PASS Face Live broadcast roles: Host A, Viewer B/C requests, multiple audio speaker grants, targeted owner disconnect");
+    await assert.rejects(mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: true }), /Audio Request/);
+    const [faceRoomRows] = await root.query<RowDataPacket[]>("SELECT id FROM live_rooms WHERE room_code = ?", [faceRoomCode]);
+    await root.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_by)
+       VALUES ('mobile.room_features', JSON_OBJECT(
+         'facePassivePlaybackMode', 'live_streaming',
+         'partyPassivePlaybackMode', 'live_streaming',
+         'partyStreamingThreshold', 9,
+         'streamMixingEnabled', TRUE,
+         'rtcPassiveFallbackCeiling', 20
+       ), ?)
+       ON DUPLICATE KEY UPDATE setting_value = JSON_SET(
+         COALESCE(setting_value, JSON_OBJECT()),
+         '$.facePassivePlaybackMode', 'live_streaming',
+         '$.streamMixingEnabled', TRUE
+       )`,
+      [master.account.id],
+    );
+    await root.execute(
+      `INSERT INTO live_media_mix_tasks
+        (room_id, task_id, output_stream_id, status, playback_url, active_started_at)
+       VALUES (?, ?, ?, 'ACTIVE', 'https://media.invalid/qa-face.m3u8', CURRENT_TIMESTAMP(3))
+       ON DUPLICATE KEY UPDATE status = 'ACTIVE', playback_url = VALUES(playback_url), active_started_at = CURRENT_TIMESTAMP(3)`,
+      [faceRoomRows[0].id, `qa-task-${randomUUID()}`, `qa-mix-${randomUUID()}`],
+    );
+    const priorMixerReady = process.env.ZEGO_STREAM_MIXING_READY;
+    process.env.ZEGO_STREAM_MIXING_READY = "true";
+    try {
+      await assert.rejects(
+        mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: false }),
+        /delivered by the public Live stream/,
+      );
+      const acceptedGuestGrant = await mediaAuthority.authorizeRoomRtc(stranger, { roomCode: faceRoomCode, canPublish: true });
+      assert.equal(acceptedGuestGrant.publishMode, "audio_only");
+    } finally {
+      if (priorMixerReady == null) delete process.env.ZEGO_STREAM_MIXING_READY;
+      else process.env.ZEGO_STREAM_MIXING_READY = priorMixerReady;
+    }
+    console.log("PASS Face Live broadcast authority: one Host video/audio publisher, passive viewer denial on active public stream, accepted audio-only guests, targeted disconnect");
 
     await product.setFollow(owner, "user", guest.publicId, true);
     const followers = await social.socialDirectory(guest, { targetPublicId: guest.publicId, kind: "followers" });
@@ -336,7 +386,7 @@ async function main() {
     for (const [code, host, title] of [[sourceLiveCode, owner, "QA PK Source"], [targetLiveCode, roomAdmin, "QA PK Target"]] as const) {
       const roomId = randomUUID();
       await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', ?, 'PK', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, code, host.userId, title]);
-      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [roomId, host.userId]);
+      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [roomId, host.userId]);
     }
     const [pkRooms] = await root.query<RowDataPacket[]>("SELECT id, room_code FROM live_rooms WHERE room_code IN (?, ?)", [sourceLiveCode, targetLiveCode]);
     const sourceRoomId = String(pkRooms.find((row) => row.room_code === sourceLiveCode)?.id);
@@ -626,7 +676,7 @@ async function main() {
     const liveRewardCode = `LIVEREWARD${Date.now()}`;
     const liveRewardRoomId = randomUUID();
     await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [liveRewardRoomId, liveRewardCode, rewardHost.userId]);
-    await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [liveRewardRoomId, rewardHost.userId]);
+    await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [liveRewardRoomId, rewardHost.userId]);
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET media_publishing = TRUE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 3600, valid_media_seconds = 3600 WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
     const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode, true);
@@ -647,7 +697,7 @@ async function main() {
       const roomCode = `REWARD${seconds}${Date.now()}`;
       const roomId = randomUUID();
       await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'FACE', 'QA Exact Reward', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, roomCode, rewardHost.userId]);
-      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [roomId, rewardHost.userId]);
+      await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [roomId, rewardHost.userId]);
       await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, media_segment_seconds, valid_media_seconds, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), ?, ?, id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), roomId, rewardHost.userId, seconds, seconds]);
       return rooms.finalizeLiveSession(rewardHost, roomCode);
     }

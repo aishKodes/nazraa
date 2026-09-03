@@ -360,10 +360,16 @@ export async function listRooms(scope: Scope) {
 export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
   const { page, pageSize, offset } = pageInput(input);
   const filter = scopeWhere(scope, "r.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number })[]>(
+  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number; mixer_status: string | null; rtc_publishers: number; passive_streaming: number; passive_rtc_fallback: number; mixer_seconds: number })[]>(
     `SELECT r.id, r.room_code, r.room_type, r.status, r.audience_count, r.started_at,
             r.theme_index, r.theme_enabled, r.pk_requests_enabled, (r.password_hash IS NOT NULL) password_protected, r.chat_locked,
             COALESCE(pk.pk_count, 0) pk_count, COALESCE(incidents.presence_incidents, 0) presence_incidents,
+            mixer.status mixer_status,
+            COALESCE(media.rtc_publishers, 0) rtc_publishers,
+            COALESCE(media.passive_streaming, 0) passive_streaming,
+            COALESCE(media.passive_rtc_fallback, 0) passive_rtc_fallback,
+            COALESCE(mixer.active_duration_seconds, 0) + IF(mixer.active_started_at IS NULL, 0,
+              GREATEST(0, TIMESTAMPDIFF(SECOND, mixer.active_started_at, CURRENT_TIMESTAMP(3)))) mixer_seconds,
             u.full_name, u.external_user_id, u.id application_user_id
      FROM live_rooms r INNER JOIN application_users u ON u.id = r.host_application_user_id
      LEFT JOIN (
@@ -376,9 +382,17 @@ export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
      LEFT JOIN (
        SELECT room_id, COUNT(*) presence_incidents FROM face_live_presence_incidents GROUP BY room_id
      ) incidents ON incidents.room_id = r.id
+     LEFT JOIN live_media_mix_tasks mixer ON mixer.room_id = r.id
+     LEFT JOIN (
+       SELECT room_id,
+         SUM(usage_type IN ('FACE_HOST_RTC','FACE_AUDIO_GUEST_RTC','PARTY_SPEAKER_RTC') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) rtc_publishers,
+         SUM(usage_type IN ('FACE_PASSIVE_STREAM','PARTY_PASSIVE_STREAM') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) passive_streaming,
+         SUM(usage_type IN ('FACE_PASSIVE_RTC_FALLBACK','PARTY_PASSIVE_RTC_FALLBACK') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) passive_rtc_fallback
+       FROM live_media_usage GROUP BY room_id
+     ) media ON media.room_id = r.id
      WHERE ${filter.clause} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`, [...filter.values, pageSize + 1, offset],
   );
-  return { items: rows.slice(0, pageSize).map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id, themeIndex: Number(row.theme_index), themeEnabled: Boolean(row.theme_enabled), pkRequestsEnabled: Boolean(row.pk_requests_enabled), passwordProtected: Boolean(row.password_protected), chatLocked: Boolean(row.chat_locked), pkCount: Number(row.pk_count), presenceIncidents: Number(row.presence_incidents) })), page, pageSize, hasNext: rows.length > pageSize };
+  return { items: rows.slice(0, pageSize).map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id, themeIndex: Number(row.theme_index), themeEnabled: Boolean(row.theme_enabled), pkRequestsEnabled: Boolean(row.pk_requests_enabled), passwordProtected: Boolean(row.password_protected), chatLocked: Boolean(row.chat_locked), pkCount: Number(row.pk_count), presenceIncidents: Number(row.presence_incidents), mixerStatus: row.mixer_status ?? "INACTIVE", rtcPublishers: Number(row.rtc_publishers), passiveStreaming: Number(row.passive_streaming), passiveRtcFallback: Number(row.passive_rtc_fallback), mixerSeconds: Number(row.mixer_seconds) })), page, pageSize, hasNext: rows.length > pageSize };
 }
 
 export async function listPresenceIncidents(scope: Scope) {
