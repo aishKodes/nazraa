@@ -394,8 +394,19 @@ async function main() {
     const sourceRoomId = String(pkRooms.find((row) => row.room_code === sourceLiveCode)?.id);
     const targetRoomId = String(pkRooms.find((row) => row.room_code === targetLiveCode)?.id);
     const [giftCatalog] = await root.query<RowDataPacket[]>("SELECT id FROM gift_catalog WHERE gift_key = 'qa_rose' LIMIT 1");
+    const rejectedInvite = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+    await assert.rejects(
+      rooms.respondPkSession(owner, { sessionId: rejectedInvite.id, accept: true }),
+      /Only the invited Host/,
+    );
+    const rejection = await rooms.respondPkSession(roomAdmin, { sessionId: rejectedInvite.id, accept: false });
+    assert.equal(rejection.status, "rejected");
+    assert.equal((await rooms.closePkSession(owner, { sessionId: rejectedInvite.id, completed: false })).status, "rejected");
     for (let round = 1; round <= 3; round += 1) {
       const session = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+      const accepted = await rooms.respondPkSession(roomAdmin, { sessionId: session.id, accept: true });
+      assert.equal(accepted.status, "active");
+      assert.equal((await rooms.activatePkSession(owner, session.id)).status, "active", "requester callback must be idempotent after invited Host accepts");
       const eventId = randomUUID();
       await root.execute("INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 6000)", [eventId, sourceRoomId, owner.userId, owner.userId, giftCatalog[0].id]);
       const result = await rooms.closePkSession(owner, { sessionId: session.id, completed: true });
@@ -408,11 +419,12 @@ async function main() {
     assert.equal(streakAfterBonus.currentStreak, 0);
     assert.equal(streakAfterBonus.bonusesAwarded, 1);
     const losingSession = await rooms.createPkSession(owner, { sourceRoomCode: sourceLiveCode, targetRoomCode: targetLiveCode, mode: "Classic", durationMinutes: 5 });
+    await rooms.respondPkSession(roomAdmin, { sessionId: losingSession.id, accept: true });
     await root.execute("INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 6000)", [randomUUID(), targetRoomId, roomAdmin.userId, roomAdmin.userId, giftCatalog[0].id]);
     const loss = await rooms.closePkSession(owner, { sessionId: losingSession.id, completed: true });
     assert.equal(loss.result, "loss");
     assert.equal(loss.streak, 0);
-    console.log("PASS PK Battle Royal: 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset");
+    console.log("PASS PK: invited Host authority, Accept/Reject lifecycle, requester synchronization, 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset");
 
     const identities = [owner, guest, roomAdmin];
     const gifted = [5000000, 4000000, 3000000];

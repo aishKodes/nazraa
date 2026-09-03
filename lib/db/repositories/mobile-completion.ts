@@ -1042,6 +1042,17 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
     if (!["LIVE", "FACE"].includes(roomsPair.source_type) || !["LIVE", "FACE"].includes(roomsPair.target_type)) {
       throw new Error("PK is available only between Face Live rooms.");
     }
+    await connection.execute(
+      "UPDATE live_pk_sessions SET status = 'EXPIRED', ended_at = CURRENT_TIMESTAMP(3) WHERE status = 'REQUESTED' AND created_at < TIMESTAMPADD(SECOND, -70, CURRENT_TIMESTAMP(3))",
+    );
+    const [busySessions] = await connection.query<RowDataPacket[]>(
+      `SELECT id FROM live_pk_sessions
+       WHERE status IN ('REQUESTED','ACTIVE')
+         AND (source_room_id IN (?, ?) OR target_room_id IN (?, ?))
+       LIMIT 1 FOR UPDATE`,
+      [roomsPair.source_id, roomsPair.target_id, roomsPair.source_id, roomsPair.target_id],
+    );
+    if (busySessions.length) throw new Error("One of these Hosts is already in a PK invitation or battle.");
     const id = randomUUID();
     await connection.execute(
       `INSERT INTO live_pk_sessions
@@ -1059,6 +1070,7 @@ export async function activatePkSession(identity: MobileIdentity, sessionId: str
       id: string;
       status: string;
       source_host_id: string;
+      target_host_id: string;
       source_room_code: string;
       target_room_code: string;
       source_status: string;
@@ -1066,6 +1078,7 @@ export async function activatePkSession(identity: MobileIdentity, sessionId: str
     })[]>(
       `SELECT session.id, session.status,
               source.host_application_user_id source_host_id,
+              target.host_application_user_id target_host_id,
               source.room_code source_room_code, target.room_code target_room_code,
               source.status source_status, target.status target_status
        FROM live_pk_sessions session
@@ -1075,8 +1088,8 @@ export async function activatePkSession(identity: MobileIdentity, sessionId: str
       [sessionId],
     );
     const session = sessions[0];
-    if (!session || session.source_host_id !== identity.userId) {
-      throw new Error("Only the requesting Host can start this PK session.");
+    if (!session || ![session.source_host_id, session.target_host_id].includes(identity.userId)) {
+      throw new Error("Only an invited Host can start this PK session.");
     }
     if (!["ACTIVE", "LOCKED"].includes(session.source_status) || !["ACTIVE", "LOCKED"].includes(session.target_status)) {
       throw new Error("Both Hosts must still be Live to start PK.");
@@ -1087,6 +1100,46 @@ export async function activatePkSession(identity: MobileIdentity, sessionId: str
     if (session.status !== "REQUESTED") throw new Error("This PK invitation is no longer pending.");
     await connection.execute(
       "UPDATE live_pk_sessions SET status = 'ACTIVE', started_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
+      [session.id],
+    );
+    return { id: session.id, status: "active", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+  });
+}
+
+export async function respondPkSession(identity: MobileIdentity, input: { sessionId: string; accept: boolean }) {
+  return withTransaction(async (connection) => {
+    const [sessions] = await connection.query<(RowDataPacket & {
+      id: string; status: string; source_host_id: string; target_host_id: string;
+      source_room_code: string; target_room_code: string; created_at: Date;
+    })[]>(
+      `SELECT session.id, session.status, session.created_at,
+              source.host_application_user_id source_host_id,
+              target.host_application_user_id target_host_id,
+              source.room_code source_room_code, target.room_code target_room_code
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       WHERE session.id = ? LIMIT 1 FOR UPDATE`,
+      [input.sessionId],
+    );
+    const session = sessions[0];
+    if (!session || session.target_host_id !== identity.userId) {
+      throw new Error("Only the invited Host can respond to this PK invitation.");
+    }
+    if (session.status === "ACTIVE" && input.accept) {
+      return { id: session.id, status: "active", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+    }
+    if (session.status !== "REQUESTED") throw new Error("This PK invitation is no longer pending.");
+    if (new Date(session.created_at).getTime() < Date.now() - 70_000) {
+      await connection.execute("UPDATE live_pk_sessions SET status = 'EXPIRED', ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.id]);
+      throw new Error("This PK invitation expired. Ask the Host to send it again.");
+    }
+    if (!input.accept) {
+      await connection.execute("UPDATE live_pk_sessions SET status = 'REJECTED', ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.id]);
+      return { id: session.id, status: "rejected", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+    }
+    await connection.execute(
+      "UPDATE live_pk_sessions SET status = 'ACTIVE', started_at = CURRENT_TIMESTAMP(3), ended_at = NULL WHERE id = ?",
       [session.id],
     );
     return { id: session.id, status: "active", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };

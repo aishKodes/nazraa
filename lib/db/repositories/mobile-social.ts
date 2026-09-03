@@ -85,7 +85,7 @@ async function agencyOwnedByIdentity(connection: PoolConnection, identity: Mobil
      FROM platform_accounts account
      WHERE account.role = 'AGENCY'
        AND (account.application_user_id = ? OR account.application_user_id = ? OR account.application_user_id = ?)
-     LIMIT 1 FOR SHARE`,
+     LIMIT 1 FOR UPDATE`,
     [identity.userId, identity.externalUserId, identity.publicId],
   );
   return rows[0] ?? null;
@@ -272,7 +272,7 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
     const [pending] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [identity.userId]);
     if (pending.length) throw new Error("Your Agency creation application is already pending.");
     const [parents] = await connection.query<(RowDataPacket & { id: string; public_id: number; full_name: string; role: "ADMIN" | "BD" })[]>(
-      "SELECT id, public_id, full_name, role FROM platform_accounts WHERE public_id = ? AND role IN ('ADMIN','BD') AND status = 'ACTIVE' LIMIT 1 FOR SHARE",
+      "SELECT id, public_id, full_name, role FROM platform_accounts WHERE public_id = ? AND role IN ('ADMIN','BD') AND status = 'ACTIVE' LIMIT 1 FOR UPDATE",
       [input.parentCode],
     );
     const parent = parents[0];

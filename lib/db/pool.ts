@@ -18,7 +18,11 @@ function databaseConfig(): PoolOptions {
     database: process.env.DB_NAME,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    charset: "utf8mb4_unicode_ci",
+    // Hostinger's existing schema uses utf8mb4_general_ci. MariaDB treats
+    // bound values and SQL literals as connection-collated strings; using a
+    // different connection collation made even expressions such as
+    // `? = 'PARTY'` fail with ER_CANT_AGGREGATE_2COLLATIONS.
+    charset: "utf8mb4_general_ci",
     waitForConnections: true,
     // Hostinger is a remote shared MySQL service. A Vercel cold start opening
     // eight sockets at once was intermittently timing out login and mobile

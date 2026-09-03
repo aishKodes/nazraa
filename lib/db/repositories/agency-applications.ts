@@ -124,7 +124,7 @@ export async function reviewAgencyCreation(input: { scope: Scope; applicationId:
         `SELECT id FROM platform_accounts
          WHERE role = 'AGENCY'
            AND (application_user_id = ? OR application_user_id = ? OR application_user_id = ?)
-         LIMIT 1 FOR SHARE`,
+         LIMIT 1 FOR UPDATE`,
         [application.application_user_id, users[0].external_user_id, String(users[0].public_id)],
       );
       if (ownedAgencies.length) throw new Error("The applicant already owns an Agency. Each Nazraa account can own only one Agency.");

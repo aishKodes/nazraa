@@ -485,19 +485,29 @@ async function applyPkHostResult(connection: PoolConnection, input: {
 export async function finalizePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
-      id: string; status: string; source_room_id: string; target_room_id: string; source_room_code: string; target_room_code: string; source_host_id: string; target_host_id: string; starts_at: Date;
+      id: string; status: string; source_room_id: string; target_room_id: string; source_room_code: string; target_room_code: string; source_host_id: string; target_host_id: string; starts_at: Date; source_score: number; target_score: number; winner_room_id: string | null;
     })[]>(
       `SELECT session.id, session.status, session.source_room_id, session.target_room_id,
+              session.source_score, session.target_score, session.winner_room_id,
               source.room_code source_room_code, target.room_code target_room_code,
               source.host_application_user_id source_host_id, target.host_application_user_id target_host_id,
               COALESCE(session.started_at, session.created_at) starts_at
        FROM live_pk_sessions session INNER JOIN live_rooms source ON source.id = session.source_room_id
        INNER JOIN live_rooms target ON target.id = session.target_room_id
-       WHERE session.id = ? AND source.host_application_user_id = ? LIMIT 1 FOR UPDATE`,
-      [input.sessionId, identity.userId],
+       WHERE session.id = ? AND (source.host_application_user_id = ? OR target.host_application_user_id = ?) LIMIT 1 FOR UPDATE`,
+      [input.sessionId, identity.userId, identity.userId],
     );
     const session = rows[0];
-    if (!session || !["REQUESTED", "ACTIVE"].includes(session.status)) throw new Error("The PK session could not be closed.");
+    if (!session) throw new Error("The PK session could not be closed.");
+    if (["REJECTED", "CANCELLED", "EXPIRED"].includes(session.status)) {
+      return { id: session.id, status: session.status.toLowerCase(), sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+    }
+    if (session.status === "COMPLETED") {
+      const callerRoomId = identity.userId === session.source_host_id ? session.source_room_id : session.target_room_id;
+      const result = session.winner_room_id == null ? "draw" : session.winner_room_id === callerRoomId ? "win" : "loss";
+      return { id: session.id, status: "completed", sourceScore: Number(session.source_score), targetScore: Number(session.target_score), result, winner: session.winner_room_id ?? "draw", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+    }
+    if (!["REQUESTED", "ACTIVE"].includes(session.status)) throw new Error("The PK session could not be closed.");
     if (!input.completed) {
       await connection.execute("UPDATE live_pk_sessions SET status = 'CANCELLED', ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.id]);
       return { id: session.id, status: "cancelled", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
@@ -520,11 +530,14 @@ export async function finalizePkSession(identity: MobileIdentity, input: { sessi
     const targetResult = winnerRoomId == null ? "DRAW" : winnerRoomId === session.target_room_id ? "WIN" : "LOSS";
     const sourceStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.source_host_id, result: sourceResult, receivedCoins: sourceScore });
     const targetStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.target_host_id, result: targetResult, receivedCoins: targetScore });
+    const callerResult = identity.userId === session.source_host_id ? sourceResult : targetResult;
+    const callerStreak = identity.userId === session.source_host_id ? sourceStreak : targetStreak;
+    const opponentStreak = identity.userId === session.source_host_id ? targetStreak : sourceStreak;
     return {
       id: session.id, status: "completed", sourceScore, targetScore,
-      result: sourceResult.toLowerCase(), winner: winnerRoomId == null ? "draw" : winnerRoomId,
-      streak: sourceStreak.streak, qualifyingWin: sourceStreak.qualifying === true, bonusCoins: sourceStreak.bonusCoins,
-      opponentStreak: targetStreak.streak,
+      result: callerResult.toLowerCase(), winner: winnerRoomId == null ? "draw" : winnerRoomId,
+      streak: callerStreak.streak, qualifyingWin: callerStreak.qualifying === true, bonusCoins: callerStreak.bonusCoins,
+      opponentStreak: opponentStreak.streak,
       sourceRoomCode: session.source_room_code,
       targetRoomCode: session.target_room_code,
     };

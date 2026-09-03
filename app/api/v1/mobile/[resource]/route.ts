@@ -25,6 +25,7 @@ import {
   recordFacePresenceAutoStop,
   requestLiveCoHost,
   respondLiveCoHost,
+  respondPkSession,
   endLiveCoHost,
   activatePkSession,
   createPkSession,
@@ -364,6 +365,13 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "pk-start") {
       const parsed = z.object({ sessionId: z.string().uuid() }).parse(body);
       const result = await activatePkSession(identity, parsed.sessionId);
+      scheduleMixerSync(result.sourceRoomCode);
+      scheduleMixerSync(result.targetRoomCode);
+      return NextResponse.json(result);
+    }
+    if (resource === "pk-response") {
+      const parsed = z.object({ sessionId: z.string().uuid(), accept: z.boolean() }).parse(body);
+      const result = await respondPkSession(identity, parsed);
       scheduleMixerSync(result.sourceRoomCode);
       scheduleMixerSync(result.targetRoomCode);
       return NextResponse.json(result);
