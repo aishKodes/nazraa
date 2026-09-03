@@ -36,6 +36,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     pkModes?: string[];
     presenceWarningLimit?: number;
     presenceSuspensionLimit?: number;
+    facePassivePlaybackMode?: "rtc_fallback" | "live_streaming";
+    partyPassivePlaybackMode?: "dynamic_rtc_fallback" | "live_streaming";
+    partyStreamingThreshold?: number;
+    streamMixingEnabled?: boolean;
+    mediaReconnectGraceSeconds?: number;
   } | undefined;
   const interactions = roomFeatures?.interactions ?? [
     { key: "kiss", label: "Kiss", emoji: "💋", enabled: true },
@@ -157,7 +162,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>
               <input name="game" type="hidden" value={gameId} />
               <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
-              <label>Target profitable rounds<input name="targetWinRate" type="number" min="0" max="1" step="0.01" required defaultValue={game.targetWinRate} /><span>0.50 = about 50%; 0.40 = about 40%. Shared games keep one result for everyone.</span></label>
+              <label>Reference hit frequency<input name="targetWinRate" type="number" min="0" max="1" step="0.01" required defaultValue={game.targetWinRate} /><span>Reporting target only: 0.50 for Teen Patti/Luck77 and 0.40 for the others. Results never inspect a player&apos;s bets.</span></label>
+              <label>Fixed mathematical RTP<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>Payout scales are server-owned and verified statistically before deployment.</span></label>
               <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" required defaultValue={game.maximumPayoutMultiplier} /><span>Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.</span></label>
               <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
               <label>Minimum bet<input name="minimumBet" type="number" min="1" required defaultValue={game.minimumBet} /></label>
@@ -196,6 +202,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label className="span-two">PK modes (comma separated)<input name="pkModes" required defaultValue={(roomFeatures?.pkModes ?? ["Classic", "Auto PK", "Random", "Invite/Friends"]).join(", ")} /></label>
         <label>Presence failures before stop<input name="presenceWarningLimit" type="number" min="3" max="30" required defaultValue={roomFeatures?.presenceWarningLimit ?? 10} /></label>
         <label>Auto-stops before suspension<input name="presenceSuspensionLimit" type="number" min="1" max="20" required defaultValue={roomFeatures?.presenceSuspensionLimit ?? 5} /></label>
+        <label>Face passive viewers<select name="facePassivePlaybackMode" defaultValue={roomFeatures?.facePassivePlaybackMode ?? "rtc_fallback"}><option value="rtc_fallback">RTC fallback</option><option value="live_streaming">Live Streaming / CDN</option></select></label>
+        <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
+        <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 9} /><span>Below this member count, Party remains RTC.</span></label>
+        <label>ZEGO stream mixing<select name="streamMixingEnabled" defaultValue={String(roomFeatures?.streamMixingEnabled === true)}><option value="false">Inactive / fallback</option><option value="true">Ready when deployment is activated</option></select><span>The app stays on RTC fallback until the deployment activation gate and signed playback URL are both present.</span></label>
+        <label>Media reconnect grace (seconds)<input name="mediaReconnectGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.mediaReconnectGraceSeconds ?? 15} /></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
       </form>
     </Card>

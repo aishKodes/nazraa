@@ -22,6 +22,55 @@ function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 }
 
+function jsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function roomMediaDelivery(
+  row: RowDataPacket,
+  participantCount: number,
+) {
+  const features = jsonObject(row.room_features_json);
+  const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
+  // The panel flag is an operator preference. The deployment gate proves that
+  // the ZEGO project, mixer output and signed playback endpoint are actually
+  // ready. Never move an audience member away from the working RTC fallback
+  // merely because a panel toggle was enabled early.
+  const mixingConfigured = features.streamMixingEnabled === true;
+  const mixingReady = process.env.ZEGO_STREAM_MIXING_READY === "true";
+  const mixingEnabled = mixingConfigured && mixingReady;
+  const isAudience = row.room_role === "AUDIENCE";
+  const requested = row.room_type === "PARTY"
+    ? features.partyPassivePlaybackMode === "live_streaming" && participantCount >= threshold
+    : features.facePassivePlaybackMode === "live_streaming";
+  const template = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
+  const enabled = isAudience && requested && mixingEnabled && template.length > 0;
+  const streamId = `nazraa_${String(row.id).replaceAll("-", "_")}`;
+  return {
+    mode: enabled ? "liveStreaming" : "rtcFallback",
+    playbackUrl: enabled ? template.replaceAll("{streamId}", encodeURIComponent(streamId)) : null,
+    streamId: enabled ? streamId : null,
+    streamMixingEnabled: mixingEnabled,
+    partyStreamingThreshold: threshold,
+    fallbackReason: enabled
+      ? null
+      : !requested
+        ? "Passive streaming is disabled by server configuration."
+        : !mixingConfigured
+          ? "ZEGO stream mixing is not active."
+          : !mixingReady
+            ? "ZEGO stream mixing is awaiting deployment activation."
+          : template.length === 0
+            ? "ZEGO signed playback URL is not configured."
+            : "Active speakers and hosts remain on RTC.",
+  };
+}
+
 async function ensureWallet(connection: PoolConnection, userId: string, assetType: "COIN" | "DIAMOND") {
   await connection.execute(
     "INSERT IGNORE INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, ?)",
@@ -282,13 +331,20 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
   });
 }
 
-export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string) {
+export async function refreshRoomPresence(identity: MobileIdentity, roomCode: string, mediaPublishing = false) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.seat_index, member.muted, member.muted_by_staff,
-              accounting.started_at reward_started_at, reward_rule.coins_per_hour reward_diamonds_per_hour,
-              GREATEST(0, TIMESTAMPDIFF(SECOND, accounting.started_at, CURRENT_TIMESTAMP(3))) reward_continuous_seconds,
+              accounting.id reward_accounting_id, accounting.started_at reward_started_at,
+              accounting.media_publishing reward_media_publishing,
+              accounting.last_media_heartbeat_at reward_last_media_heartbeat_at,
+              accounting.media_segment_seconds reward_media_segment_seconds,
+              accounting.valid_media_seconds reward_valid_media_seconds,
+              accounting.eligible_duration_seconds reward_eligible_seconds,
+              reward_rule.coins_per_hour reward_diamonds_per_hour,
+              room_features.setting_value room_features_json,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 15) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
@@ -298,10 +354,39 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        INNER JOIN live_room_members member ON member.room_id = room.id AND member.application_user_id = ? AND member.left_at IS NULL
        LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
        LEFT JOIN host_reward_rules reward_rule ON reward_rule.id = accounting.reward_rule_id
+       LEFT JOIN system_settings room_features ON room_features.setting_key = 'mobile.room_features'
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [identity.userId, roomCode],
     );
     if (!rows[0]) return { active: false };
+    let rewardSegmentSeconds = Number(rows[0].reward_media_segment_seconds ?? 0);
+    let rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
+    let rewardEligibleSeconds = Number(rows[0].reward_eligible_seconds ?? 0);
+    if (rows[0].room_role === "OWNER" && rows[0].room_type !== "PARTY" && rows[0].reward_accounting_id) {
+      const wasPublishing = Boolean(rows[0].reward_media_publishing);
+      const lastHeartbeat = rows[0].reward_last_media_heartbeat_at
+        ? new Date(rows[0].reward_last_media_heartbeat_at as string | Date)
+        : null;
+      const serverTime = new Date(rows[0].reward_server_time as string | Date);
+      const gapSeconds = lastHeartbeat == null
+        ? 0
+        : Math.max(0, Math.floor((serverTime.getTime() - lastHeartbeat.getTime()) / 1000));
+      const reconnectGrace = Math.max(5, Math.min(60, Number(rows[0].media_reconnect_grace_seconds ?? 15)));
+      const acceptedDelta = wasPublishing && gapSeconds <= reconnectGrace ? gapSeconds : 0;
+      rewardSegmentSeconds += acceptedDelta;
+      rewardValidSeconds += acceptedDelta;
+      if ((wasPublishing && gapSeconds > reconnectGrace) || (wasPublishing && !mediaPublishing)) {
+        rewardEligibleSeconds += Math.floor(rewardSegmentSeconds / 3600) * 3600;
+        rewardSegmentSeconds = 0;
+      }
+      await connection.execute(
+        `UPDATE live_session_accounting
+         SET media_publishing = ?, last_media_heartbeat_at = ?,
+             media_segment_seconds = ?, valid_media_seconds = ?, eligible_duration_seconds = ?
+         WHERE id = ? AND status = 'ACTIVE'`,
+        [Boolean(mediaPublishing), serverTime, rewardSegmentSeconds, rewardValidSeconds, rewardEligibleSeconds, rows[0].reward_accounting_id],
+      );
+    }
     const [requests] = await connection.query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, request.seat_index, request.status
        FROM live_seat_requests request INNER JOIN application_users user ON user.id = request.application_user_id
@@ -417,7 +502,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        FROM ledger_transactions ledger
        INNER JOIN application_users user ON user.id = ledger.destination_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-       WHERE ledger.transaction_type = 'GAME_CREDIT' AND ledger.status = 'COMPLETED'
+       WHERE ledger.transaction_type IN ('GAME_CREDIT', 'GAME_WIN') AND ledger.status = 'COMPLETED'
          AND ledger.created_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
        ORDER BY ledger.created_at ASC LIMIT 30`,
     );
@@ -449,13 +534,17 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       liveRewardProgress: rows[0].room_role === "OWNER" && rows[0].room_type !== "PARTY" && rows[0].reward_started_at
         ? {
             rewardDiamondsPerHour: Number(rows[0].reward_diamonds_per_hour ?? 3500),
-            continuousSeconds: Number(rows[0].reward_continuous_seconds ?? 0),
-            completedHours: Math.floor(Number(rows[0].reward_continuous_seconds ?? 0) / 3600),
-            secondsUntilNextReward: 3600 - (Number(rows[0].reward_continuous_seconds ?? 0) % 3600),
+            continuousSeconds: rewardSegmentSeconds,
+            completedHours: Math.floor((rewardEligibleSeconds + rewardSegmentSeconds) / 3600),
+            secondsUntilNextReward: 3600 - (rewardSegmentSeconds % 3600),
             serverTime: rows[0].reward_server_time,
           }
         : null,
       wallet: { coins: Number(rows[0].coin_balance), diamonds: Number(rows[0].diamond_balance) },
+      mediaDelivery: roomMediaDelivery(
+        rows[0],
+        participants.filter((member) => String(member.room_role) === "AUDIENCE").length,
+      ),
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
       seatRequests: requests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), seatIndex: Number(row.seat_index), status: String(row.status).toLowerCase() })),
       coHostRequests: coHostRequests.map((row) => ({ userId: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url, status: String(row.status).toLowerCase(), requestedAt: row.requested_at })),
@@ -1045,14 +1134,20 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       accounting_id: string; room_id: string; room_type: "LIVE" | "PARTY" | "FACE"; started_at: Date; ended_at: Date;
       status: string; host_application_user_id: string; reward_rule_id: string | null; valid_duration_seconds: number;
       eligible_duration_seconds: number; reward_coins: number; transaction_code: string | null;
+      media_publishing: number; last_media_heartbeat_at: Date | null; media_segment_seconds: number;
+      valid_media_seconds: number; media_reconnect_grace_seconds: number;
     })[]>(
       `SELECT accounting.id accounting_id, room.id room_id, accounting.room_type, accounting.started_at,
               accounting.status, accounting.host_application_user_id, accounting.reward_rule_id,
               accounting.valid_duration_seconds, accounting.eligible_duration_seconds, accounting.reward_coins,
+              accounting.media_publishing, accounting.last_media_heartbeat_at,
+              accounting.media_segment_seconds, accounting.valid_media_seconds,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 15) media_reconnect_grace_seconds,
               ledger.transaction_code,
               COALESCE(room.ended_at, accounting.ended_at, CURRENT_TIMESTAMP(3)) ended_at
        FROM live_session_accounting accounting INNER JOIN live_rooms room ON room.id = accounting.room_id
        LEFT JOIN ledger_transactions ledger ON ledger.id = accounting.reward_ledger_id
+       LEFT JOIN system_settings room_features ON room_features.setting_key = 'mobile.room_features'
        WHERE room.room_code = ? LIMIT 1 FOR UPDATE`,
       [roomCode],
     );
@@ -1068,8 +1163,16 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
         alreadyFinalized: true,
       };
     }
-    const [durationRows] = await connection.query<(RowDataPacket & { seconds: number })[]>("SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, LEAST(?, CURRENT_TIMESTAMP(3)))) seconds", [session.started_at, session.ended_at]);
-    const validSeconds = Number(durationRows[0].seconds);
+    const reconnectGrace = Math.max(5, Math.min(60, Number(session.media_reconnect_grace_seconds ?? 15)));
+    const [heartbeatRows] = await connection.query<(RowDataPacket & { seconds: number })[]>(
+      "SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, CURRENT_TIMESTAMP(3))) seconds",
+      [session.last_media_heartbeat_at ?? session.started_at],
+    );
+    const heartbeatGap = Number(heartbeatRows[0]?.seconds ?? 0);
+    const finalDelta = Boolean(session.media_publishing) && heartbeatGap <= reconnectGrace ? heartbeatGap : 0;
+    const finalSegmentSeconds = Number(session.media_segment_seconds ?? 0) + finalDelta;
+    const validSeconds = Number(session.valid_media_seconds ?? 0) + finalDelta;
+    const bankedEligibleSeconds = Number(session.eligible_duration_seconds ?? 0);
     const [ruleRows] = await connection.query<(RowDataPacket & { id: string; coins_per_hour: number; minimum_eligible_seconds: number })[]>(
       session.reward_rule_id
         ? "SELECT id, coins_per_hour, minimum_eligible_seconds FROM host_reward_rules WHERE id = ? LIMIT 1"
@@ -1079,8 +1182,9 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
     );
     const rule = ruleRows[0];
     if (!rule) throw new Error("The host reward rule is unavailable.");
-    const completedHours = validSeconds >= Math.max(3600, Number(rule.minimum_eligible_seconds))
-      ? Math.floor(validSeconds / 3600)
+    const totalEligibleSeconds = bankedEligibleSeconds + Math.floor(finalSegmentSeconds / 3600) * 3600;
+    const completedHours = totalEligibleSeconds >= Math.max(3600, Number(rule.minimum_eligible_seconds))
+      ? Math.floor(totalEligibleSeconds / 3600)
       : 0;
     // Only whole, continuous hours qualify. An unfinished hour is intentionally
     // discarded when the Live ends (59m = 0, 60m = 3,500, 120m = 7,000).
@@ -1095,14 +1199,16 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
       await connection.execute(
         `INSERT INTO ledger_transactions
           (id, transaction_code, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
-         VALUES (?, ?, 'DIAMOND', 'HOST_HOURLY_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
+         VALUES (?, ?, 'DIAMOND', 'HOST_HOURLY_DIAMONDS', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
         [ledgerId, rewardCode, identity.userId, rewardCoins, `${session.room_type} • ${completedHours} completed continuous hour(s)`],
       );
     }
     await connection.execute(
       `UPDATE live_session_accounting SET ended_at = ?, valid_duration_seconds = ?, eligible_duration_seconds = ?,
-       reward_rule_id = ?, reward_coins = ?, reward_ledger_id = ?, status = 'FINALIZED', finalized_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
-      [session.ended_at, validSeconds, eligibleSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
+       media_publishing = FALSE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 0,
+       valid_media_seconds = ?, reward_rule_id = ?, reward_coins = ?, reward_ledger_id = ?,
+       status = 'FINALIZED', finalized_at = CURRENT_TIMESTAMP(3) WHERE id = ?`,
+      [session.ended_at, validSeconds, eligibleSeconds, validSeconds, rule.id, rewardCoins, ledgerId, session.accounting_id],
     );
     await connection.execute("UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE WHERE room_id = ?", [session.room_id]);
     await connection.execute(

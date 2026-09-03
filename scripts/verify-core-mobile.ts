@@ -425,12 +425,12 @@ async function main() {
     await root.execute("UPDATE wallet_balances SET available_balance = 100000 WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [owner.userId]);
     const gameBalanceBefore = (await product.mobileBootstrap(owner)).wallet.gameCredits;
     assert.ok(gameBalanceBefore > 0, "Game Center must receive the real nonzero server balance");
-    const gameTransactionId = randomUUID();
-    const gameDebit = await product.mutateGameWallet(owner, { clientTransactionId: gameTransactionId, direction: "DEBIT", amount: 25, game: "Luck77", reason: "QA real game wager" });
-    assert.equal(gameDebit.coinBalance, gameBalanceBefore - 25);
-    assert.equal((await product.mobileBootstrap(owner)).wallet.gameCredits, gameBalanceBefore - 25);
-    const repeatedDebit = await product.mutateGameWallet(owner, { clientTransactionId: gameTransactionId, direction: "DEBIT", amount: 25, game: "Luck77", reason: "QA repeated wager" });
-    assert.equal(repeatedDebit.coinBalance, gameDebit.coinBalance, "game wallet mutation must be idempotent");
+    await assert.rejects(
+      product.mutateGameWallet(owner, { clientTransactionId: randomUUID(), direction: "CREDIT", amount: 25, game: "Luck77", reason: "Untrusted client payout" }),
+      /secure round settlement/,
+      "a client must never be able to create a game payout directly",
+    );
+    assert.equal((await product.mobileBootstrap(owner)).wallet.gameCredits, gameBalanceBefore);
     const diamondsBeforeGame = (await product.mobileBootstrap(owner)).wallet.diamonds;
     async function completeSharedRound(game: "teen_patti_pro" | "luck77" | "bounty_football" | "greedy_king" | "greedy_lion", bets: Record<string, number>) {
       const before = await product.gameSharedRoundState(owner, game);
@@ -574,9 +574,9 @@ async function main() {
         assert.equal((await product.mobileBootstrap(stranger)).wallet.coins, round.coinBalance);
         const [ledger] = await root.query<RowDataPacket[]>(
           "SELECT transaction_type, SUM(amount) amount, COUNT(*) count FROM ledger_transactions WHERE metadata->>'$.clientRoundId' = ? GROUP BY transaction_type", [round.clientRoundId]);
-        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.amount), round.wager);
-        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_DEBIT')?.count), 1);
-        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_CREDIT')?.amount ?? 0), round.payout);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_BET')?.amount), round.wager);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_BET')?.count), 1);
+        assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_WIN')?.amount ?? 0), round.payout);
         assert.equal(Number(ledger.find((row) => row.transaction_type === 'GAME_WITHHOLDING')?.amount ?? 0), deduction);
       }
       assert.equal((await product.gameRoundHistory(stranger, game, 10)).rounds.length, 3);
@@ -590,30 +590,29 @@ async function main() {
     assert.deepEqual(oldRetry.outcome, concurrent[0].outcome);
     await assert.rejects(product.settleGameRound(stranger, {clientRoundId: randomUUID(), game: 'luck77', bets: {watermelon: 500, seven: 500, plum: 500}}));
     await root.execute("UPDATE wallet_balances SET available_balance = 10000000 WHERE owner_id = ? AND asset_type = 'COIN'", [stranger.userId]);
-    let targetedWins = 0;
     for (let sample = 0; sample < 100; sample += 1) {
       const round = await product.settleGameRound(stranger, {
         clientRoundId: randomUUID(), game: 'teen_patti_pro',
         bets: {"0": 10000, "1": 0, "2": 0},
       });
-      if (round.outcome.targetWin === true) targetedWins += 1;
+      assert.equal(round.outcome.targetWin, undefined, 'results must never carry a player-targeting decision');
+      assert.equal(round.outcome.selectionModel, 'BET_INDEPENDENT_FIXED_RTP');
       const gross = Number(round.outcome.grossPayout);
       const deduction = gross > round.wager ? Math.floor(gross * 0.01) : 0;
       assert.equal(Number(round.outcome.winningsDeduction), deduction);
       assert.equal(round.payout, gross - deduction);
     }
-    assert.ok(targetedWins >= 35 && targetedWins <= 65, `100 Teen Patti rounds should stay near the configured 50% target, got ${targetedWins}%`);
     let jungleWins = 0;
     for (let sample = 0; sample < 100; sample += 1) {
       const round = await product.settleGameRound(stranger, {
         clientRoundId: randomUUID(), game: 'jungle_hunt', bets: {spin: 150},
       });
-      if (round.payout > round.wager) jungleWins += 1;
+      if (round.payout > 0) jungleWins += 1;
       assert.ok(Number(round.outcome.grossPayout) <= 3000, "A 150-coin Jungle spin must never gross more than its configured 20x cap");
       assert.ok(round.payout <= 2970, "The 1% deduction must apply after the Jungle payout cap");
     }
-    assert.ok(jungleWins >= 25 && jungleWins <= 55, `100 Jungle rounds should stay near the configured 40% target, got ${jungleWins}%`);
-    console.log(`PASS imported games: complete database rounds, exact 1% withholding, Teen Patti ${targetedWins}% vs 50% target, Jungle ${jungleWins}% vs 40% target, Jungle 20x payout cap, paired ledger, history, retries`);
+    assert.ok(jungleWins >= 25 && jungleWins <= 55, `100 Jungle spins should stay near the configured 40% hit-frequency reference, got ${jungleWins}%`);
+    console.log(`PASS imported games: complete database rounds, bet-independent Teen Patti outcomes, exact 1% withholding, Jungle ${jungleWins}% hit frequency, Jungle 20x payout cap, paired ledger, history, retries`);
 
     const rewardHost = await user("QA Reward Host");
     rewardHost.agencyAccountId = qaAgency.accountId;
@@ -624,8 +623,8 @@ async function main() {
     await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [liveRewardRoomId, liveRewardCode, rewardHost.userId]);
     await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [liveRewardRoomId, rewardHost.userId]);
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
-    await root.execute("UPDATE live_session_accounting SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 HOUR) WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
-    const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode);
+    await root.execute("UPDATE live_session_accounting SET media_publishing = TRUE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 3600, valid_media_seconds = 3600 WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
+    const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode, true);
     assert.ok(liveProgress.liveRewardProgress);
     assert.equal(liveProgress.liveRewardProgress!.rewardDiamondsPerHour, 3500);
     assert.ok(liveProgress.liveRewardProgress!.continuousSeconds >= 3599);
@@ -644,7 +643,7 @@ async function main() {
       const roomId = randomUUID();
       await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'FACE', 'QA Exact Reward', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, roomCode, rewardHost.userId]);
       await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, muted) VALUES (?, ?, 'OWNER', FALSE)", [roomId, rewardHost.userId]);
-      await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'FACE', DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? SECOND), id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), roomId, rewardHost.userId, seconds]);
+      await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, media_segment_seconds, valid_media_seconds, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), ?, ?, id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), roomId, rewardHost.userId, seconds, seconds]);
       return rooms.finalizeLiveSession(rewardHost, roomCode);
     }
     const partialHour = await finalizedRewardFor(3599);

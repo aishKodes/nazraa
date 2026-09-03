@@ -120,3 +120,44 @@ export async function getRevenueSeries(scope: Scope) {
   );
   return rows.map((row) => ({ day: row.day, revenue: Number(row.revenue ?? 0), payouts: Number(row.payouts ?? 0) }));
 }
+
+export async function getEconomyMetrics() {
+  const [[ledgerRows], [walletRows]] = await Promise.all([
+    db().query<(RowDataPacket & {
+      purchased_coins: number; promotional_coins: number; game_wagers: number;
+      game_returns: number; gift_coins: number; gift_diamonds: number;
+      hourly_diamonds: number; completed_withdrawals: number;
+    })[]>(
+      `SELECT
+         COALESCE(SUM(CASE WHEN asset_type = 'COIN' AND transaction_type = 'COIN_PURCHASE_FULFILLED' THEN amount ELSE 0 END), 0) purchased_coins,
+         COALESCE(SUM(CASE WHEN asset_type = 'COIN' AND transaction_type IN ('VIP_DAILY_REWARD','VIP_REWARD','WEEKLY_GIFTER_REWARD','PROMOTIONAL_COIN') THEN amount ELSE 0 END), 0) promotional_coins,
+         COALESCE(SUM(CASE WHEN asset_type = 'COIN' AND transaction_type IN ('GAME_BET','GAME_DEBIT') THEN amount ELSE 0 END), 0) game_wagers,
+         COALESCE(SUM(CASE WHEN asset_type = 'COIN' AND transaction_type IN ('GAME_WIN','GAME_CREDIT') THEN amount ELSE 0 END), 0) game_returns,
+         COALESCE(SUM(CASE WHEN asset_type = 'COIN' AND transaction_type = 'GIFT_SPEND' THEN amount ELSE 0 END), 0) gift_coins,
+         COALESCE(SUM(CASE WHEN asset_type = 'DIAMOND' AND transaction_type = 'GIFT_RECEIVE' THEN amount ELSE 0 END), 0) gift_diamonds,
+         COALESCE(SUM(CASE WHEN asset_type = 'DIAMOND' AND transaction_type = 'HOST_HOURLY_DIAMONDS' THEN amount ELSE 0 END), 0) hourly_diamonds,
+         COALESCE(SUM(CASE WHEN asset_type = 'DIAMOND' AND transaction_type = 'WITHDRAWAL_PAID' THEN amount ELSE 0 END), 0) completed_withdrawals
+       FROM ledger_transactions WHERE status = 'COMPLETED'`,
+    ),
+    db().query<(RowDataPacket & { outstanding_diamonds: number })[]>(
+      `SELECT COALESCE(SUM(available_balance + reserved_balance), 0) outstanding_diamonds
+       FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND asset_type = 'DIAMOND'`,
+    ),
+  ]);
+  const ledger = ledgerRows[0];
+  const gameWagers = Number(ledger?.game_wagers ?? 0);
+  const gameReturns = Number(ledger?.game_returns ?? 0);
+  return {
+    purchasedCoins: Number(ledger?.purchased_coins ?? 0),
+    promotionalCoins: Number(ledger?.promotional_coins ?? 0),
+    gameWagers,
+    gameReturns,
+    realizedGameRtp: gameWagers > 0 ? gameReturns / gameWagers : 0,
+    gameSink: Math.max(0, gameWagers - gameReturns),
+    giftCoins: Number(ledger?.gift_coins ?? 0),
+    giftDiamonds: Number(ledger?.gift_diamonds ?? 0),
+    hourlyDiamonds: Number(ledger?.hourly_diamonds ?? 0),
+    outstandingDiamonds: Number(walletRows[0]?.outstanding_diamonds ?? 0),
+    completedWithdrawals: Number(ledger?.completed_withdrawals ?? 0),
+  };
+}

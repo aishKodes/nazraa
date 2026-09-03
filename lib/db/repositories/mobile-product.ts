@@ -91,7 +91,7 @@ async function pruneInactiveRooms() {
          AND NOT EXISTS (
            SELECT 1 FROM live_room_members active_member
            WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
-             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 10 MINUTE
+             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE
          ) FOR UPDATE`,
     );
     if (!staleRows.length) return;
@@ -149,7 +149,7 @@ async function activeRoomRows(after?: string) {
        LEFT JOIN application_user_avatars top_avatar ON top_avatar.application_user_id = top_user.id
        LEFT JOIN platform_accounts account ON account.id = room.agency_account_id
        WHERE room.status IN ('ACTIVE','LOCKED')
-         AND EXISTS (SELECT 1 FROM live_room_members active_member WHERE active_member.room_id = room.id AND active_member.left_at IS NULL AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 10 MINUTE)
+         AND EXISTS (SELECT 1 FROM live_room_members active_member WHERE active_member.room_id = room.id AND active_member.left_at IS NULL AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE)
        ${after ? "AND (room.started_at, room.id) < (SELECT started_at, id FROM live_rooms WHERE room_code = ?)" : ""}
        ORDER BY room.started_at DESC, room.id DESC LIMIT 30`, after ? [after] : [],
     );
@@ -773,42 +773,12 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
 export async function mutateGameWallet(identity: MobileIdentity, input: {
   clientTransactionId: string; direction: "DEBIT" | "CREDIT"; amount: number; game: string; reason: string;
 }) {
-  if (!Number.isSafeInteger(input.amount) || input.amount < 1 || input.amount > 10_000_000) throw new Error("Choose a valid game amount.");
-  return withTransaction(async (connection) => {
-    const [existingRows] = await connection.query<(RowDataPacket & { direction: string; amount: number; balance_after: number })[]>(
-      "SELECT direction, amount, balance_after FROM game_wallet_events WHERE client_transaction_id = ? AND application_user_id = ? LIMIT 1 FOR UPDATE",
-      [input.clientTransactionId, identity.userId],
-    );
-    const existing = existingRows[0];
-    if (existing) {
-      if (existing.direction !== input.direction || Number(existing.amount) !== input.amount) throw new Error("This game transaction ID was already used.");
-      return { success: true, coinBalance: Number(existing.balance_after), message: "Already recorded" };
-    }
-    await ensureWallet(connection, identity.userId, "COIN");
-    const [walletRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>(
-      "SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
-      [identity.userId],
-    );
-    const before = Number(walletRows[0].available_balance);
-    if (input.direction === "DEBIT" && before < input.amount) throw new Error("Not enough coins.");
-    const after = input.direction === "DEBIT" ? before - input.amount : before + input.amount;
-    await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [after, walletRows[0].id]);
-    const ledgerId = randomUUID();
-    const transactionCode = code(input.direction === "DEBIT" ? "GMD" : "GMC");
-    await connection.execute(
-      `INSERT INTO ledger_transactions
-       (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, metadata)
-       VALUES (?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, JSON_OBJECT('game', ?))`,
-      [ledgerId, transactionCode, `GAME:${input.clientTransactionId}`, `GAME_${input.direction}`, input.direction === "DEBIT" ? "APPLICATION_USER" : "GAME", input.direction === "DEBIT" ? identity.userId : null, input.direction === "DEBIT" ? "GAME" : "APPLICATION_USER", input.direction === "DEBIT" ? null : identity.userId, input.amount, input.reason, input.game],
-    );
-    await connection.execute(
-      `INSERT INTO game_wallet_events
-       (id, client_transaction_id, application_user_id, direction, amount, game_name, reason, balance_after, ledger_transaction_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), input.clientTransactionId, identity.userId, input.direction, input.amount, input.game, input.reason, after, ledgerId],
-    );
-    return { success: true, coinBalance: after, message: input.direction === "DEBIT" ? "Accepted" : "Paid" };
-  });
+  void identity;
+  void input;
+  // A modified client could formerly call CREDIT directly. All enabled games
+  // now use game-round/shared-game settlement, where the server locks bets,
+  // selects the result and commits the single COIN wallet atomically.
+  throw new Error("This game client is outdated. Reopen the game to use secure round settlement.");
 }
 
 const teenPattiGame = "teen_patti_pro";
@@ -872,21 +842,17 @@ type ServerGameOutcome = {
 };
 
 type GameEconomyRules = {
-  targetWinRate: number;
   winningsDeductionRate: number;
 };
 
 const defaultGameEconomyRules: GameEconomyRules = {
-  targetWinRate: 0.5,
   winningsDeductionRate: 0.01,
 };
 
 function gameEconomyRules(value: unknown): GameEconomyRules {
   const setting = mobileGamesConfig(value);
-  const target = Number(setting.target_win_rate ?? defaultGameEconomyRules.targetWinRate);
   const deduction = Number(setting.winnings_deduction_rate ?? defaultGameEconomyRules.winningsDeductionRate);
   return {
-    targetWinRate: Number.isFinite(target) ? Math.max(0, Math.min(1, target)) : defaultGameEconomyRules.targetWinRate,
     winningsDeductionRate: Number.isFinite(deduction) ? Math.max(0, Math.min(0.25, deduction)) : defaultGameEconomyRules.winningsDeductionRate,
   };
 }
@@ -896,14 +862,6 @@ async function gameSettings(connection: PoolConnection) {
     "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
   );
   return mobileGamesConfig(rows[0]?.setting_value);
-}
-
-function targetPlayerWin(rate: number) {
-  return randomInt(1_000_000) < Math.round(rate * 1_000_000);
-}
-
-function targetWinRateForGame(settings: MobileGamesConfig, game: string) {
-  return settings.games[game as ConfigurableGameId]?.targetWinRate ?? settings.target_win_rate;
 }
 
 function enforcePayoutCap(result: ServerGameOutcome, config?: GameRuntimeConfig) {
@@ -924,15 +882,49 @@ function enforcePayoutCap(result: ServerGameOutcome, config?: GameRuntimeConfig)
   return result;
 }
 
-function chooseIndexForTarget(
-  values: readonly number[],
-  grossPayout: (index: number) => number,
-  wager: number,
-  targetWin: boolean,
+function applyFixedRtpScale(
+  result: ServerGameOutcome,
+  config?: GameRuntimeConfig,
 ) {
-  const preferred = values.filter((index) => targetWin ? grossPayout(index) > wager : grossPayout(index) <= wager);
-  const candidates = preferred.length ? preferred : values;
-  return candidates[randomInt(candidates.length)];
+  if (!config || result.wager <= 0) return result;
+  const scale = (amount: number, ppm: number) =>
+    Math.floor(amount * ppm / 1_000_000);
+  if (result.outcome.normalPayout != null || result.outcome.crownPayout != null) {
+    const normalPayout = scale(
+      Number(result.outcome.normalPayout ?? 0),
+      config.payoutScalePpm,
+    );
+    const crownPayout = scale(
+      Number(result.outcome.crownPayout ?? 0),
+      config.sideBetPayoutScalePpm ?? config.payoutScalePpm,
+    );
+    result.payout = normalPayout + crownPayout;
+    result.commissionablePayout = result.payout;
+    result.outcome = {
+      ...result.outcome,
+      rawNormalPayout: result.outcome.normalPayout,
+      rawCrownPayout: result.outcome.crownPayout,
+      normalPayout,
+      crownPayout,
+      payoutScalePpm: config.payoutScalePpm,
+      sideBetPayoutScalePpm:
+        config.sideBetPayoutScalePpm ?? config.payoutScalePpm,
+      targetRtp: config.targetRtp,
+    };
+    return result;
+  }
+  const rawPayout = result.payout;
+  result.payout = scale(rawPayout, config.payoutScalePpm);
+  if (result.commissionablePayout != null) {
+    result.commissionablePayout = result.payout;
+  }
+  result.outcome = {
+    ...result.outcome,
+    rawPayout,
+    payoutScalePpm: config.payoutScalePpm,
+    targetRtp: config.targetRtp,
+  };
+  return result;
 }
 
 function canonicalBets(bets: Record<string, number>) {
@@ -1008,7 +1000,7 @@ function strongestTeenPattiLane(hands: ReturnType<typeof buildTeenPattiHands>) {
   return winner;
 }
 
-function teenPattiRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
+function teenPattiRound(input: Record<string, number>, config?: GameRuntimeConfig): ServerGameOutcome {
   const checked = checkedBets(input, ["0", "1", "2", "crown"], 500);
   if (["0", "1", "2"].filter((key) => checked.bets[key] > 0).length > 2) {
     throw new Error("You can bet on up to 2 hands.");
@@ -1030,26 +1022,25 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
         normalPayout: 0,
         crownPayout: 0,
         spectator: true,
-        targetWin: false,
+        selectionModel: "BET_INDEPENDENT_FIXED_RTP",
       },
       wager: 0,
       payout: 0,
     };
   }
-  let selectedHands: ReturnType<typeof buildTeenPattiHands> | null = null;
-  let selectedPayout = 0;
-  let selectedWinner = 0;
-  for (let attempt = 0; attempt < 512; attempt++) {
-    const hands = buildTeenPattiHands();
-    const winnerLane = strongestTeenPattiLane(hands);
-    const crownMultiplier = hands[winnerLane].multiplier;
-    const payout = teenPattiLanePayout(winnerLane, checked.bets[String(winnerLane)]) + checked.bets.crown * crownMultiplier;
-    selectedHands = hands;
-    selectedPayout = payout;
-    selectedWinner = winnerLane;
-    if (targetWin ? payout > checked.total : payout <= checked.total) break;
+  const selectedHands = buildTeenPattiHands();
+  const naturalWinner = strongestTeenPattiLane(selectedHands);
+  const laneWeights = config?.outcomeWeights?.length === 3
+    ? config.outcomeWeights
+    : [10_741, 10_001, 10_358];
+  const selectedWinner = chooseWeighted(
+    laneWeights.map((weight, lane) => ({ lane, weight })),
+  ).lane;
+  if (selectedWinner !== naturalWinner) {
+    [selectedHands[selectedWinner], selectedHands[naturalWinner]] =
+      [selectedHands[naturalWinner], selectedHands[selectedWinner]];
   }
-  const winner = selectedHands![selectedWinner];
+  const winner = selectedHands[selectedWinner];
   const normalPayout = teenPattiLanePayout(selectedWinner, checked.bets[String(selectedWinner)]);
   const crownPayout = checked.bets.crown * winner.multiplier;
   return {
@@ -1065,10 +1056,10 @@ function teenPattiRound(input: Record<string, number>, targetWin: boolean): Serv
       normalPayout,
       crownPayout,
       crownWon: crownPayout > 0,
-      targetWin,
+      selectionModel: "BET_INDEPENDENT_FIXED_RTP",
     },
     wager: checked.total,
-    payout: selectedPayout,
+    payout: normalPayout + crownPayout,
     // The supplied rules charge commission only on the normal-hand return;
     // Crown payout is deliberately outside this base.
     commissionablePayout: normalPayout,
@@ -1083,8 +1074,7 @@ function buildTeenPattiHands() {
   }));
 }
 
-function luck77Round(input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
-  void _targetWin;
+function luck77Round(input: Record<string, number>): ServerGameOutcome {
   const keys = ["watermelon", "seven", "plum"] as const;
   const checked = checkedBets(input, keys, 100);
   if (checked.total === 0) throw new Error("Choose a Luck77 house.");
@@ -1097,8 +1087,7 @@ function luck77Round(input: Record<string, number>, _targetWin: boolean): Server
   return { outcome: { winner: winningHouse, winningSegment: winner, multiplier, lucky77SpecialBonusEnabled: false }, wager: checked.total, payout: checked.bets[winningHouse] * multiplier };
 }
 
-function footballRound(input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
-  void _targetWin;
+function footballRound(input: Record<string, number>): ServerGameOutcome {
   const checked = checkedBets(input, footballMultipliers.map((_, index) => String(index)), 500);
   if (checked.total === 0) throw new Error("Choose a Bounty Football zone.");
   const winner = chooseWeighted(footballWeights.map((weight, index) => ({ index, weight }))).index;
@@ -1110,7 +1099,6 @@ function footballRound(input: Record<string, number>, _targetWin: boolean): Serv
     },
     wager: checked.total,
     payout: checked.bets[String(winner)] * multiplier,
-    commissionablePayout: 0,
   };
 }
 
@@ -1119,30 +1107,28 @@ function jungleMultiplier(symbol: JungleSymbol, matches: number) {
   return junglePaytable[symbol][matches];
 }
 
-function jungleRound(input: Record<string, number>, targetWin: boolean, config?: GameRuntimeConfig): ServerGameOutcome {
+function jungleRound(input: Record<string, number>, config?: GameRuntimeConfig): ServerGameOutcome {
   const denominations = config?.denominations ?? [150, 300, 750, 1500, 3000];
   const unit = denominations.reduce(greatestCommonDivisor);
   const checked = checkedBets(input, ["spin"], unit, config?.maximumBet ?? 3_000);
   if (checked.total === 0) throw new Error("Choose a spin amount.");
   if (checked.total < (config?.minimumBet ?? 150)) throw new Error(`The minimum spin is ${config?.minimumBet ?? 150} coins.`);
   if (checked.total % junglePaylines.length !== 0) throw new Error("The Jungle Hunt bet must cover all 15 lines.");
-  let result: ReturnType<typeof evaluateJungleGrid> | null = null;
-  for (let attempt = 0; attempt < 512; attempt++) {
-    const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () => jungleConfiguredReelSymbols[randomInt(jungleConfiguredReelSymbols.length)]));
-    const candidate = evaluateJungleGrid(grid, checked.total);
-    result = candidate;
-    const cappedPayout = Math.min(
-      candidate.payout,
-      Math.floor(checked.total * (config?.maximumPayoutMultiplier ?? 20)),
-    );
-    if (targetWin ? cappedPayout > checked.total : cappedPayout <= checked.total) break;
-  }
-  if (!result) throw new Error("The Jungle Hunt result could not be generated.");
+  const configuredSymbols = (config?.reelSymbols ?? jungleConfiguredReelSymbols)
+    .filter((symbol): symbol is JungleSymbol => jungleSymbols.includes(symbol as JungleSymbol));
+  const symbols = configuredSymbols.length ? configuredSymbols : [...jungleConfiguredReelSymbols];
+  const weights = config?.reelWeights?.length === symbols.length
+    ? config.reelWeights
+    : symbols.map(() => 1);
+  const grid = Array.from({ length: 3 }, () => Array.from({ length: 5 }, () =>
+    chooseWeighted(symbols.map((symbol, index) => ({ symbol, weight: weights[index] }))).symbol));
+  const result = evaluateJungleGrid(grid, checked.total);
   return {
     outcome: {
       grid: result.grid, winningLines: result.winningLines,
       lineWins: result.lineWins, jackpotResult: result.jackpotResult,
-      payoutBasis: "LINE_BET", paylines: 15, targetWin,
+      payoutBasis: "LINE_BET", paylines: 15,
+      selectionModel: "BET_INDEPENDENT_FIXED_RTP",
     },
     wager: checked.total,
     payout: result.payout,
@@ -1191,51 +1177,6 @@ function chooseWeighted<T extends { weight: number }>(values: readonly T[]) {
     if (ticket < cursor) return value;
   }
   return values[values.length - 1];
-}
-
-function threeCardValue(cards: number[]) {
-  const ranks = cards.map((card) => card % 13 + 2).sort((a, b) => a - b);
-  const suits = cards.map((card) => Math.floor(card / 13));
-  const flush = new Set(suits).size === 1;
-  const straight = (ranks[2] - ranks[0] === 2 && ranks[1] - ranks[0] === 1) ||
-    (ranks[0] === 2 && ranks[1] === 3 && ranks[2] === 14);
-  const counts = new Map<number, number>();
-  for (const rank of ranks) counts.set(rank, (counts.get(rank) ?? 0) + 1);
-  if (counts.size === 1) return { class: 6, score: 100_000 + ranks[0], label: "Three of a Kind" };
-  if (straight && flush) return { class: 5, score: 80_000 + ranks[2], label: "Straight Flush" };
-  if (straight) return { class: 4, score: 60_000 + ranks[2], label: "Straight" };
-  if (flush) return { class: 3, score: 40_000 + ranks[2] * 169 + ranks[1] * 13 + ranks[0], label: "Flush" };
-  const pair = [...counts.entries()].find(([, count]) => count === 2);
-  if (pair) {
-    const kicker = [...counts.entries()].find(([, count]) => count === 1)?.[0] ?? 0;
-    return { class: 2, score: 20_000 + pair[0] * 20 + kicker, label: "Pair" };
-  }
-  return { class: 1, score: ranks[2] * 169 + ranks[1] * 13 + ranks[0], label: "High Card" };
-}
-
-function threeCardRound(input: Record<string, number>, targetWin: boolean): ServerGameOutcome {
-  const checked = checkedBets(input, ["0", "1", "2"], 100, 500_000);
-  if (checked.total === 0) throw new Error("Choose a Three Card seat.");
-  if (Object.values(checked.bets).filter((amount) => amount > 0).length > 2) {
-    throw new Error("Choose no more than two Three Card seats.");
-  }
-  const deck = secureShuffle(Array.from({ length: 52 }, (_, index) => index));
-  const hands = [deck.slice(0, 3), deck.slice(3, 6), deck.slice(6, 9)].map((cards) => ({
-    cards,
-    ...threeCardValue(cards),
-  }));
-  let naturalWinner = 0;
-  for (let index = 1; index < hands.length; index++) {
-    if (hands[index].class > hands[naturalWinner].class ||
-        (hands[index].class === hands[naturalWinner].class && hands[index].score > hands[naturalWinner].score)) naturalWinner = index;
-  }
-  const winner = chooseIndexForTarget([0, 1, 2], (index) => checked.bets[String(index)] * 3, checked.total, targetWin);
-  if (winner !== naturalWinner) [hands[winner], hands[naturalWinner]] = [hands[naturalWinner], hands[winner]];
-  return {
-    outcome: { hands, winningSeat: winner + 1, multiplier: 3, label: `Seat ${winner + 1}`, targetWin },
-    wager: checked.total,
-    payout: checked.bets[String(winner)] * 3,
-  };
 }
 
 export function evaluateGreedyRound(
@@ -1290,22 +1231,20 @@ export function evaluateGreedyRound(
   };
 }
 
-function greedyRound(game: string, input: Record<string, number>, _targetWin: boolean): ServerGameOutcome {
-  void _targetWin;
-  // Exact Greedy draw weights and pool triggers are not established by the
-  // supplied evidence. Preserve the existing eight-way normal draw and keep
-  // SALAD/PIZZA settlement available for verified configured triggers, rather
-  // than inventing a probability or choosing a cheap result from user bets.
-  return evaluateGreedyRound(game as "greedy_lion" | "greedy_king", input, randomInt(8));
+function greedyRound(game: string, input: Record<string, number>, config?: GameRuntimeConfig): ServerGameOutcome {
+  const weights = config?.outcomeWeights?.length === 8
+    ? config.outcomeWeights
+    : [9000, 1000, 1800, 9000, 3000, 9000, 9000, 4500];
+  const winner = chooseWeighted(weights.map((weight, index) => ({ index, weight }))).index;
+  return evaluateGreedyRound(game as "greedy_lion" | "greedy_king", input, winner);
 }
 
-function createServerGameOutcome(game: string, bets: Record<string, number>, targetWin: boolean, config?: GameRuntimeConfig) {
-  if (game === teenPattiGame) return teenPattiRound(bets, targetWin);
-  if (game === "luck77") return luck77Round(bets, targetWin);
-  if (game === "bounty_football") return footballRound(bets, targetWin);
-  if (game === "jungle_hunt") return jungleRound(bets, targetWin, config);
-  if (game === "three_card") return threeCardRound(bets, targetWin);
-  if (goldenZoneGames.has(game)) return greedyRound(game, bets, targetWin);
+function createServerGameOutcome(game: string, bets: Record<string, number>, config?: GameRuntimeConfig) {
+  if (game === teenPattiGame) return teenPattiRound(bets, config);
+  if (game === "luck77") return luck77Round(bets);
+  if (game === "bounty_football") return footballRound(bets);
+  if (game === "jungle_hunt") return jungleRound(bets, config);
+  if (goldenZoneGames.has(game)) return greedyRound(game, bets, config);
   throw new Error("This game is unavailable.");
 }
 
@@ -1325,7 +1264,17 @@ function sharedGame(value: string): SharedRoundGame {
 async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig) {
   if (game === teenPattiGame) {
     const hands = buildTeenPattiHands();
-    const winnerLane = strongestTeenPattiLane(hands);
+    const naturalWinner = strongestTeenPattiLane(hands);
+    const weights = config.outcomeWeights?.length === 3
+      ? config.outcomeWeights
+      : [10_741, 10_001, 10_358];
+    const winnerLane = chooseWeighted(
+      weights.map((weight, lane) => ({ lane, weight })),
+    ).lane;
+    if (winnerLane !== naturalWinner) {
+      [hands[winnerLane], hands[naturalWinner]] =
+        [hands[naturalWinner], hands[winnerLane]];
+    }
     const winner = hands[winnerLane];
     return {
       hands,
@@ -1336,6 +1285,8 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
       normalMultipliers: teenPattiLaneMultiplierTenths.map((value) => value / 10),
       normalMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
       payoutMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
+      oddsFinalized: true,
+      selectionModel: "BET_INDEPENDENT_FIXED_RTP",
     };
   }
   if (game === "luck77") {
@@ -1347,14 +1298,15 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
       .map((value, index) => ({ value, index }))
       .filter((item) => item.value === winner);
     const winningSegment = possibleSegments[randomInt(possibleSegments.length)].index;
-    return { winner, winningSegment, multiplier: winner === "seven" ? 8 : 2, lucky77SpecialBonusEnabled: false };
+    return { winner, winningSegment, multiplier: winner === "seven" ? 8 : 2, lucky77SpecialBonusEnabled: false, oddsFinalized: true, selectionModel: "BET_INDEPENDENT_FIXED_RTP" };
   }
   if (game === "bounty_football") {
     const weights = config.outcomeWeights?.length === 10 ? config.outcomeWeights : [...footballWeights];
     const winner = chooseWeighted(weights.map((weight, index) => ({ index, weight }))).index;
     return {
       winner, multiplier: footballMultipliers[winner], probabilityWeight: weights[winner],
-      feeModel: "EMBEDDED_IN_ODDS", serviceMarginPercent: 2,
+      feeModel: "FIXED_RTP", serviceMarginPercent: 5,
+      oddsFinalized: true, selectionModel: "BET_INDEPENDENT_FIXED_RTP",
     };
   }
   const [poolRows] = await connection.query<(RowDataPacket & { amount: number })[]>(
@@ -1363,9 +1315,11 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
   );
   const poolAmount = Number(poolRows[0]?.amount ?? 0);
   const specialsEligible = poolAmount >= Number(config.poolMinimumForSpecial ?? 0);
-  const outcomes: { result: number | "salad" | "pizza"; weight: number }[] = Array.from(
-    { length: 8 },
-    (_, index) => ({ result: index, weight: 1 }),
+  const configuredWeights = config.outcomeWeights?.length === 8
+    ? config.outcomeWeights
+    : Array.from({ length: 8 }, () => 1);
+  const outcomes: { result: number | "salad" | "pizza"; weight: number }[] = configuredWeights.map(
+    (weight, index) => ({ result: index, weight }),
   );
   if (specialsEligible && Number(config.saladWeight ?? 0) > 0) {
     outcomes.push({ result: "salad", weight: Number(config.saladWeight) });
@@ -1385,97 +1339,14 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
       label: selected === "salad" ? "Salad" : "Pizza",
       specialResult: true,
       poolAmount,
+      oddsFinalized: true,
+      selectionModel: "BET_INDEPENDENT_FIXED_RTP",
     };
   }
   return {
     winner: selected, label: labels[selected], multiplier: multipliers[selected], specialResult: false,
-    poolAmount,
+    poolAmount, oddsFinalized: true, selectionModel: "BET_INDEPENDENT_FIXED_RTP",
   };
-}
-
-type SharedOutcomeCandidate = {
-  outcome: Record<string, unknown>;
-  weight: number;
-};
-
-async function sharedOutcomeCandidates(
-  connection: PoolConnection,
-  game: SharedRoundGame,
-  config: GameRuntimeConfig,
-): Promise<SharedOutcomeCandidate[]> {
-  if (game === teenPattiGame) {
-    return Array.from({ length: 96 }, () => {
-      const hands = buildTeenPattiHands();
-      const winnerLane = strongestTeenPattiLane(hands);
-      const winner = hands[winnerLane];
-      return {
-        weight: 1,
-        outcome: {
-          hands,
-          winnerLane,
-          winningCategory: winner.category,
-          winningLabel: winner.label,
-          crownMultiplier: winner.multiplier,
-          normalMultipliers: teenPattiLaneMultiplierTenths.map((value) => value / 10),
-          normalMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
-          payoutMultiplier: teenPattiLaneMultiplierTenths[winnerLane] / 10,
-        },
-      };
-    });
-  }
-  if (game === "luck77") {
-    const segments = ["seven", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum", "watermelon", "plum"] as const;
-    const choices = ["seven", "watermelon", "plum"] as const;
-    const weights = config.outcomeWeights?.length === 3 ? config.outcomeWeights : [1, 4, 4];
-    return choices.flatMap((winner, index) => {
-      const possibleSegments = segments
-        .map((value, segment) => ({ value, segment }))
-        .filter((item) => item.value === winner);
-      return weights[index] > 0 ? [{
-        weight: weights[index],
-        outcome: {
-          winner,
-          winningSegment: possibleSegments[randomInt(possibleSegments.length)].segment,
-          multiplier: winner === "seven" ? 8 : 2,
-          lucky77SpecialBonusEnabled: false,
-        },
-      }] : [];
-    });
-  }
-  if (game === "bounty_football") {
-    const weights = config.outcomeWeights?.length === 10 ? config.outcomeWeights : [...footballWeights];
-    return weights.flatMap((weight, winner) => weight > 0 ? [{
-      weight,
-      outcome: {
-        winner,
-        multiplier: footballMultipliers[winner],
-        probabilityWeight: weight,
-        feeModel: "EMBEDDED_IN_ODDS",
-        serviceMarginPercent: 2,
-      },
-    }] : []);
-  }
-  const [poolRows] = await connection.query<(RowDataPacket & { amount: number })[]>(
-    "SELECT amount FROM game_progressive_pools WHERE game_name = ? LIMIT 1 FOR UPDATE",
-    [game],
-  );
-  const poolAmount = Number(poolRows[0]?.amount ?? 0);
-  const lion = game === "greedy_lion";
-  const labels = lion
-    ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Meat"]
-    : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce"];
-  const multipliers = lion ? [5, 45, 25, 5, 15, 5, 5, 10] : [5, 10, 15, 25, 45, 5, 5, 5];
-  const candidates: SharedOutcomeCandidate[] = labels.map((label, winner) => ({
-    weight: 1,
-    outcome: { winner, label, multiplier: multipliers[winner], specialResult: false, poolAmount },
-  }));
-  if (poolAmount >= Number(config.poolMinimumForSpecial ?? 0) && Number(config.saladWeight ?? 0) > 0) {
-    candidates.push({ weight: Number(config.saladWeight), outcome: { winner: "salad", label: "Salad", specialResult: true, poolAmount } });
-  }
-  if (poolAmount >= Number(config.poolMinimumForSpecial ?? 0) && Number(config.pizzaWeight ?? 0) > 0) {
-    candidates.push({ weight: Number(config.pizzaWeight), outcome: { winner: "pizza", label: "Pizza", specialResult: true, poolAmount } });
-  }
-  return candidates;
 }
 
 async function finalizeSharedRoundOutcome(
@@ -1484,54 +1355,11 @@ async function finalizeSharedRoundOutcome(
   settings: MobileGamesConfig,
 ) {
   const existing = asObject(round.outcome_json);
-  if (existing.oddsFinalized === true) return existing;
-  const [betRows] = await connection.query<(RowDataPacket & { application_user_id: string; target_id: string; amount: number })[]>(
-    `SELECT application_user_id, target_id, SUM(amount) amount
-     FROM game_shared_bets WHERE round_id = ?
-     GROUP BY application_user_id, target_id`,
-    [round.id],
-  );
-  const playerBets = new Map<string, Record<string, number>>();
-  for (const bet of betRows) {
-    const current = playerBets.get(bet.application_user_id) ?? {};
-    current[String(bet.target_id)] = Number(bet.amount);
-    playerBets.set(bet.application_user_id, current);
-  }
-  if (!playerBets.size) return existing;
-  const config = settings.games[round.game_name];
-  const desiredWinnerCount = [...playerBets.keys()].filter(() => targetPlayerWin(config.targetWinRate)).length;
-  const candidates = await sharedOutcomeCandidates(connection, round.game_name, config);
-  if (!candidates.length) throw new Error("This game has no enabled result outcome.");
-  let bestDifference = Number.POSITIVE_INFINITY;
-  let finalists: (SharedOutcomeCandidate & { winnerCount: number })[] = [];
-  for (const candidate of candidates) {
-    let winnerCount = 0;
-    for (const bets of playerBets.values()) {
-      const result = enforcePayoutCap(
-        sharedRoundSettlement(round.game_name, bets, candidate.outcome, config),
-        config,
-      );
-      if (result.payout > result.wager) winnerCount += 1;
-    }
-    const difference = Math.abs(winnerCount - desiredWinnerCount);
-    if (difference < bestDifference) {
-      bestDifference = difference;
-      finalists = [{ ...candidate, winnerCount }];
-    } else if (difference === bestDifference) {
-      finalists.push({ ...candidate, winnerCount });
-    }
-  }
-  const selected = chooseWeighted(finalists);
-  const outcome = {
-    ...selected.outcome,
-    oddsFinalized: true,
-  };
-  await connection.execute(
-    "UPDATE game_shared_rounds SET outcome_json = ? WHERE id = ?",
-    [JSON.stringify(outcome), round.id],
-  );
-  round.outcome_json = outcome;
-  return outcome;
+  // The result is committed when the shared round is created. Never inspect
+  // wagers here and never alter an outcome after betting has begun.
+  void connection;
+  void settings;
+  return existing;
 }
 
 function greatestCommonDivisor(left: number, right: number): number {
@@ -1581,7 +1409,7 @@ function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, numbe
   if (game === "bounty_football") {
     const winner = Number(outcome.winner);
     const multiplier = Number(footballMultipliers[winner] ?? 0);
-    return { outcome, wager: checked.total, payout: Number(checked.bets[String(winner)] ?? 0) * multiplier, commissionablePayout: 0 };
+    return { outcome, wager: checked.total, payout: Number(checked.bets[String(winner)] ?? 0) * multiplier };
   }
   const configuredOutcome = outcome.specialResult === true
     ? String(outcome.winner) as "salad" | "pizza"
@@ -1660,11 +1488,14 @@ async function settleMaturedSharedRounds(connection: PoolConnection, game: Share
     );
     const bets = Object.fromEntries(betRows.map((row) => [String(row.target_id), Number(row.amount)]));
     const result = enforcePayoutCap(
-      sharedRoundSettlement(game, bets, finalizedOutcome, gameConfig),
+      applyFixedRtpScale(
+        sharedRoundSettlement(game, bets, finalizedOutcome, gameConfig),
+        gameConfig,
+      ),
       gameConfig,
     );
     const rules = gameEconomyRules(settings);
-    const deductionRate = game === "bounty_football" ? 0 : rules.winningsDeductionRate;
+    const deductionRate = rules.winningsDeductionRate;
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
     const deduction = grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
@@ -1684,7 +1515,7 @@ async function settleMaturedSharedRounds(connection: PoolConnection, game: Share
       await connection.execute(
         `INSERT INTO ledger_transactions
           (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
-         VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
+         VALUES (?, ?, ?, 'COIN', 'GAME_WIN', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
         [randomUUID(), code("GSC"), `SHARED_GAME:${round.id}:${pair.application_user_id}:CREDIT`, pair.application_user_id, payout, `${game} shared round payout`, JSON.stringify({ game, sharedRoundId: round.id, grossPayout, deduction, rate: deductionRate })],
       );
     }
@@ -1898,7 +1729,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     await connection.execute(
       `INSERT INTO ledger_transactions
         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
-       VALUES (?, ?, ?, 'COIN', 'GAME_DEBIT', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
+       VALUES (?, ?, ?, 'COIN', 'GAME_BET', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
       [ledgerId, code("GSB"), `SHARED_BET:${identity.userId}:${input.requestId}`, identity.userId, checked.total, `${game} shared bet`, JSON.stringify({ game, sharedRoundId: round.id, requestId: input.requestId, bets: checked.bets })],
     );
     const requestRowId = randomUUID();
@@ -1989,14 +1820,16 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
     const runtimeConfig = mobileGames.games[input.game as ConfigurableGameId];
     if (runtimeConfig && !runtimeConfig.enabled) throw new Error("This game is currently disabled.");
     if (runtimeConfig?.maintenance) throw new Error("This game is temporarily under maintenance.");
-    const targetWin = targetPlayerWin(targetWinRateForGame(mobileGames, input.game));
     const result = enforcePayoutCap(
-      createServerGameOutcome(input.game, bets, targetWin, runtimeConfig),
+      applyFixedRtpScale(
+        createServerGameOutcome(input.game, bets, runtimeConfig),
+        runtimeConfig,
+      ),
       runtimeConfig,
     );
     const grossPayout = result.payout;
     const commissionablePayout = result.commissionablePayout;
-    const effectiveDeductionRate = input.game === "bounty_football" ? 0 : rules.winningsDeductionRate;
+    const effectiveDeductionRate = rules.winningsDeductionRate;
     const winningsDeduction = commissionablePayout == null
       ? grossPayout > result.wager
         ? Math.floor(grossPayout * effectiveDeductionRate)
@@ -2022,7 +1855,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       await connection.execute(
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
-         VALUES (?, ?, ?, 'COIN', 'GAME_DEBIT', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
+         VALUES (?, ?, ?, 'COIN', 'GAME_BET', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
         [randomUUID(), code("GMD"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:DEBIT`, identity.userId, result.wager, `${input.game} round wager`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, bets })],
       );
     }
@@ -2030,7 +1863,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       await connection.execute(
         `INSERT INTO ledger_transactions
          (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason, metadata)
-         VALUES (?, ?, ?, 'COIN', 'GAME_CREDIT', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
+         VALUES (?, ?, ?, 'COIN', 'GAME_WIN', 'GAME', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, ?)`,
         [randomUUID(), code("GMC"), `GAME_ROUND:${identity.userId}:${input.clientRoundId}:CREDIT`, identity.userId, result.payout, `${input.game} round net payout`, JSON.stringify({ game: input.game, clientRoundId: input.clientRoundId, grossPayout, winningsDeduction, winningsDeductionRate: effectiveDeductionRate })],
       );
     }

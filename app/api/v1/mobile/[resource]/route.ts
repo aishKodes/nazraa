@@ -312,8 +312,11 @@ export async function POST(request: Request, context: { params: Promise<{ resour
       return NextResponse.json(await leaveLiveRoom(identity, parsed.roomCode));
     }
     if (resource === "room-presence") {
-      const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
-      return NextResponse.json(await refreshRoomPresence(identity, parsed.roomCode));
+      const parsed = z.object({
+        roomCode: z.string().trim().min(3).max(80),
+        mediaPublishing: z.boolean().default(false),
+      }).parse(body);
+      return NextResponse.json(await refreshRoomPresence(identity, parsed.roomCode, parsed.mediaPublishing));
     }
     if (resource === "room-admins") {
       if (!mobileCan(identity, "rooms.manage.own")) return errorResponse(new Error("Forbidden."), 403);

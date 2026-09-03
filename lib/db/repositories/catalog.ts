@@ -278,6 +278,11 @@ export async function saveRoomFeatureSettings(input: {
   pkModes: string[];
   presenceWarningLimit: number;
   presenceSuspensionLimit: number;
+  facePassivePlaybackMode: "rtc_fallback" | "live_streaming";
+  partyPassivePlaybackMode: "dynamic_rtc_fallback" | "live_streaming";
+  partyStreamingThreshold: number;
+  streamMixingEnabled: boolean;
+  mediaReconnectGraceSeconds: number;
 }) {
   await auditedMutation({
     scope: input.scope,
@@ -320,6 +325,11 @@ export async function saveRoomFeatureSettings(input: {
           pkModes: input.pkModes,
           presenceWarningLimit: input.presenceWarningLimit,
           presenceSuspensionLimit: input.presenceSuspensionLimit,
+          facePassivePlaybackMode: input.facePassivePlaybackMode,
+          partyPassivePlaybackMode: input.partyPassivePlaybackMode,
+          partyStreamingThreshold: input.partyStreamingThreshold,
+          streamMixingEnabled: input.streamMixingEnabled,
+          mediaReconnectGraceSeconds: input.mediaReconnectGraceSeconds,
         }), input.scope.account.id],
       );
     },

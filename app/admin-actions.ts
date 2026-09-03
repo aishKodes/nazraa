@@ -368,6 +368,11 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     pkModes: z.string().trim().min(1).max(200),
     presenceWarningLimit: z.coerce.number().int().min(3).max(30),
     presenceSuspensionLimit: z.coerce.number().int().min(1).max(20),
+    facePassivePlaybackMode: z.enum(["rtc_fallback", "live_streaming"]),
+    partyPassivePlaybackMode: z.enum(["dynamic_rtc_fallback", "live_streaming"]),
+    partyStreamingThreshold: z.coerce.number().int().min(2).max(200),
+    streamMixingEnabled: z.enum(["true", "false"]),
+    mediaReconnectGraceSeconds: z.coerce.number().int().min(5).max(60),
   }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the room interaction, Rocket, PK, and presence values."));
   const interactionRows = parsed.data.interactionRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -407,6 +412,11 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     pkModes,
     presenceWarningLimit: parsed.data.presenceWarningLimit,
     presenceSuspensionLimit: parsed.data.presenceSuspensionLimit,
+    facePassivePlaybackMode: parsed.data.facePassivePlaybackMode,
+    partyPassivePlaybackMode: parsed.data.partyPassivePlaybackMode,
+    partyStreamingThreshold: parsed.data.partyStreamingThreshold,
+    streamMixingEnabled: parsed.data.streamMixingEnabled === "true",
+    mediaReconnectGraceSeconds: parsed.data.mediaReconnectGraceSeconds,
   });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Room feature configuration published to the app."));
