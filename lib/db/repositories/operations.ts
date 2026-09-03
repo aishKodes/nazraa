@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
-import { scopeWhere } from "@/lib/db/repositories/accounts";
+import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PageRequest, PageResult, Scope } from "@/types/platform";
 import { can } from "@/lib/auth/permissions";
 import { finalizeWithdrawalDistribution } from "@/lib/db/repositories/withdrawal-economy";
@@ -273,7 +273,7 @@ export async function createTemporaryLiveRestriction(input: { scope: Scope; appl
   if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restrict Live access.");
   if (input.reason.trim().length < 5) throw new Error("Provide a specific moderation reason.");
   if (![30, 60, 120].includes(input.durationMinutes)) throw new Error("Choose a 30 minute, 1 hour, or 2 hour restriction.");
-  const permitted = scopeWhere(input.scope, "agency_account_id");
+  const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
       `SELECT id, full_name FROM application_users WHERE id = ? AND ${permitted.clause} LIMIT 1 FOR UPDATE`,
@@ -435,7 +435,7 @@ export async function listPresenceIncidents(scope: Scope) {
 export async function restoreLiveAccess(input: { scope: Scope; restrictionId: string; reason: string }) {
   if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restore Live access.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear review reason.");
-  const filter = scopeWhere(input.scope, "user.agency_account_id");
+  const filter = monitoringScopeWhere(input.scope, "user.agency_account_id");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
       id: string; application_user_id: string; full_name: string;

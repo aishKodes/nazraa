@@ -102,10 +102,10 @@ export async function searchCoinTransferRecipients(scope: Scope, search: string,
   const values: unknown[] = [...scoped.values];
   if (/^\d{1,12}$/.test(query)) {
     filters.push("(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)");
-    values.push(Number(query), query, `${query}%`);
+    values.push(Number(query), query, `%${query}%`);
   } else {
     filters.push("(u.full_name LIKE ? OR u.external_user_id LIKE ? OR u.whatsapp_e164 LIKE ?)");
-    values.push(`${query}%`, `${query}%`, `${query}%`);
+    values.push(`%${query}%`, `%${query}%`, `%${query}%`);
   }
   const [rows] = await db().query<UserRow[]>(
     `${userQuery(filters.join(" AND "))}

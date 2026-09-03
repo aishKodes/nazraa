@@ -297,9 +297,10 @@ async function main() {
     await mobileAdministration.reviewFaceVerification({ scope: await refresh(cm), requestId: currentFaceRequest, decision: "VERIFIED", reason: "QA idempotent approval retry" });
     const [faceRows] = await root.query<RowDataPacket[]>("SELECT status FROM face_verification_requests WHERE id IN (?, ?) ORDER BY created_at", [olderFaceRequest, currentFaceRequest]);
     assert.deepEqual(faceRows.map((entry) => entry.status), ["VERIFIED", "VERIFIED"]);
-    const visibleFaceRows = await mobileAdministration.listFaceVerificationRequests(await refresh(cm));
+    const visibleFaceRows = await mobileAdministration.listFaceVerificationRequests(await refresh(cm), 1, "verified");
     assert.equal(visibleFaceRows.filter((entry) => entry.userPublicId === ownUser.publicId).length, 1, "Panel shows only the current Face Verification row per user");
     assert.equal(visibleFaceRows.find((entry) => entry.userPublicId === ownUser.publicId)?.status, "VERIFIED");
+    assert.equal((await mobileAdministration.listFaceVerificationRequests(await refresh(cm))).some((entry) => entry.userPublicId === ownUser.publicId), false, "Verified users are separated from the review queue");
     const [verifiedFaceRows] = await root.query<RowDataPacket[]>("SELECT user.face_verification_status, user.agency_face_live_authorized, user.super_admin_face_live_authorized, host.verification_status FROM application_users user INNER JOIN host_profiles host ON host.application_user_id = user.id WHERE user.id = ?", [ownUser.id]);
     assert.deepEqual([verifiedFaceRows[0].face_verification_status, Number(verifiedFaceRows[0].agency_face_live_authorized), Number(verifiedFaceRows[0].super_admin_face_live_authorized), verifiedFaceRows[0].verification_status], ["VERIFIED", 1, 1, "VERIFIED"], "One review synchronizes every legacy verification field");
     await assert.rejects(mobileAdministration.reviewFaceVerification({ scope: agency, requestId: currentFaceRequest, decision: "REJECTED", reason: "QA Agency cannot override verification" }), /cannot review/);
@@ -331,7 +332,9 @@ async function main() {
     assert.equal(restrictedPolicy.face.allowed, false);
     assert.equal(restrictedPolicy.join.allowed, true);
     assert.ok((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId);
-    await assert.rejects(ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA reject other branch" }));
+    assert.equal((await monitoring.searchMonitoring(await refresh(cs), "Other Host")).some((entry) => entry.id === otherUser.id), true, "CS can find every Nazraa user without hierarchy clutter");
+    const crossBranchRestriction = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA CS platform support restriction" });
+    await ops.restoreLiveAccess({ scope: await refresh(cs), restrictionId: crossBranchRestriction.restrictionId, reason: "QA CS platform support restore" });
     await root.execute("UPDATE moderation_restrictions SET ends_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE id = ?", [temp.restrictionId]);
     assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
@@ -364,7 +367,7 @@ async function main() {
     for (const [sender, receiver] of [[master, cm], [cm, sa], [sa, branchAdmin], [branchAdmin, agency]]) await ops.allocatePlatformCoins({ scope: await refresh(sender), accountId: receiver.account.id, amount: 500, reason: "QA inventory distribution", idempotencyKey: randomUUID() });
     await assert.rejects(ops.allocatePlatformCoins({ scope: await refresh(cm), accountId: adminOther.account.id, amount: 1, reason: "QA reject foreign allocation", idempotencyKey: randomUUID() }));
     await ops.allocatePlatformCoins({ scope: master, accountId: seller.account.id, amount: 200, reason: "QA fund Coin Seller inventory", idempotencyKey: randomUUID() });
-    assert.equal((await directory.searchCoinTransferRecipients(await refresh(seller), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Coin Seller can find a user outside its branch");
+    assert.equal((await directory.searchCoinTransferRecipients(await refresh(seller), "Other")).some((user) => user.id === otherUser.id), true, "Coin Seller can find any active user by a partial name outside its branch");
     assert.equal((await directory.searchCoinTransferRecipients(await refresh(agency), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Every authorized coin transfer screen can identify a valid platform user");
     await ops.transferCoins({ scope: await refresh(seller), recipientId: otherUser.id, amount: 50, reason: "QA Coin Seller cross-platform sale", idempotencyKey: randomUUID() });
     const [sellerWallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [seller.account.id]);

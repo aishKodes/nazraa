@@ -213,8 +213,11 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
   });
 }
 
-export async function listFaceVerificationRequests(scope: Scope, page = 1) {
+export async function listFaceVerificationRequests(scope: Scope, page = 1, view: "review" | "verified" = "review") {
   const filter = scopeWhere(scope, "user.agency_account_id");
+  const statusFilter = view === "verified"
+    ? "user.face_verification_status = 'VERIFIED'"
+    : "user.face_verification_status <> 'VERIFIED'";
   const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; user_status: string; selfie_document_id: string | null; document_mime_type: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
     `SELECT request.id, request.public_id, user.public_id user_public_id, user.full_name, user.country_code,
             request.status, user.face_verification_status user_status, request.selfie_document_id,
@@ -223,7 +226,7 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1) {
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
      LEFT JOIN private_documents document ON document.id = request.selfie_document_id
-     WHERE ${filter.clause}
+     WHERE ${filter.clause} AND ${statusFilter}
        AND NOT EXISTS (
          SELECT 1 FROM face_verification_requests newer
          WHERE newer.application_user_id = request.application_user_id

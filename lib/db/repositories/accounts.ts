@@ -112,6 +112,17 @@ export function scopeWhere(scope: Scope, column: string) {
   return { clause: `${column} IN (${scope.accountIds.map(() => "?").join(",")})`, values: scope.accountIds };
 }
 
+/**
+ * Monitoring/CS is a platform support utility rather than a hierarchy editor.
+ * It may locate any user, while its permission set still limits it to temporary
+ * Live restrictions. Other operational roles remain constrained to their own
+ * hierarchy branch.
+ */
+export function monitoringScopeWhere(scope: Scope, column: string) {
+  if (scope.account.role === "MONITORING_CS") return { clause: "1=1", values: [] as string[] };
+  return scopeWhere(scope, column);
+}
+
 const codePrefix: Record<Role, string> = {
   MASTER: "MST",
   COUNTRY_MANAGER: "CM",

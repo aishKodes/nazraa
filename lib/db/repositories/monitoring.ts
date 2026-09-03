@@ -3,19 +3,19 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
-import { scopeWhere } from "@/lib/db/repositories/accounts";
+import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
 
 export async function searchMonitoring(scope: Scope, query: string) {
   const search = query.trim().slice(0, 120);
   if (!search) return [];
-  const scoped = scopeWhere(scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
   const exactId = /^\d{1,12}$/.test(search);
   const condition = exactId
     ? "(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)"
     : "(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ? OR u.email LIKE ?)";
-  const searchValues = exactId ? [Number(search), search, `${search}%`] : [`${search}%`, `${search}%`, `${search}%`];
+  const searchValues = exactId ? [Number(search), search, `%${search}%`] : [`%${search}%`, `%${search}%`, `%${search}%`];
   const [rows] = await db().query<(RowDataPacket & {
     id: string; public_id: number; external_user_id: string; full_name: string; whatsapp_e164: string | null;
     country_code: string | null; account_status: string; face_verification_status: string; is_host: number;
@@ -70,7 +70,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
 
 export async function listModerationHistory(scope: Scope, userIds: string[]) {
   if (!userIds.length) return [];
-  const scoped = scopeWhere(scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
   const placeholders = userIds.map(() => "?").join(",");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; application_user_id: string; full_name: string; restriction_type: string; reason: string;
