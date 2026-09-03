@@ -304,7 +304,8 @@ export async function updateAccountStatus(input: { scope: Scope; accountId: stri
     if (!target || target.status === "DISABLED" || target.id === input.scope.account.id || target.role === "MASTER" || !canManageRole(input.scope.account.role, target.role)) throw new Error("That account cannot be managed in your branch.");
     if (input.expectedStatus && target.status !== input.expectedStatus) throw new Error("This account status has already changed. Reload and try again.");
     if (target.status === input.nextStatus) throw new Error(`This account is already ${input.nextStatus.toLowerCase()}.`);
-    const [result] = await connection.execute("UPDATE platform_accounts SET status = ?, removed_at = IF(? = 'DISABLED', CURRENT_TIMESTAMP(3), NULL), removed_by = IF(? = 'DISABLED', ?, NULL) WHERE id = ? AND status = ?", [input.nextStatus, input.nextStatus, input.nextStatus, input.scope.account.id, target.id, target.status]);
+    const disabled = input.nextStatus === "DISABLED" ? 1 : 0;
+    const [result] = await connection.execute("UPDATE platform_accounts SET status = ?, removed_at = IF(?, CURRENT_TIMESTAMP(3), NULL), removed_by = IF(?, ?, NULL) WHERE id = ? AND status = ?", [input.nextStatus, disabled, disabled, input.scope.account.id, target.id, target.status]);
     if (!("affectedRows" in result) || result.affectedRows !== 1) throw new Error("Account status changed at the same time. Reload and try again.");
     await connection.execute("INSERT INTO account_status_history (id, account_id, from_status, to_status, reason, actor_account_id) VALUES (?, ?, ?, ?, ?, ?)", [randomUUID(), target.id, target.status, input.nextStatus, input.reason, input.scope.account.id]);
     await connection.execute(

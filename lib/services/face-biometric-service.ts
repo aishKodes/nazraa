@@ -17,8 +17,8 @@ export type FaceBiometricResult = {
 export class FaceBiometricService {
   async verify(input: { subjectId: string; consentVersion: string; frames: Buffer[] }): Promise<FaceBiometricResult> {
     if (input.frames.length !== 1) throw new Error("Capture one verification selfie.");
-    if (input.frames.some((frame) => frame.length < 1_000 || frame.length > 2 * 1024 * 1024)) {
-      throw new Error("The verification selfie must be a clear JPG under 2 MB.");
+    if (input.frames.some((frame) => frame.length < 1_000 || frame.length > 3 * 1024 * 1024)) {
+      throw new Error("The verification selfie must be a clear JPG under 3 MB.");
     }
     if (input.frames[0][0] !== 0xff || input.frames[0][1] !== 0xd8 || input.frames[0][2] !== 0xff) {
       throw new Error("The verification selfie must be a valid JPG image.");

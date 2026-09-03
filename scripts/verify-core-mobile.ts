@@ -72,6 +72,20 @@ async function main() {
     const stranger = await user("QA Other Branch");
     owner.agencyAccountId = qaAgency.accountId;
     await root.execute("UPDATE application_users SET agency_account_id = ? WHERE id = ?", [qaAgency.accountId, owner.userId]);
+    const existingAndroidSelfie = Buffer.alloc(2 * 1024 * 1024 + 1024, 0x51);
+    existingAndroidSelfie[0] = 0xff;
+    existingAndroidSelfie[1] = 0xd8;
+    existingAndroidSelfie[2] = 0xff;
+    const faceResult = await rooms.submitAutomaticFaceVerification(guest, {
+      framesBase64: [existingAndroidSelfie.toString("base64")],
+      consentVersion: "nazraa-biometric-1.0",
+    });
+    assert.equal(faceResult.status, "verified");
+    const [faceRows] = await root.query<RowDataPacket[]>("SELECT face_verification_status, agency_face_live_authorized, super_admin_face_live_authorized FROM application_users WHERE id = ?", [guest.userId]);
+    assert.equal(faceRows[0].face_verification_status, "VERIFIED");
+    assert.equal(Number(faceRows[0].agency_face_live_authorized), 1);
+    assert.equal(Number(faceRows[0].super_admin_face_live_authorized), 1);
+    console.log("PASS Face Verification upload: existing Android JPEG size, encrypted storage, canonical access flags");
     const png = await sharp({ create: { width: 100, height: 100, channels: 3, background: "#7450ad" } }).png().toBuffer();
     const photo = `data:image/png;base64,${png.toString("base64")}`;
     const image = await images.publicImageFromDataUrl(photo, 1_500_000, "QA photo");

@@ -23,9 +23,9 @@ function encryptionKey() {
   throw new Error("DOCUMENT_ENCRYPTION_KEY must contain at least 32 characters.");
 }
 
-export async function preparePrivateDocument(file: File, id: string, documentType: string): Promise<PreparedDocument | null> {
+export async function preparePrivateDocument(file: File, id: string, documentType: string, maxBytes = 2 * 1024 * 1024): Promise<PreparedDocument | null> {
   if (!file.size) return null;
-  if (file.size > 2 * 1024 * 1024) throw new Error(`${documentType} must be 2 MB or smaller.`);
+  if (file.size > maxBytes) throw new Error(`${documentType} must be ${Math.floor(maxBytes / (1024 * 1024))} MB or smaller.`);
   if (!allowedTypes.has(file.type)) throw new Error(`${documentType} must be a JPG, PNG, or PDF.`);
   const plain = Buffer.from(await file.arrayBuffer());
   const iv = randomBytes(12);

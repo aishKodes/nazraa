@@ -332,9 +332,9 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
     }
     await connection.execute(
       `UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL,
-         media_role = IF(? = 'PARTY', 'PASSIVE_LISTENER', 'PASSIVE_VIEWER'), media_publishing = FALSE
+         media_role = ?, media_publishing = FALSE
        WHERE room_id = ? AND application_user_id = ?`,
-      [room.room_type, room.id, identity.userId],
+      [room.room_type === "PARTY" ? "PASSIVE_LISTENER" : "PASSIVE_VIEWER", room.id, identity.userId],
     );
     if (["LIVE", "FACE"].includes(room.room_type)) {
       await connection.execute(
@@ -480,8 +480,8 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        FROM live_seat_requests request INNER JOIN application_users user ON user.id = request.application_user_id
        INNER JOIN live_room_members member ON member.room_id = request.room_id AND member.application_user_id = user.id
        WHERE request.room_id = ? AND member.left_at IS NULL AND request.requested_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
-         AND (request.application_user_id = ? OR (? IN ('OWNER','ADMIN') AND request.status = 'PENDING'))
-       ORDER BY request.requested_at LIMIT 50`, [rows[0].id, identity.userId, rows[0].room_role]);
+         AND (request.application_user_id = ? OR (? AND request.status = 'PENDING'))
+       ORDER BY request.requested_at LIMIT 50`, [rows[0].id, identity.userId, ["OWNER", "ADMIN"].includes(String(rows[0].room_role)) ? 1 : 0]);
     await connection.execute(
       `UPDATE live_cohost_requests SET status = 'EXPIRED', ended_at = CURRENT_TIMESTAMP(3)
        WHERE room_id = ? AND status = 'PENDING'
@@ -510,9 +510,9 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         AND member.application_user_id = request.requester_application_user_id
        WHERE request.room_id = ? AND member.left_at IS NULL
          AND (request.requester_application_user_id = ?
-           OR (? = 'OWNER' AND request.status = 'PENDING'))
+           OR (? AND request.status = 'PENDING'))
        ORDER BY request.requested_at LIMIT 25`,
-      [rows[0].id, identity.userId, rows[0].room_role],
+      [rows[0].id, identity.userId, rows[0].room_role === "OWNER" ? 1 : 0],
     );
     const [messages] = await connection.query<RowDataPacket[]>(
       `SELECT message.id, user.full_name, user.vip_tier, message.body, message.created_at FROM live_room_messages message
@@ -1462,7 +1462,7 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
   const result = await new FaceBiometricService().verify({ subjectId: identity.userId, consentVersion: input.consentVersion, frames });
   const requestId = randomUUID();
   const retained = result.retainReferenceImage
-    ? await preparePrivateDocument(new File([Uint8Array.from(frames[0])], "face-reference.jpg", { type: "image/jpeg" }), randomUUID(), "FACE_REFERENCE")
+    ? await preparePrivateDocument(new File([Uint8Array.from(frames[0])], "face-reference.jpg", { type: "image/jpeg" }), randomUUID(), "FACE_REFERENCE", 3 * 1024 * 1024)
     : null;
   await withTransaction(async (connection) => {
     const [currentUsers] = await connection.query<(RowDataPacket & { face_verification_status: string })[]>(
@@ -1493,13 +1493,14 @@ export async function submitAutomaticFaceVerification(identity: MobileIdentity, 
         result.embeddingReference, result.livenessScore, result.matchScore, duplicateUserId,
         effectiveStatus === "VERIFIED" ? new Date() : null, result.reason],
     );
+    const verified = effectiveStatus === "VERIFIED" ? 1 : 0;
     await connection.execute(
       `UPDATE application_users
        SET face_verification_status = ?,
-           agency_face_live_authorized = (? = 'VERIFIED'),
-           super_admin_face_live_authorized = (? = 'VERIFIED')
+           agency_face_live_authorized = ?,
+           super_admin_face_live_authorized = ?
        WHERE id = ?`,
-      [effectiveStatus, effectiveStatus, effectiveStatus, identity.userId],
+      [effectiveStatus, verified, verified, identity.userId],
     );
     await connection.execute(
       `INSERT INTO host_profiles (id, application_user_id, agency_account_id, status, verification_status)

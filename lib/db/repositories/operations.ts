@@ -507,7 +507,8 @@ export async function updateRiskFlag(input: { scope: Scope; flagId: string; stat
       `SELECT r.id, r.status FROM risk_flags r LEFT JOIN application_users u ON u.id = r.application_user_id WHERE r.id = ? AND ${filter.clause} FOR UPDATE`, [input.flagId, ...filter.values],
     );
     if (!rows[0]) throw new Error("Risk flag was not found in your scope.");
-    await connection.execute("UPDATE risk_flags SET status = ?, resolved_by = IF(? = 'RESOLVED', ?, resolved_by), resolved_at = IF(? = 'RESOLVED', CURRENT_TIMESTAMP(3), resolved_at) WHERE id = ?", [input.status, input.status, input.scope.account.id, input.status, input.flagId]);
+    const resolved = input.status === "RESOLVED" ? 1 : 0;
+    await connection.execute("UPDATE risk_flags SET status = ?, resolved_by = IF(?, ?, resolved_by), resolved_at = IF(?, CURRENT_TIMESTAMP(3), resolved_at) WHERE id = ?", [input.status, resolved, input.scope.account.id, resolved, input.flagId]);
     await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "risk.status_change", module: "risk", targetType: "risk_flag", targetId: input.flagId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
   });
 }
@@ -518,7 +519,7 @@ export async function updateRoomStatus(input: { scope: Scope; roomId: string; st
     const [rows] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(`SELECT id, status FROM live_rooms WHERE id = ? AND ${filter.clause} FOR UPDATE`, [input.roomId, ...filter.values]);
     if (!rows[0] || !["ACTIVE", "LOCKED"].includes(rows[0].status)) throw new Error("Only an active or locked room in your scope can be changed.");
     if (rows[0].status === input.status || (rows[0].status === "LOCKED" && input.status === "LOCKED")) throw new Error("Choose a valid new room status.");
-    await connection.execute("UPDATE live_rooms SET status = ?, ended_at = IF(? = 'ENDED', CURRENT_TIMESTAMP(3), ended_at) WHERE id = ?", [input.status, input.status, input.roomId]);
+    await connection.execute("UPDATE live_rooms SET status = ?, ended_at = IF(?, CURRENT_TIMESTAMP(3), ended_at) WHERE id = ?", [input.status, input.status === "ENDED" ? 1 : 0, input.roomId]);
     await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "room.status_change", module: "rooms", targetType: "live_room", targetId: input.roomId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
   });
 }

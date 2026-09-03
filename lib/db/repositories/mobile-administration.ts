@@ -299,21 +299,22 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
       && Boolean(request.agency_authorized) === (input.decision === "VERIFIED")
       && Boolean(request.super_admin_authorized) === (input.decision === "VERIFIED");
     if (alreadyCanonical) return;
+    const verified = input.decision === "VERIFIED" ? 1 : 0;
     await connection.execute(
       `UPDATE face_verification_requests
        SET status = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP(3), review_reason = ?,
-           verified_at = CASE WHEN ? = 'VERIFIED' THEN COALESCE(verified_at, CURRENT_TIMESTAMP(3)) ELSE NULL END
+           verified_at = CASE WHEN ? THEN COALESCE(verified_at, CURRENT_TIMESTAMP(3)) ELSE NULL END
        WHERE application_user_id = ?
          AND (id = ? OR status IN ('PENDING','PROCESSING','RETRY','DUPLICATE'))`,
-      [input.decision, input.scope.account.id, input.reason, input.decision, request.application_user_id, request.id],
+      [input.decision, input.scope.account.id, input.reason, verified, request.application_user_id, request.id],
     );
     await connection.execute(
       `UPDATE application_users
        SET face_verification_status = ?,
-           agency_face_live_authorized = (? = 'VERIFIED'),
-           super_admin_face_live_authorized = (? = 'VERIFIED')
+           agency_face_live_authorized = ?,
+           super_admin_face_live_authorized = ?
        WHERE id = ?`,
-      [input.decision, input.decision, input.decision, request.application_user_id],
+      [input.decision, verified, verified, request.application_user_id],
     );
     await connection.execute(
       `INSERT INTO host_profiles (id, application_user_id, agency_account_id, status, verification_status)

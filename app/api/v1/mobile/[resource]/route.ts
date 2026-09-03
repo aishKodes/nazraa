@@ -464,7 +464,9 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "face") {
       if (!mobileCan(identity, "face.submit")) return errorResponse(new Error("Forbidden."), 403);
       const parsed = z.object({
-        framesBase64: z.array(z.string().min(1000).max(3_000_000)).length(1),
+        // Keep the JSON request below Vercel's function payload ceiling while
+        // accepting the larger JPEGs produced by existing Android releases.
+        framesBase64: z.array(z.string().min(1000).max(4_000_000)).length(1),
         consentVersion: z.literal("nazraa-biometric-1.0"),
       }).parse(body);
       return NextResponse.json(await submitAutomaticFaceVerification(identity, parsed), { status: 201 });
