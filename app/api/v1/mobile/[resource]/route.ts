@@ -295,7 +295,7 @@ export async function POST(request: Request, context: { params: Promise<{ resour
     if (resource === "rooms") {
       const parsed = z.object({
         roomCode: z.string().trim().min(3).max(80),
-        kind: z.enum(["live", "party", "face"]),
+        kind: z.enum(["party", "face"]),
         title: z.string().trim().min(3).max(80),
         category: z.string().trim().min(2).max(40),
         language: z.string().trim().min(2).max(32),

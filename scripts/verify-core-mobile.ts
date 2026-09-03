@@ -175,7 +175,9 @@ async function main() {
     console.log("PASS seat permissions: Couple Seats stay empty; per-seat Lock/Unlock persists server-side; request/accept, assignment, rejection, leave and foreign denial");
 
     const videoRoomCode = `QAV${Date.now()}`;
-    await product.createRoom(owner, { roomCode: videoRoomCode, kind: "live", title: "QA Video Live", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    await product.createRoom(owner, { roomCode: videoRoomCode, kind: "legacy-client-value", title: "QA Legacy Normalization", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    const [normalizedRooms] = await root.query<RowDataPacket[]>("SELECT room_type FROM live_rooms WHERE room_code = ?", [videoRoomCode]);
+    assert.equal(normalizedRooms[0]?.room_type, "FACE", "a legacy non-party room must normalize to Face Live");
     await rooms.joinLiveRoom(guest, videoRoomCode);
     await rooms.requestLiveCoHost(guest, videoRoomCode);
     assert.equal((await rooms.refreshRoomPresence(owner, videoRoomCode)).coHostRequests?.[0]?.userId, guest.publicId);
@@ -189,7 +191,7 @@ async function main() {
     await rooms.requestLiveCoHost(guest, videoRoomCode);
     await rooms.respondLiveCoHost(owner, { roomCode: videoRoomCode, targetPublicId: guest.publicId, accept: false });
     assert.equal((await rooms.refreshRoomPresence(guest, videoRoomCode)).coHostRequests?.[0]?.status, "rejected");
-    console.log("PASS Video Live calls: server request, owner-only accept/reject, publish grant, disconnect and token denial");
+    console.log("PASS Face-only compatibility: legacy room values normalize to Face; audio request, owner accept/reject, publish grant, disconnect and token denial");
 
     const faceRoomCode = `QAF${Date.now()}`;
     await product.createRoom(owner, { roomCode: faceRoomCode, kind: "face", title: "QA Face Broadcast", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
@@ -385,7 +387,7 @@ async function main() {
     const targetLiveCode = `PKT${Date.now()}`;
     for (const [code, host, title] of [[sourceLiveCode, owner, "QA PK Source"], [targetLiveCode, roomAdmin, "QA PK Target"]] as const) {
       const roomId = randomUUID();
-      await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', ?, 'PK', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, code, host.userId, title]);
+      await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'FACE', ?, 'PK', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [roomId, code, host.userId, title]);
       await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [roomId, host.userId]);
     }
     const [pkRooms] = await root.query<RowDataPacket[]>("SELECT id, room_code FROM live_rooms WHERE room_code IN (?, ?)", [sourceLiveCode, targetLiveCode]);
@@ -675,9 +677,9 @@ async function main() {
     await root.execute("UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?", [qaAgency.accountId, rewardHost.userId]);
     const liveRewardCode = `LIVEREWARD${Date.now()}`;
     const liveRewardRoomId = randomUUID();
-    await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'LIVE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [liveRewardRoomId, liveRewardCode, rewardHost.userId]);
+    await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, 'FACE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')", [liveRewardRoomId, liveRewardCode, rewardHost.userId]);
     await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)", [liveRewardRoomId, rewardHost.userId]);
-    await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'LIVE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'LIVE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
+    await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET media_publishing = TRUE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 3600, valid_media_seconds = 3600 WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
     const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode, true);
     assert.ok(liveProgress.liveRewardProgress);

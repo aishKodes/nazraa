@@ -82,7 +82,7 @@ export async function authorizeRoomRtc(
       [room.room_id],
     );
     const passiveCount = Number(counts[0]?.passive_count ?? 0);
-    const streamingRequested = room.room_type === "FACE"
+    const streamingRequested = room.room_type !== "PARTY"
       ? features.facePassivePlaybackMode === "live_streaming"
       : room.room_type === "PARTY"
         ? features.partyPassivePlaybackMode === "live_streaming" && passiveCount >= threshold
@@ -96,14 +96,14 @@ export async function authorizeRoomRtc(
     const isAudioPublisher = role === "AUDIO_GUEST" || role === "RTC_SPEAKER";
     const mayPublish = isHost || isAudioPublisher;
     if (input.canPublish && (!mayPublish || Boolean(room.muted))) {
-      throw new Error(room.room_type === "FACE"
+      throw new Error(room.room_type !== "PARTY"
         ? "The host must accept your Audio Request before RTC microphone access."
         : "An active speaker role is required before RTC publishing.");
     }
     if (input.canPublish) {
       const policy = LiveAccessPolicyService.for(identity);
       const access = isHost
-        ? room.room_type === "FACE" ? policy.face : room.room_type === "LIVE" ? policy.video : policy.chat
+        ? room.room_type === "PARTY" ? policy.chat : policy.face
         : policy.chat;
       if (!access.allowed) throw new Error(access.reason);
     }
@@ -133,7 +133,7 @@ export async function authorizeRoomRtc(
       mediaRole: role,
       canPublish: input.canPublish,
       publishMode: input.canPublish
-        ? room.room_type === "FACE" && role === "AUDIO_GUEST" ? "audio_only" : "video_audio"
+        ? room.room_type !== "PARTY" && role === "AUDIO_GUEST" ? "audio_only" : "video_audio"
         : "none",
       streamId,
       ttlSeconds,

@@ -163,7 +163,7 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   const featureEnabled = enabled(features.streamMixingEnabled);
   const playbackRequested = room.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming"
-    : room.room_type === "FACE" && features.facePassivePlaybackMode === "live_streaming";
+    : features.facePassivePlaybackMode === "live_streaming";
   const pkCompositeEnabled = !disabled(features.pkCompositeStreamingEnabled);
   const [members] = await db().query<(RowDataPacket & {
     public_id: number;
@@ -189,7 +189,7 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   const localPublishers = members.filter((member) =>
     ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(member.media_role) && Boolean(member.media_publishing),
   );
-  const [pkPublishers] = room.room_type === "FACE" && pkCompositeEnabled
+  const [pkPublishers] = room.room_type !== "PARTY" && pkCompositeEnabled
     ? await db().query<(RowDataPacket & {
         public_id: number;
         room_role: string;

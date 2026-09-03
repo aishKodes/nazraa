@@ -651,9 +651,11 @@ export async function submitDiamondConversionRule(formData: FormData) {
 
 export async function submitHostRewardRules(formData: FormData) {
   const scope = await requirePermission("settings.manage");
-  const parsed = z.object({ live: z.coerce.number().int().nonnegative(), face: z.coerce.number().int().nonnegative(), party: z.coerce.number().int().nonnegative(), minimumEligibleSeconds: z.coerce.number().int().min(1).max(3600), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the three hourly rates, eligibility seconds, and reason."));
-  await saveHostRewardRules({ scope, ...parsed.data });
+  const parsed = z.object({ face: z.coerce.number().int().nonnegative(), party: z.coerce.number().int().nonnegative(), minimumEligibleSeconds: z.coerce.number().int().min(1).max(3600), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the hourly rates, eligibility seconds, and reason."));
+  // Keep the retired LIVE database rule synchronized only for old sessions
+  // that may still reference it; the panel and mobile API expose Face only.
+  await saveHostRewardRules({ scope, ...parsed.data, live: parsed.data.face });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Host reward rules saved and audited."));
 }

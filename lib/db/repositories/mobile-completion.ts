@@ -51,7 +51,7 @@ function roomMediaDelivery(
   const isAudience = row.room_role === "AUDIENCE";
   const requested = row.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming" && participantCount >= threshold
-    : row.room_type === "FACE" && features.facePassivePlaybackMode === "live_streaming";
+    : features.facePassivePlaybackMode === "live_streaming";
   const template = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
   const mixerPlaybackUrl = typeof row.mixer_playback_url === "string" ? row.mixer_playback_url.trim() : "";
   const playbackUrl = mixerPlaybackUrl || (template.length > 0 ? template.replaceAll("{streamId}", encodeURIComponent(`nazraa_${String(row.id).replaceAll("-", "")}`)) : "");
@@ -720,7 +720,7 @@ export async function requestLiveCoHost(identity: MobileIdentity, roomCode: stri
       [identity.userId, roomCode],
     );
     const room = rows[0];
-    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("Join an active Video Live room first.");
+    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("Join an active Face Live first.");
     if (room.host_application_user_id === identity.userId || room.room_role === "OWNER") throw new Error("The room owner is already live.");
     if (!Boolean(room.audio_join_requests_enabled)) throw new Error("The host is not accepting audio join requests right now.");
     if (room.room_role === "SPEAKER") return { status: "accepted" };
@@ -732,12 +732,10 @@ export async function requestLiveCoHost(identity: MobileIdentity, roomCode: stri
          responded_at = NULL, responder_application_user_id = NULL, ended_at = NULL`,
       [randomUUID(), room.id, identity.userId],
     );
-    if (room.room_type === "FACE") {
-      await connection.execute(
-        "UPDATE live_room_members SET media_role = 'AUDIO_REQUESTED', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE' AND left_at IS NULL",
-        [room.id, identity.userId],
-      );
-    }
+    await connection.execute(
+      "UPDATE live_room_members SET media_role = 'AUDIO_REQUESTED', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE' AND left_at IS NULL",
+      [room.id, identity.userId],
+    );
     return { status: "pending" };
   });
 }
@@ -751,9 +749,9 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
       [input.roomCode],
     );
     const room = rooms[0];
-    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("This Video Live room is no longer active.");
+    if (!room || !["LIVE", "FACE"].includes(room.room_type)) throw new Error("This Face Live is no longer active.");
     if (room.host_application_user_id !== identity.userId) {
-      throw new Error(room.room_type === "FACE" ? "Only the room owner can accept audio requests." : "Only the room owner can accept call requests.");
+      throw new Error("Only the room owner can accept audio requests.");
     }
     const [targets] = await connection.query<(RowDataPacket & { id: string; face_verification_status: string; request_status: string; host_access_override: number })[]>(
       `SELECT user.id, user.face_verification_status, request.status request_status,
@@ -769,12 +767,9 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     );
     const target = targets[0];
     if (!target || target.request_status !== "PENDING") {
-      throw new Error(room.room_type === "FACE" ? "This audio request is no longer pending." : "This call request is no longer pending.");
+      throw new Error("This audio request is no longer pending.");
     }
-    if (input.accept && room.room_type === "LIVE" && target.face_verification_status !== "VERIFIED" && !Boolean(target.host_access_override)) {
-      throw new Error("The viewer must complete Face Verification before joining this Video Live.");
-    }
-    if (input.accept && room.room_type === "FACE") {
+    if (input.accept) {
       const maxAudioGuests = Math.max(1, Math.min(12, Number(jsonObject(room.room_features_json).maxFaceAudioGuests ?? 4)));
       const [speakerRows] = await connection.query<(RowDataPacket & { count: number })[]>(
         "SELECT COUNT(*) count FROM live_room_members WHERE room_id = ? AND room_role = 'SPEAKER' AND left_at IS NULL",
@@ -792,20 +787,15 @@ export async function respondLiveCoHost(identity: MobileIdentity, input: { roomC
     );
     await connection.execute(
       `UPDATE live_room_members SET room_role = ?,
-         media_role = CASE
-           WHEN ? = 'FACE' AND ? THEN 'AUDIO_GUEST'
-           WHEN ? = 'FACE' THEN 'PASSIVE_VIEWER'
-           WHEN ? THEN 'AUDIO_GUEST'
-           ELSE 'PASSIVE_VIEWER'
-         END,
+         media_role = CASE WHEN ? THEN 'AUDIO_GUEST' ELSE 'PASSIVE_VIEWER' END,
          muted = ?, muted_by_staff = FALSE, media_publishing = FALSE
        WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
-      [input.accept ? "SPEAKER" : "AUDIENCE", room.room_type, input.accept,
-        room.room_type, input.accept, !input.accept, room.id, target.id],
+      [input.accept ? "SPEAKER" : "AUDIENCE", input.accept,
+        !input.accept, room.id, target.id],
     );
     return {
       status: input.accept ? "accepted" : "rejected",
-      mediaMode: room.room_type === "FACE" ? "audio_only" : "camera_and_microphone",
+      mediaMode: "audio_only",
     };
   });
 }
@@ -875,16 +865,12 @@ export async function roomPublishingDecision(identity: MobileIdentity, roomCode:
       [room.id, identity.userId],
     );
     if (!members[0] || members[0].room_role !== "SPEAKER" || Boolean(members[0].muted)) {
-      throw new Error(
-        room.room_type === "FACE"
-          ? "The host must accept your audio request before microphone access."
-          : "The host must accept your call request before camera or microphone access.",
-      );
+      throw new Error("The host must accept your audio request before microphone access.");
     }
     if (!policy.chat.allowed) throw new Error(policy.chat.reason);
     return policy.chat;
   }
-  const access = room.room_type === "FACE" ? policy.face : policy.video;
+  const access = policy.face;
   if (!access.allowed) throw new Error(access.reason);
   return access;
 }
@@ -1054,7 +1040,7 @@ export async function createPkSession(identity: MobileIdentity, input: { sourceR
     if (!roomsPair.source_pk_enabled || !roomsPair.target_pk_enabled) throw new Error("PK requests are disabled in one of these rooms.");
     if (roomsPair.source_id === roomsPair.target_id) throw new Error("Choose another Live room.");
     if (!["LIVE", "FACE"].includes(roomsPair.source_type) || !["LIVE", "FACE"].includes(roomsPair.target_type)) {
-      throw new Error("PK is available only between Video Live or Face Live rooms.");
+      throw new Error("PK is available only between Face Live rooms.");
     }
     const id = randomUUID();
     await connection.execute(

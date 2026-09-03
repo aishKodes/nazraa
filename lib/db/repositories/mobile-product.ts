@@ -159,7 +159,9 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
   return {
     id: String(row.room_code), title: String(row.title), category: String(row.category),
     language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
-    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : row.room_type === "FACE" ? "face" : "live", isActive: true,
+    // LIVE is a retired legacy database value. Older records are exposed as
+    // Face Live so no client can recover the removed video-call room type.
+    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : "face", isActive: true,
     photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
     faceBackgroundUrl: row.face_background_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.face_background_asset_id}`,
     passwordRequired: row.password_hash != null,
@@ -581,9 +583,9 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
 }
 
 export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; themeEnabled: boolean; countryCode?: string; photoDataUrl?: string; faceBackgroundDataUrl?: string; password?: string }) {
-  const roomType = input.kind === "party" ? "PARTY" : input.kind === "face" ? "FACE" : "LIVE";
+  const roomType = input.kind === "party" ? "PARTY" : "FACE";
   const policy = LiveAccessPolicyService.for(identity);
-  const access = roomType === "PARTY" ? policy.party : roomType === "FACE" ? policy.face : policy.video;
+  const access = roomType === "PARTY" ? policy.party : policy.face;
   if (!access.allowed) throw new Error(access.reason);
   const roomId = randomUUID();
   const photo = input.photoDataUrl
