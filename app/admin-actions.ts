@@ -371,12 +371,14 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     facePassivePlaybackMode: z.enum(["rtc_fallback", "live_streaming"]),
     partyPassivePlaybackMode: z.enum(["dynamic_rtc_fallback", "live_streaming"]),
     partyStreamingThreshold: z.coerce.number().int().min(2).max(200),
+    paidMediaRoutingEnabled: z.enum(["true", "false"]),
     streamMixingEnabled: z.enum(["true", "false"]),
     pkCompositeStreamingEnabled: z.enum(["true", "false"]),
+    emergencyRtcFallbackEnabled: z.enum(["true", "false"]),
     mediaReconnectGraceSeconds: z.coerce.number().int().min(5).max(300),
     passiveBackgroundGraceSeconds: z.coerce.number().int().min(5).max(60),
     maxFaceAudioGuests: z.coerce.number().int().min(1).max(12),
-    rtcPassiveFallbackCeiling: z.coerce.number().int().min(1).max(100),
+    rtcPassiveFallbackCeiling: z.coerce.number().int().min(1).max(20),
   }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the room interaction, Rocket, PK, and presence values."));
   const interactionRows = parsed.data.interactionRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -407,6 +409,12 @@ export async function submitRoomFeatureSettings(formData: FormData) {
   }
   if (interactionAsset && !parsed.data.interactionAssetKey) redirect(destination("/dashboard/settings", "error", "Enter the interaction key that should receive the uploaded animation."));
   if (parsed.data.interactionAssetKey && !normalizedInteractions.some((item) => item.key === parsed.data.interactionAssetKey)) redirect(destination("/dashboard/settings", "error", "The animation key must match an interaction row."));
+  if (parsed.data.paidMediaRoutingEnabled === "true") {
+    if (process.env.ZEGO_STREAM_MIXING_READY !== "true") redirect(destination("/dashboard/settings", "error", "Paid media routing cannot start until the ZEGO deployment activation gate is ready."));
+    if (parsed.data.streamMixingEnabled !== "true" || parsed.data.facePassivePlaybackMode !== "live_streaming" || parsed.data.partyPassivePlaybackMode !== "live_streaming") {
+      redirect(destination("/dashboard/settings", "error", "Paid routing requires Face streaming, Party mixed streaming, and ZEGO stream mixing to be enabled together."));
+    }
+  }
   await saveRoomFeatureSettings({
     scope,
     interactions: normalizedInteractions,
@@ -419,8 +427,10 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     facePassivePlaybackMode: parsed.data.facePassivePlaybackMode,
     partyPassivePlaybackMode: parsed.data.partyPassivePlaybackMode,
     partyStreamingThreshold: parsed.data.partyStreamingThreshold,
+    paidMediaRoutingEnabled: parsed.data.paidMediaRoutingEnabled === "true",
     streamMixingEnabled: parsed.data.streamMixingEnabled === "true",
     pkCompositeStreamingEnabled: parsed.data.pkCompositeStreamingEnabled === "true",
+    emergencyRtcFallbackEnabled: parsed.data.emergencyRtcFallbackEnabled === "true",
     mediaReconnectGraceSeconds: parsed.data.mediaReconnectGraceSeconds,
     passiveBackgroundGraceSeconds: parsed.data.passiveBackgroundGraceSeconds,
     maxFaceAudioGuests: parsed.data.maxFaceAudioGuests,

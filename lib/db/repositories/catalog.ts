@@ -281,8 +281,10 @@ export async function saveRoomFeatureSettings(input: {
   facePassivePlaybackMode: "rtc_fallback" | "live_streaming";
   partyPassivePlaybackMode: "dynamic_rtc_fallback" | "live_streaming";
   partyStreamingThreshold: number;
+  paidMediaRoutingEnabled: boolean;
   streamMixingEnabled: boolean;
   pkCompositeStreamingEnabled: boolean;
+  emergencyRtcFallbackEnabled: boolean;
   mediaReconnectGraceSeconds: number;
   passiveBackgroundGraceSeconds: number;
   maxFaceAudioGuests: number;
@@ -332,8 +334,10 @@ export async function saveRoomFeatureSettings(input: {
           facePassivePlaybackMode: input.facePassivePlaybackMode,
           partyPassivePlaybackMode: input.partyPassivePlaybackMode,
           partyStreamingThreshold: input.partyStreamingThreshold,
+          paidMediaRoutingEnabled: input.paidMediaRoutingEnabled,
           streamMixingEnabled: input.streamMixingEnabled,
           pkCompositeStreamingEnabled: input.pkCompositeStreamingEnabled,
+          emergencyRtcFallbackEnabled: input.emergencyRtcFallbackEnabled,
           mediaReconnectGraceSeconds: input.mediaReconnectGraceSeconds,
           passiveBackgroundGraceSeconds: input.passiveBackgroundGraceSeconds,
           maxFaceAudioGuests: input.maxFaceAudioGuests,

@@ -5,7 +5,7 @@ import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
-import { listPresenceIncidents, listRoomsPage } from "@/lib/db/repositories/operations";
+import { listMediaCostTelemetry, listPresenceIncidents, listRoomsPage } from "@/lib/db/repositories/operations";
 import { formatDate, formatNumber } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
@@ -13,13 +13,32 @@ export const dynamic = "force-dynamic";
 export default async function RoomsPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string; page?: string }> }) {
   const scope = await requirePermission("rooms.read");
   const { error, success, page: rawPage } = await searchParams;
-  const [result, incidents] = await Promise.all([listRoomsPage(scope, { page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1) }), listPresenceIncidents(scope)]);
+  const mayViewCostTelemetry = can(scope.account.role, "settings.manage");
+  const [result, incidents, mediaCost] = await Promise.all([
+    listRoomsPage(scope, { page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1) }),
+    listPresenceIncidents(scope),
+    mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [] }),
+  ]);
   const rooms = result.items;
   const mayRestrict = can(scope.account.role, "rooms.restrict");
   const mayManage = can(scope.account.role, "rooms.manage");
   return <>
     <SectionHeading title="Live rooms" description="Live and Party status in your branch. Every moderation action requires a reason and is audited." />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
+    {mayViewCostTelemetry && mediaCost.alerts.length ? <Notice type="error">Media cost warning: Face passive RTC exceeded its configured ceiling in {mediaCost.alerts.length} room{mediaCost.alerts.length === 1 ? "" : "s"}. Check the rooms and ZEGO streaming output immediately.</Notice> : null}
+    {mayViewCostTelemetry ? <Card>
+      <div className="card-title"><div><h2>ZEGO daily media telemetry</h2><p>Server-observed minutes. Face passive RTC should remain zero after paid streaming routing is activated.</p></div></div>
+      {mediaCost.days.length ? <div className="table-scroll"><table><thead><tr><th>Date</th><th>RTC voice</th><th>RTC video</th><th>Face stream</th><th>Party stream</th><th>Mixer</th><th>Passive RTC current/peak</th><th>Peak concurrency</th></tr></thead><tbody>{mediaCost.days.map((day) => <tr key={day.date}>
+        <td data-label="Date">{String(day.date).slice(0, 10)}</td>
+        <td data-label="RTC voice">{formatNumber(Math.round(day.rtcVoiceSeconds / 60))} min</td>
+        <td data-label="RTC video">{formatNumber(Math.round(day.rtcVideoSeconds / 60))} min</td>
+        <td data-label="Face stream">{formatNumber(Math.round(day.facePassiveStreamSeconds / 60))} min</td>
+        <td data-label="Party stream">{formatNumber(Math.round(day.partyPassiveStreamSeconds / 60))} min</td>
+        <td data-label="Mixer">{formatNumber(Math.round(day.mixerCreationSeconds / 60))} min</td>
+        <td data-label="Passive RTC"><b>{day.rtcPassiveViewerCount}/{day.rtcPassiveViewerPeak}</b><small className="block">Face {day.faceRtcPassiveViewerCount}/{day.faceRtcPassiveViewerPeak}</small></td>
+        <td data-label="Peak concurrency">{formatNumber(day.peakConcurrency)}</td>
+      </tr>)}</tbody></table></div> : <EmptyState title="No media telemetry yet" detail="Daily values appear after the next room media heartbeat." />}
+    </Card> : null}
     <Card>{rooms.length ? <div className="table-scroll"><table><thead><tr><th>Room</th><th>Host</th><th>Type</th><th>Tools</th><th>Audience</th><th>Started</th><th>Status</th>{mayRestrict || mayManage ? <th>Moderation</th> : null}</tr></thead><tbody>{rooms.map((room) => <tr key={room.id}>
       <td data-label="Room" className="mono">{room.roomCode}</td>
       <td data-label="Host"><b>{room.hostName}</b><small className="mono block">{room.hostExternalId}</small></td>

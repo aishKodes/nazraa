@@ -58,7 +58,7 @@ export const dynamic = "force-dynamic";
 
 function scheduleMixerSync(roomCode: string) {
   after(async () => {
-    try { await syncZegoRoomMixer(roomCode); } catch { /* RTC fallback remains authoritative. */ }
+    try { await syncZegoRoomMixer(roomCode); } catch { /* Strict paid-routing viewers remain pending; room APIs stay available. */ }
   });
 }
 

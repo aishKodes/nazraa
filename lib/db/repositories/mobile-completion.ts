@@ -10,6 +10,7 @@ import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { FaceBiometricService } from "@/lib/services/face-biometric-service";
 import { preparePrivateDocument } from "@/lib/security/documents";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
+import { recordMediaUsageHeartbeat, type LiveMediaUsageType } from "@/lib/services/media-cost-telemetry";
 import { agencyApplicationsForUser, agencyOwnerSnapshot, discoveryPosts, privateMessagingForUser } from "@/lib/db/repositories/mobile-social";
 import {
   finalizePkSession,
@@ -31,55 +32,69 @@ function jsonObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function settingEnabled(value: unknown) {
+  return value === true || value === 1 || value === "1" || value === "true";
+}
+
 function roomMediaDelivery(
   row: RowDataPacket,
-  participantCount: number,
+  passiveCount: number,
 ) {
   const features = jsonObject(row.room_features_json);
   const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
   const reconnectGraceSeconds = Math.max(5, Math.min(300, Number(features.mediaReconnectGraceSeconds ?? 180)));
   const passiveBackgroundGraceSeconds = Math.max(5, Math.min(60, Number(features.passiveBackgroundGraceSeconds ?? 15)));
   const maxFaceAudioGuests = Math.max(1, Math.min(12, Number(features.maxFaceAudioGuests ?? 4)));
-  const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 20)));
+  const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
   // The panel flag is an operator preference. The deployment gate proves that
   // the ZEGO project, mixer output and signed playback endpoint are actually
   // ready. Never move an audience member away from the working RTC fallback
   // merely because a panel toggle was enabled early.
-  const mixingConfigured = features.streamMixingEnabled === true;
+  const mixingConfigured = settingEnabled(features.streamMixingEnabled);
   const mixingReady = process.env.ZEGO_STREAM_MIXING_READY === "true";
   const mixingEnabled = mixingConfigured && mixingReady;
+  const paidMediaRoutingEnabled = settingEnabled(features.paidMediaRoutingEnabled) && mixingReady;
+  const emergencyRtcFallbackEnabled = settingEnabled(features.emergencyRtcFallbackEnabled);
   const isAudience = row.room_role === "AUDIENCE";
   const requested = row.room_type === "PARTY"
-    ? features.partyPassivePlaybackMode === "live_streaming" && participantCount >= threshold
+    ? features.partyPassivePlaybackMode === "live_streaming" && passiveCount >= threshold
     : features.facePassivePlaybackMode === "live_streaming";
   const template = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
   const mixerPlaybackUrl = typeof row.mixer_playback_url === "string" ? row.mixer_playback_url.trim() : "";
   const playbackUrl = mixerPlaybackUrl || (template.length > 0 ? template.replaceAll("{streamId}", encodeURIComponent(`nazraa_${String(row.id).replaceAll("-", "")}`)) : "");
+  const streamId = typeof row.mixer_output_stream_id === "string" && row.mixer_output_stream_id.trim()
+    ? row.mixer_output_stream_id.trim()
+    : `nazraa_${String(row.id).replaceAll("-", "")}`;
   const mixerActive = row.mixer_status === "ACTIVE";
-  const enabled = isAudience && requested && mixingEnabled && mixerActive && playbackUrl.length > 0;
-  const streamId = `nazraa_${String(row.id).replaceAll("-", "")}`;
+  const streamingActive = isAudience && requested && mixingEnabled && mixerActive && streamId.length > 0;
+  const strictStreamingPending = isAudience && requested && paidMediaRoutingEnabled && !streamingActive && !emergencyRtcFallbackEnabled;
+  const mode: "liveStreaming" | "streamingPending" | "rtcFallback" = streamingActive
+    ? "liveStreaming"
+    : strictStreamingPending ? "streamingPending" : "rtcFallback";
   return {
-    mode: enabled ? "liveStreaming" : "rtcFallback",
-    playbackUrl: enabled ? playbackUrl : null,
-    streamId: enabled ? streamId : null,
+    mode,
+    playbackUrl: streamingActive && playbackUrl.length > 0 ? playbackUrl : null,
+    streamId: streamingActive ? streamId : null,
     streamMixingEnabled: mixingEnabled,
+    paidMediaRoutingEnabled,
+    emergencyRtcFallbackEnabled,
     partyStreamingThreshold: threshold,
     reconnectGraceSeconds,
     passiveBackgroundGraceSeconds,
     maxFaceAudioGuests,
     rtcPassiveFallbackCeiling,
-    fallbackReason: enabled
+    fallbackReason: streamingActive
       ? null
+      : strictStreamingPending
+        ? "The passive public stream is starting. RTC fallback is disabled to protect media cost."
       : !requested
         ? "Passive streaming is disabled by server configuration."
         : !mixingConfigured
           ? "ZEGO stream mixing is not active."
           : !mixingReady
             ? "ZEGO stream mixing is awaiting deployment activation."
-          : playbackUrl.length === 0
-            ? "ZEGO signed playback URL is not configured."
           : !mixerActive
-            ? "The passive stream is starting; RTC fallback remains active."
+            ? "The passive stream is starting."
             : "Active speakers and hosts remain on RTC.",
   };
 }
@@ -403,6 +418,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 180) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
               mixer.status mixer_status, mixer.playback_url mixer_playback_url,
+              mixer.output_stream_id mixer_output_stream_id,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
                 WHERE wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = member.application_user_id AND wallet.asset_type = 'COIN' LIMIT 1), 0) coin_balance,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
@@ -697,42 +713,35 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
        ORDER BY cycle.completed_at ASC LIMIT 10`,
       [rows[0].id],
     );
-    const audienceCount = participants.filter((member) => String(member.room_role) === "AUDIENCE").length;
-    const mediaDelivery = roomMediaDelivery(rows[0], audienceCount);
+    const passiveCount = participants.filter((member) =>
+      ["PASSIVE_VIEWER", "AUDIO_REQUESTED", "PASSIVE_LISTENER", "MIC_REQUESTED"].includes(String(member.media_role)),
+    ).length;
+    const mediaDelivery = roomMediaDelivery(rows[0], passiveCount);
     const currentMediaRole = String(rows[0].media_role);
     const publishingRole = ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(currentMediaRole);
-    const activeMedia = publishingRole ? mediaPublishing === true : true;
-    const usageType = rows[0].room_type === "FACE"
+    const usageType: LiveMediaUsageType | undefined = rows[0].room_type !== "PARTY"
       ? currentMediaRole === "HOST"
         ? "FACE_HOST_RTC"
         : currentMediaRole === "AUDIO_GUEST"
           ? "FACE_AUDIO_GUEST_RTC"
-          : mediaDelivery.mode === "liveStreaming" ? "FACE_PASSIVE_STREAM" : "FACE_PASSIVE_RTC_FALLBACK"
-      : rows[0].room_type === "PARTY"
-        ? ["PARTY_OWNER", "RTC_SPEAKER"].includes(currentMediaRole)
-          ? "PARTY_SPEAKER_RTC"
-          : mediaDelivery.mode === "liveStreaming" ? "PARTY_PASSIVE_STREAM" : "PARTY_PASSIVE_RTC_FALLBACK"
-        : currentMediaRole === "HOST" || currentMediaRole === "AUDIO_GUEST"
-          ? "FACE_HOST_RTC"
-          : "FACE_PASSIVE_RTC_FALLBACK";
-    if (activeMedia) {
-      await connection.execute(
-        `INSERT INTO live_media_usage
-          (room_id, application_user_id, usage_type, duration_seconds, first_seen_at, last_seen_at, ended_at)
-         VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), NULL)
-         ON DUPLICATE KEY UPDATE
-           duration_seconds = duration_seconds + IF(
-             TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)) BETWEEN 0 AND 10,
-             TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)), 0),
-           last_seen_at = CURRENT_TIMESTAMP(3), ended_at = NULL`,
-        [rows[0].id, identity.userId, usageType],
-      );
-    } else {
-      await connection.execute(
-        "UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND ended_at IS NULL",
-        [rows[0].id, identity.userId],
-      );
-    }
+          : mediaDelivery.mode === "liveStreaming"
+            ? "FACE_PASSIVE_STREAM"
+            : mediaDelivery.mode === "streamingPending" ? undefined : "FACE_PASSIVE_RTC_FALLBACK"
+      : ["PARTY_OWNER", "RTC_SPEAKER"].includes(currentMediaRole)
+        ? "PARTY_SPEAKER_RTC"
+        : mediaDelivery.mode === "liveStreaming"
+          ? "PARTY_PASSIVE_STREAM"
+          : mediaDelivery.mode === "streamingPending" ? undefined : "PARTY_PASSIVE_RTC_FALLBACK";
+    const activeMedia = publishingRole ? mediaPublishing === true : usageType !== undefined;
+    await recordMediaUsageHeartbeat(connection, {
+      roomId: String(rows[0].id),
+      applicationUserId: identity.userId,
+      usageType,
+      active: activeMedia,
+      expectedFaceFallbackCeiling: mediaDelivery.paidMediaRoutingEnabled
+        ? mediaDelivery.emergencyRtcFallbackEnabled ? mediaDelivery.rtcPassiveFallbackCeiling : 0
+        : undefined,
+    });
     const pkSession = pkSessions[0];
     return {
       active: true,

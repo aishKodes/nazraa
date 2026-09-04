@@ -241,27 +241,46 @@ async function main() {
        VALUES ('mobile.room_features', JSON_OBJECT(
          'facePassivePlaybackMode', 'live_streaming',
          'partyPassivePlaybackMode', 'live_streaming',
-         'partyStreamingThreshold', 9,
+         'partyStreamingThreshold', 8,
+         'paidMediaRoutingEnabled', TRUE,
          'streamMixingEnabled', TRUE,
-         'rtcPassiveFallbackCeiling', 20
+         'emergencyRtcFallbackEnabled', FALSE,
+         'rtcPassiveFallbackCeiling', 3
        ), ?)
        ON DUPLICATE KEY UPDATE setting_value = JSON_SET(
          COALESCE(setting_value, JSON_OBJECT()),
          '$.facePassivePlaybackMode', 'live_streaming',
-         '$.streamMixingEnabled', TRUE
+         '$.paidMediaRoutingEnabled', TRUE,
+         '$.streamMixingEnabled', TRUE,
+         '$.emergencyRtcFallbackEnabled', FALSE,
+         '$.rtcPassiveFallbackCeiling', 3
        )`,
       [master.account.id],
     );
     await root.execute(
       `INSERT INTO live_media_mix_tasks
-        (room_id, task_id, output_stream_id, status, playback_url, active_started_at)
-       VALUES (?, ?, ?, 'ACTIVE', 'https://media.invalid/qa-face.m3u8', CURRENT_TIMESTAMP(3))
-       ON DUPLICATE KEY UPDATE status = 'ACTIVE', playback_url = VALUES(playback_url), active_started_at = CURRENT_TIMESTAMP(3)`,
+        (room_id, task_id, output_stream_id, status)
+       VALUES (?, ?, ?, 'INACTIVE')
+       ON DUPLICATE KEY UPDATE status = 'INACTIVE', playback_url = NULL`,
       [faceRoomRows[0].id, `qa-task-${randomUUID()}`, `qa-mix-${randomUUID()}`],
     );
     const priorMixerReady = process.env.ZEGO_STREAM_MIXING_READY;
     process.env.ZEGO_STREAM_MIXING_READY = "true";
+    const pendingPresence = await rooms.refreshRoomPresence(guest, faceRoomCode);
+    assert.equal(pendingPresence.mediaDelivery?.mode, "streamingPending");
+    await assert.rejects(
+      mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: false }),
+      /Passive RTC fallback is disabled/,
+    );
+    await root.execute(
+      `INSERT INTO live_media_mix_tasks
+        (room_id, task_id, output_stream_id, status, playback_url, active_started_at)
+       VALUES (?, ?, ?, 'ACTIVE', NULL, CURRENT_TIMESTAMP(3))
+       ON DUPLICATE KEY UPDATE status = 'ACTIVE', playback_url = NULL, active_started_at = CURRENT_TIMESTAMP(3)`,
+      [faceRoomRows[0].id, `qa-task-${randomUUID()}`, `qa-mix-${randomUUID()}`],
+    );
     try {
+      assert.equal((await rooms.refreshRoomPresence(guest, faceRoomCode)).mediaDelivery?.mode, "liveStreaming");
       await assert.rejects(
         mediaAuthority.authorizeRoomRtc(guest, { roomCode: faceRoomCode, canPublish: false }),
         /delivered by the public Live stream/,
@@ -272,7 +291,7 @@ async function main() {
       if (priorMixerReady == null) delete process.env.ZEGO_STREAM_MIXING_READY;
       else process.env.ZEGO_STREAM_MIXING_READY = priorMixerReady;
     }
-    console.log("PASS Face Live broadcast authority: one Host video/audio publisher, passive viewer denial on active public stream, accepted audio-only guests, targeted disconnect");
+    console.log("PASS Face Live broadcast authority: one Host video/audio publisher, zero-RTC pending/active public stream, accepted audio-only guests, targeted disconnect");
 
     await product.setFollow(owner, "user", guest.publicId, true);
     const followers = await social.socialDirectory(guest, { targetPublicId: guest.publicId, kind: "followers" });

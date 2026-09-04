@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
+import { recordMixerUsageHeartbeat } from "@/lib/services/media-cost-telemetry";
 
 type RoomType = "FACE" | "LIVE" | "PARTY";
 
@@ -185,7 +186,9 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
      ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
     [room.room_code, room.host_media_publishing, room.id],
   );
-  const audienceCount = members.filter((member) => member.room_role === "AUDIENCE").length;
+  const passiveCount = members.filter((member) =>
+    ["PASSIVE_VIEWER", "AUDIO_REQUESTED", "PASSIVE_LISTENER", "MIC_REQUESTED"].includes(member.media_role),
+  ).length;
   const localPublishers = members.filter((member) =>
     ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(member.media_role) && Boolean(member.media_publishing),
   );
@@ -228,8 +231,8 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     all.findIndex((candidate) => candidate.public_id === member.public_id && candidate.publisher_room_code === member.publisher_room_code) === index,
   ).slice(0, 9);
   const hasHost = localPublishers.some((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role));
-  const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost && audienceCount > 0 &&
-    (room.room_type !== "PARTY" || audienceCount >= threshold);
+  const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost && passiveCount > 0 &&
+    (room.room_type !== "PARTY" || passiveCount >= threshold);
   const hostCount = orderedPublishers.filter((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role)).length;
   let hostIndex = 0;
   const inputs: MixInput[] = orderedPublishers.map((member) => {
@@ -297,6 +300,7 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
 export async function syncZegoRoomMixer(roomCode: string) {
   const api = new ZegoStreamMixingApi();
   if (!api.isConfigured) return { status: "disabled" as const };
+  await recordMixerUsageHeartbeat(roomCode);
   const plan = await preparePlan(roomCode);
   if (!plan) return { status: "unchanged" as const };
   try {
@@ -308,17 +312,29 @@ export async function syncZegoRoomMixer(roomCode: string) {
         ? `UPDATE live_media_mix_tasks
            SET applied_hash = ?, status = 'ACTIVE', playback_url = COALESCE(?, playback_url),
                last_error = NULL, last_synced_at = CURRENT_TIMESTAMP(3),
-               active_started_at = COALESCE(active_started_at, CURRENT_TIMESTAMP(3)), stopped_at = NULL
+               active_started_at = COALESCE(active_started_at, CURRENT_TIMESTAMP(3)),
+               telemetry_at = CURRENT_TIMESTAMP(3), stopped_at = NULL
            WHERE room_id = ? AND sequence_number = ?`
         : `UPDATE live_media_mix_tasks
            SET applied_hash = ?, status = 'INACTIVE', playback_url = COALESCE(?, playback_url),
                last_error = NULL, last_synced_at = CURRENT_TIMESTAMP(3),
                active_duration_seconds = active_duration_seconds + IF(active_started_at IS NULL, 0,
                  GREATEST(0, TIMESTAMPDIFF(SECOND, active_started_at, CURRENT_TIMESTAMP(3)))),
-               active_started_at = NULL, stopped_at = CURRENT_TIMESTAMP(3)
+               active_started_at = NULL, telemetry_at = NULL, stopped_at = CURRENT_TIMESTAMP(3)
            WHERE room_id = ? AND sequence_number = ?`,
       [plan.desiredHash, playbackUrl, plan.roomId, plan.sequence],
     );
+    if (plan.shouldRun) {
+      // Existing fallback tokens are revoked in application state as soon as
+      // the public output is usable. Current clients then dispose RTC on the
+      // next presence refresh and start passive playback.
+      await db().execute(
+        `UPDATE live_media_access_grants
+         SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3))
+         WHERE room_id = ? AND transport = 'RTC_PASSIVE_FALLBACK' AND revoked_at IS NULL`,
+        [plan.roomId],
+      );
+    }
     return { status: plan.shouldRun ? "active" as const : "stopped" as const };
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 500) : "ZEGO mixer request failed.";

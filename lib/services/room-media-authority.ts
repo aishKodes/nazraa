@@ -51,11 +51,11 @@ export async function authorizeRoomRtc(
       muted: number;
       room_features_json: unknown;
       mixer_status: string | null;
-      mixer_playback_url: string | null;
+      mixer_output_stream_id: string | null;
     })[]>(
       `SELECT room.id room_id, room.room_type, member.room_role, member.media_role, member.muted,
               settings.setting_value room_features_json, mixer.status mixer_status,
-              mixer.playback_url mixer_playback_url
+              mixer.output_stream_id mixer_output_stream_id
        FROM live_rooms room
        INNER JOIN live_room_members member ON member.room_id = room.id
          AND member.application_user_id = ? AND member.left_at IS NULL
@@ -70,7 +70,7 @@ export async function authorizeRoomRtc(
 
     const features = objectValue(room.room_features_json);
     const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
-    const fallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 20)));
+    const fallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
     const deploymentReady = process.env.ZEGO_STREAM_MIXING_READY === "true";
     const mixerConfigured = enabled(features.streamMixingEnabled) && deploymentReady;
     const [counts] = await connection.query<(RowDataPacket & { participant_count: number; passive_count: number })[]>(
@@ -87,9 +87,10 @@ export async function authorizeRoomRtc(
       : room.room_type === "PARTY"
         ? features.partyPassivePlaybackMode === "live_streaming" && passiveCount >= threshold
         : false;
-    const playbackTemplate = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
-    const hasPlayback = Boolean(room.mixer_playback_url?.trim() || playbackTemplate);
-    const publicStreamActive = mixerConfigured && streamingRequested && room.mixer_status === "ACTIVE" && hasPlayback;
+    const hasInteractiveOutput = Boolean(room.mixer_output_stream_id?.trim());
+    const publicStreamActive = mixerConfigured && streamingRequested && room.mixer_status === "ACTIVE" && hasInteractiveOutput;
+    const paidRoutingActive = enabled(features.paidMediaRoutingEnabled) && deploymentReady;
+    const emergencyFallbackEnabled = enabled(features.emergencyRtcFallbackEnabled);
 
     const role = room.media_role;
     const isHost = role === "HOST" || role === "PARTY_OWNER";
@@ -112,11 +113,27 @@ export async function authorizeRoomRtc(
     if (!input.canPublish && passiveRole && publicStreamActive) {
       throw new Error("Passive audience media is delivered by the public Live stream; RTC access is not issued.");
     }
-    // Never make a working room unavailable merely because CDN/mixing has not
-    // been activated. The ceiling is only a short transition guard while a
-    // configured public stream is expected to take over. When mixing is off,
-    // RTC fallback remains the functional production transport for everyone.
-    if (!input.canPublish && passiveRole && mixerConfigured && streamingRequested && passiveCount > fallbackCeiling) {
+    // Paid routing is strict: a passive Face viewer never receives an RTC
+    // token just because the public stream is still starting. A remotely
+    // enabled emergency fallback is the only exception, and it is capped.
+    if (!input.canPublish && passiveRole && paidRoutingActive && streamingRequested && !publicStreamActive) {
+      if (!emergencyFallbackEnabled) {
+        throw new Error("The public Live stream is starting. Passive RTC fallback is disabled; please retry shortly.");
+      }
+      const [fallbackRows] = await connection.query<(RowDataPacket & { active_fallbacks: number })[]>(
+        `SELECT COUNT(DISTINCT application_user_id) active_fallbacks
+         FROM live_media_access_grants
+         WHERE room_id = ? AND transport = 'RTC_PASSIVE_FALLBACK'
+           AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(3)
+           AND issued_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND`,
+        [room.room_id],
+      );
+      const activeFallbacks = Number(fallbackRows[0]?.active_fallbacks ?? 0);
+      if (activeFallbacks >= fallbackCeiling) {
+        throw new Error("The emergency RTC fallback ceiling is reached. Please retry the public Live stream shortly.");
+      }
+    } else if (!input.canPublish && passiveRole && mixerConfigured && streamingRequested && passiveCount > fallbackCeiling) {
+      // Compatibility guard before the paid-routing switch is activated.
       throw new Error("The safe RTC fallback audience limit is reached while the public Live stream starts. Please retry shortly.");
     }
 
@@ -137,7 +154,7 @@ export async function authorizeRoomRtc(
       mediaRole: role,
       canPublish: input.canPublish,
       publishMode: input.canPublish
-        ? room.room_type !== "PARTY" && role === "AUDIO_GUEST" ? "audio_only" : "video_audio"
+        ? room.room_type === "PARTY" || role === "AUDIO_GUEST" ? "audio_only" : "video_audio"
         : "none",
       streamId,
       ttlSeconds,

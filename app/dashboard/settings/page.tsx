@@ -39,8 +39,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     facePassivePlaybackMode?: "rtc_fallback" | "live_streaming";
     partyPassivePlaybackMode?: "dynamic_rtc_fallback" | "live_streaming";
     partyStreamingThreshold?: number;
+    paidMediaRoutingEnabled?: boolean;
     streamMixingEnabled?: boolean;
     pkCompositeStreamingEnabled?: boolean;
+    emergencyRtcFallbackEnabled?: boolean;
     mediaReconnectGraceSeconds?: number;
     passiveBackgroundGraceSeconds?: number;
     maxFaceAudioGuests?: number;
@@ -207,13 +209,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Auto-stops before suspension<input name="presenceSuspensionLimit" type="number" min="1" max="20" required defaultValue={roomFeatures?.presenceSuspensionLimit ?? 5} /></label>
         <label>Face passive viewers<select name="facePassivePlaybackMode" defaultValue={roomFeatures?.facePassivePlaybackMode ?? "rtc_fallback"}><option value="rtc_fallback">RTC fallback</option><option value="live_streaming">Live Streaming / CDN</option></select></label>
         <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
-        <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 9} /><span>Below this member count, Party remains RTC.</span></label>
+        <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 8} /><span>Below this passive-listener count, Party remains RTC. Recommended start: 8.</span></label>
+        <label>Paid media routing<select name="paidMediaRoutingEnabled" defaultValue={String(roomFeatures?.paidMediaRoutingEnabled === true)}><option value="false">Staged / current fallback</option><option value="true">Strict streaming routing</option></select><span>Activate only after ZEGO ILS, mixing, domains, and deployment environment are verified.</span></label>
         <label>ZEGO stream mixing<select name="streamMixingEnabled" defaultValue={String(roomFeatures?.streamMixingEnabled === true)}><option value="false">Inactive / fallback</option><option value="true">Ready when deployment is activated</option></select><span>The app stays on RTC fallback until the deployment activation gate and signed playback URL are both present.</span></label>
         <label>PK composite stream<select name="pkCompositeStreamingEnabled" defaultValue={String(roomFeatures?.pkCompositeStreamingEnabled !== false)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+        <label>Emergency passive RTC<select name="emergencyRtcFallbackEnabled" defaultValue={String(roomFeatures?.emergencyRtcFallbackEnabled === true)}><option value="false">Off (normal production)</option><option value="true">Temporarily enabled</option></select><span>Normal Face production stays at zero passive RTC viewers. This is an emergency switch only.</span></label>
         <label>Media reconnect grace (seconds)<input name="mediaReconnectGraceSeconds" type="number" min="5" max="300" required defaultValue={roomFeatures?.mediaReconnectGraceSeconds ?? 180} /></label>
         <label>Passive background grace (seconds)<input name="passiveBackgroundGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.passiveBackgroundGraceSeconds ?? 15} /></label>
         <label>Maximum Face audio guests<input name="maxFaceAudioGuests" type="number" min="1" max="12" required defaultValue={roomFeatures?.maxFaceAudioGuests ?? 4} /></label>
-        <label>Safe passive RTC fallback ceiling<input name="rtcPassiveFallbackCeiling" type="number" min="1" max="100" required defaultValue={roomFeatures?.rtcPassiveFallbackCeiling ?? 20} /><span>When CDN is unavailable, additional passive viewers are refused instead of silently creating unlimited RTC cost.</span></label>
+        <label>Emergency RTC ceiling<input name="rtcPassiveFallbackCeiling" type="number" min="1" max="20" required defaultValue={roomFeatures?.rtcPassiveFallbackCeiling ?? 3} /><span>Maximum short-lived passive RTC users when the emergency switch is explicitly enabled.</span></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
       </form>
     </Card>

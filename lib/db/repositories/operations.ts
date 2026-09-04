@@ -357,6 +357,72 @@ export async function listRooms(scope: Scope) {
   return (await listRoomsPage(scope)).items;
 }
 
+export async function listMediaCostTelemetry(days = 14) {
+  const safeDays = Math.max(1, Math.min(90, Math.floor(days)));
+  const [metrics] = await db().query<(RowDataPacket & {
+    usage_date: string;
+    rtc_voice_seconds: number;
+    rtc_video_seconds: number;
+    face_passive_stream_seconds: number;
+    party_passive_stream_seconds: number;
+    mixer_creation_seconds: number;
+    rtc_passive_fallback_seconds: number;
+    rtc_passive_viewer_count: number;
+    rtc_passive_viewer_peak: number;
+    face_rtc_passive_viewer_count: number;
+    face_rtc_passive_viewer_peak: number;
+    media_concurrency_count: number;
+    peak_concurrency: number;
+  })[]>(
+    `SELECT * FROM live_media_daily_metrics
+     WHERE usage_date >= CURRENT_DATE() - INTERVAL ? DAY
+     ORDER BY usage_date DESC`,
+    [safeDays - 1],
+  );
+  const [alerts] = await db().query<(RowDataPacket & {
+    id: string;
+    usage_date: string;
+    room_code: string;
+    observed_count: number;
+    expected_ceiling: number;
+    status: string;
+    last_seen_at: string;
+  })[]>(
+    `SELECT alert.id, alert.usage_date, room.room_code, alert.observed_count,
+            alert.expected_ceiling, alert.status, alert.last_seen_at
+     FROM live_media_cost_alerts alert
+     INNER JOIN live_rooms room ON room.id = alert.room_id
+     WHERE alert.status = 'OPEN'
+     ORDER BY alert.last_seen_at DESC LIMIT 50`,
+  );
+  return {
+    days: metrics.map((row) => ({
+      date: row.usage_date,
+      rtcVoiceSeconds: Number(row.rtc_voice_seconds),
+      rtcVideoSeconds: Number(row.rtc_video_seconds),
+      facePassiveStreamSeconds: Number(row.face_passive_stream_seconds),
+      partyPassiveStreamSeconds: Number(row.party_passive_stream_seconds),
+      mixerCreationSeconds: Number(row.mixer_creation_seconds),
+      rtcPassiveFallbackSeconds: Number(row.rtc_passive_fallback_seconds),
+      rtcPassiveViewerCount: Number(row.rtc_passive_viewer_count),
+      rtcPassiveViewerPeak: Number(row.rtc_passive_viewer_peak),
+      faceRtcPassiveViewerCount: Number(row.face_rtc_passive_viewer_count),
+      faceRtcPassiveViewerPeak: Number(row.face_rtc_passive_viewer_peak),
+      mediaConcurrencyCount: Number(row.media_concurrency_count),
+      peakConcurrency: Number(row.peak_concurrency),
+    })),
+    alerts: alerts.map((row) => ({
+      id: row.id,
+      date: row.usage_date,
+      roomCode: row.room_code,
+      observedCount: Number(row.observed_count),
+      expectedCeiling: Number(row.expected_ceiling),
+      status: row.status,
+      lastSeenAt: row.last_seen_at,
+    })),
+  };
+}
+
 export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
   const { page, pageSize, offset } = pageInput(input);
   const filter = scopeWhere(scope, "r.agency_account_id");
