@@ -9,7 +9,7 @@ import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { permissionsForMobileIdentity } from "@/lib/auth/mobile-session";
 import { encryptPrivateText } from "@/lib/security/documents";
-import { mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
+import { finalizeStaleLiveSession, mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
@@ -84,14 +84,30 @@ function mobileAvatarUrl(row: RowDataPacket, prefix = "") {
 }
 
 async function pruneInactiveRooms() {
+  const [staleFaceRows] = await db().query<(RowDataPacket & { room_code: string })[]>(
+    `SELECT room.room_code FROM live_rooms room
+     WHERE room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
+       AND NOT EXISTS (
+         SELECT 1 FROM live_room_members active_member
+         WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
+           AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 5 MINUTE
+       )
+     ORDER BY room.started_at LIMIT 20`,
+  );
+  // Face sessions must be finalized through the reward-aware path. Marking
+  // them VOID here used to discard already-earned completed hours whenever a
+  // mobile network vanished briefly during a bootstrap request.
+  for (const room of staleFaceRows) {
+    await finalizeStaleLiveSession(String(room.room_code));
+  }
   await withTransaction(async (connection) => {
     const [staleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT room.id FROM live_rooms room
-       WHERE room.status IN ('ACTIVE','LOCKED')
+       WHERE room.room_type = 'PARTY' AND room.status IN ('ACTIVE','LOCKED')
          AND NOT EXISTS (
            SELECT 1 FROM live_room_members active_member
            WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
-             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE
+             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 5 MINUTE
          )`,
     );
     if (!staleRows.length) return;
@@ -104,7 +120,7 @@ async function pruneInactiveRooms() {
          AND NOT EXISTS (
            SELECT 1 FROM live_room_members active_member
            WHERE active_member.room_id = room.id AND active_member.left_at IS NULL
-             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 1 MINUTE
+             AND active_member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 5 MINUTE
          )`,
       ids,
     );

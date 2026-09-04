@@ -373,7 +373,7 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     partyStreamingThreshold: z.coerce.number().int().min(2).max(200),
     streamMixingEnabled: z.enum(["true", "false"]),
     pkCompositeStreamingEnabled: z.enum(["true", "false"]),
-    mediaReconnectGraceSeconds: z.coerce.number().int().min(5).max(60),
+    mediaReconnectGraceSeconds: z.coerce.number().int().min(5).max(300),
     passiveBackgroundGraceSeconds: z.coerce.number().int().min(5).max(60),
     maxFaceAudioGuests: z.coerce.number().int().min(1).max(12),
     rtcPassiveFallbackCeiling: z.coerce.number().int().min(1).max(100),

@@ -37,7 +37,7 @@ function roomMediaDelivery(
 ) {
   const features = jsonObject(row.room_features_json);
   const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
-  const reconnectGraceSeconds = Math.max(5, Math.min(60, Number(features.mediaReconnectGraceSeconds ?? 60)));
+  const reconnectGraceSeconds = Math.max(5, Math.min(300, Number(features.mediaReconnectGraceSeconds ?? 180)));
   const passiveBackgroundGraceSeconds = Math.max(5, Math.min(60, Number(features.passiveBackgroundGraceSeconds ?? 15)));
   const maxFaceAudioGuests = Math.max(1, Math.min(12, Number(features.maxFaceAudioGuests ?? 4)));
   const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 20)));
@@ -357,7 +357,7 @@ export async function leaveLiveRoom(identity: MobileIdentity, roomCode: string) 
   });
 }
 
-async function finalizeStaleLiveSession(roomCode: string) {
+export async function finalizeStaleLiveSession(roomCode: string) {
   const [rows] = await db().query<(RowDataPacket & { host_application_user_id: string })[]>(
     `SELECT room.host_application_user_id
      FROM live_rooms room
@@ -368,10 +368,10 @@ async function finalizeStaleLiveSession(roomCode: string) {
      WHERE room.room_code = ? AND room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
        AND (
          host_member.last_seen_at < TIMESTAMPADD(SECOND,
-           -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
+           -LEAST(600, GREATEST(60, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.roomStaleGraceSeconds')) AS UNSIGNED), 300))),
            CURRENT_TIMESTAMP(3))
          AND (accounting.id IS NULL OR accounting.last_media_heartbeat_at IS NULL OR accounting.last_media_heartbeat_at < TIMESTAMPADD(SECOND,
-           -LEAST(60, GREATEST(5, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60))),
+           -LEAST(600, GREATEST(60, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.roomStaleGraceSeconds')) AS UNSIGNED), 300))),
            CURRENT_TIMESTAMP(3)))
        )
      LIMIT 1`,
@@ -417,7 +417,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       [identity.userId, roomCode],
     );
     if (!rows[0]) return { active: false };
-    const reconnectGrace = Math.max(5, Math.min(60, Number(rows[0].media_reconnect_grace_seconds ?? 60)));
+    const reconnectGrace = Math.max(5, Math.min(300, Number(rows[0].media_reconnect_grace_seconds ?? 180)));
     await connection.execute(
       `UPDATE live_room_members
        SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', muted = TRUE,
@@ -736,6 +736,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       liveRewardProgress: rows[0].room_role === "OWNER" && rows[0].room_type !== "PARTY" && rows[0].reward_started_at
         ? {
             rewardDiamondsPerHour: Number(rows[0].reward_diamonds_per_hour ?? 3500),
+            liveElapsedSeconds: Math.max(0, Math.floor((new Date(rows[0].reward_server_time as string | Date).getTime() - new Date(rows[0].reward_started_at as string | Date).getTime()) / 1000)),
             continuousSeconds: rewardSegmentSeconds,
             completedHours: Math.floor((rewardEligibleSeconds + rewardSegmentSeconds) / 3600),
             secondsUntilNextReward: 3600 - (rewardSegmentSeconds % 3600),
@@ -1483,7 +1484,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
         alreadyFinalized: true,
       };
     }
-    const reconnectGrace = Math.max(5, Math.min(60, Number(session.media_reconnect_grace_seconds ?? 60)));
+    const reconnectGrace = Math.max(5, Math.min(300, Number(session.media_reconnect_grace_seconds ?? 180)));
     const [heartbeatRows] = await connection.query<(RowDataPacket & { seconds: number })[]>(
       "SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, ?, CURRENT_TIMESTAMP(3))) seconds",
       [session.last_media_heartbeat_at ?? session.started_at],
