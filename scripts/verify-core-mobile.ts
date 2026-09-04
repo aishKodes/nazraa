@@ -716,10 +716,13 @@ async function main() {
     await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), liveRewardRoomId, rewardHost.userId]);
     await root.execute("UPDATE live_session_accounting SET media_publishing = TRUE, last_media_heartbeat_at = CURRENT_TIMESTAMP(3), media_segment_seconds = 3600, valid_media_seconds = 3600 WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)", [liveRewardCode]);
     const rewardDiamondsBefore = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
+    await root.execute("UPDATE live_room_members SET muted = TRUE, last_seen_at = CURRENT_TIMESTAMP(3) - INTERVAL 90 SECOND WHERE room_id = ?", [liveRewardRoomId]);
+    await root.execute("UPDATE live_session_accounting SET last_media_heartbeat_at = CURRENT_TIMESTAMP(3) - INTERVAL 90 SECOND WHERE room_id = ?", [liveRewardRoomId]);
     const liveProgress = await rooms.refreshRoomPresence(rewardHost, liveRewardCode, true);
     assert.ok(liveProgress.liveRewardProgress);
     assert.equal(liveProgress.liveRewardProgress!.rewardDiamondsPerHour, 3500);
-    assert.ok(liveProgress.liveRewardProgress!.continuousSeconds >= 3599);
+    assert.ok(liveProgress.liveRewardProgress!.continuousSeconds >= 3690, "a brief reconnect must preserve the completed hour even with a muted microphone");
+    assert.equal(liveProgress.liveRewardProgress!.publishing, true, "muted Face microphone must not stop camera reward eligibility");
     assert.ok(liveProgress.liveRewardProgress!.secondsUntilNextReward >= 1 && liveProgress.liveRewardProgress!.secondsUntilNextReward <= 3600);
     assert.equal((await product.mobileBootstrap(rewardHost)).wallet.diamonds, rewardDiamondsBefore + 3500, "a completed Live hour must credit automatically without waiting for room close");
     const finalizedLive = await rooms.finalizeLiveSession(rewardHost, liveRewardCode);
@@ -744,6 +747,20 @@ async function main() {
     const twoHours = await finalizedRewardFor(7200);
     assert.equal(twoHours.rewardCoins, 7000, "two completed continuous hours must earn exactly 7,000 Diamonds");
     assert.equal(twoHours.eligibleSeconds, 7200);
+
+    const staleRoomId = randomUUID();
+    const staleRoomCode = `STALE${Date.now()}`;
+    await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, status) VALUES (?, ?, ?, 'FACE', 'QA Stale Reward', 'ACTIVE')", [staleRoomId, staleRoomCode, rewardHost.userId]);
+    await root.execute("INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, last_seen_at) VALUES (?, ?, 'OWNER', 'HOST', TRUE, CURRENT_TIMESTAMP(3) - INTERVAL 6 MINUTE)", [staleRoomId, rewardHost.userId]);
+    await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, last_media_heartbeat_at, media_segment_seconds, valid_media_seconds, reward_rule_id) SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3) - INTERVAL 2 HOUR, CURRENT_TIMESTAMP(3) - INTERVAL 6 MINUTE, 7200, 7200, id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [randomUUID(), staleRoomId, rewardHost.userId]);
+    const [beforeCleanup] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [rewardHost.userId]);
+    await product.mobileBootstrap(rewardHost);
+    const [cleanup] = await root.query<RowDataPacket[]>("SELECT status, reward_coins FROM live_session_accounting WHERE room_id = ?", [staleRoomId]);
+    assert.equal(cleanup[0].status, 'FINALIZED', "stale Face rooms must settle, never VOID earned hours");
+    assert.equal(Number(cleanup[0].reward_coins), 7000);
+    const afterCleanup = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
+    assert.equal(afterCleanup, Number(beforeCleanup[0].available_balance) + 7000, "cleanup retries must pay completed hours exactly once");
+    console.log('PASS launch regressions: muted Face camera, 90s reconnect, stale-room earned hours, duplicate cleanup settlement');
 
     await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 500000) ON DUPLICATE KEY UPDATE available_balance = 500000, reserved_balance = 0", [randomUUID(), rewardHost.userId]);
     const socialCoinsBeforeWithdrawal = (await product.mobileBootstrap(rewardHost)).wallet.coins;

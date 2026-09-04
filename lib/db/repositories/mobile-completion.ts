@@ -400,7 +400,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
               reward_rule.coins_per_hour reward_diamonds_per_hour,
               reward_rule.minimum_eligible_seconds reward_minimum_eligible_seconds,
               room_features.setting_value room_features_json,
-              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 180) media_reconnect_grace_seconds,
               CURRENT_TIMESTAMP(3) reward_server_time,
               mixer.status mixer_status, mixer.playback_url mixer_playback_url,
               COALESCE((SELECT wallet.available_balance FROM wallet_balances wallet
@@ -438,7 +438,10 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
     );
     if (mediaPublishing !== undefined) {
       const publishAuthorized = ["HOST", "PARTY_OWNER", "AUDIO_GUEST", "RTC_SPEAKER"].includes(String(rows[0].media_role));
-      const effectivePublishing = mediaPublishing && publishAuthorized && !Boolean(rows[0].muted);
+      // Muting the microphone does not stop the Face host's camera broadcast.
+      // Audio-only participants still must be unmuted to publish audio.
+      const isVideoHost = rows[0].media_role === 'HOST' && rows[0].room_type !== 'PARTY';
+      const effectivePublishing = mediaPublishing && publishAuthorized && (isVideoHost || !Boolean(rows[0].muted));
       await connection.execute(
         `UPDATE live_room_members
          SET media_publishing = ?, last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
@@ -478,9 +481,14 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
         rewardEligibleSeconds += Math.floor(rewardSegmentSeconds / 3600) * 3600;
         rewardSegmentSeconds = 0;
       }
-      const heartbeatAnchor = publishingNow || wasPublishing || gapSeconds > reconnectGrace || lastHeartbeat == null
+      let heartbeatAnchor = publishingNow || wasPublishing || gapSeconds > reconnectGrace || lastHeartbeat == null
         ? serverTime
         : lastHeartbeat;
+      // Carry fractional seconds forward rather than discarding them on every
+      // heartbeat. Rounding each ~2s network sample down lost real Live time.
+      if (lastHeartbeat != null && wasPublishing && publishingNow && gapSeconds <= reconnectGrace) {
+        heartbeatAnchor = new Date(lastHeartbeat.getTime() + acceptedDelta * 1000);
+      }
       await connection.execute(
         `UPDATE live_session_accounting
          SET media_publishing = ?, last_media_heartbeat_at = ?,
@@ -738,6 +746,7 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
             rewardDiamondsPerHour: Number(rows[0].reward_diamonds_per_hour ?? 3500),
             liveElapsedSeconds: Math.max(0, Math.floor((new Date(rows[0].reward_server_time as string | Date).getTime() - new Date(rows[0].reward_started_at as string | Date).getTime()) / 1000)),
             continuousSeconds: rewardSegmentSeconds,
+            publishing: mediaPublishing ?? true,
             completedHours: Math.floor((rewardEligibleSeconds + rewardSegmentSeconds) / 3600),
             secondsUntilNextReward: 3600 - (rewardSegmentSeconds % 3600),
             serverTime: rows[0].reward_server_time,
@@ -1463,7 +1472,7 @@ export async function finalizeLiveSession(identity: MobileIdentity, roomCode: st
               accounting.reward_ledger_id,
               accounting.media_publishing, accounting.last_media_heartbeat_at,
               accounting.media_segment_seconds, accounting.valid_media_seconds,
-              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 60) media_reconnect_grace_seconds,
+              COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(room_features.setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED), 180) media_reconnect_grace_seconds,
               ledger.transaction_code,
               COALESCE(room.ended_at, accounting.ended_at, CURRENT_TIMESTAMP(3)) ended_at
        FROM live_session_accounting accounting INNER JOIN live_rooms room ON room.id = accounting.room_id
