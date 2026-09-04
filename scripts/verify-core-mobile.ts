@@ -762,6 +762,30 @@ async function main() {
     assert.equal(afterCleanup, Number(beforeCleanup[0].available_balance) + 7000, "cleanup retries must pay completed hours exactly once");
     console.log('PASS launch regressions: muted Face camera, 90s reconnect, stale-room earned hours, duplicate cleanup settlement');
 
+    const recoveryHost = await user('QA Recorded Reward Recovery');
+    const recoverySessions: string[] = [];
+    for (const seconds of [7200, 3599]) {
+      const roomId = randomUUID();
+      const accountingId = randomUUID();
+      recoverySessions.push(accountingId);
+      await root.execute("INSERT INTO live_rooms (id, room_code, host_application_user_id, room_type, title, status) VALUES (?, ?, ?, 'FACE', 'QA Reward Recovery', 'ENDED')", [roomId, `REC${seconds}${Date.now()}`, recoveryHost.userId]);
+      await root.execute("INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, ended_at, media_segment_seconds, valid_media_seconds, reward_rule_id, status) SELECT ?, ?, ?, 'FACE', '2026-09-04 01:00:00', '2026-09-04 03:00:00', ?, ?, id, 'VOID' FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1", [accountingId, roomId, recoveryHost.userId, seconds, seconds]);
+    }
+    const recoverySql = await readFile('db/migrations/0053_recover_recorded_live_hours.sql', 'utf8');
+    for (let retry = 0; retry < 2; retry++) {
+      await root.beginTransaction();
+      await root.query(recoverySql);
+      await root.commit();
+    }
+    const [recoveredWallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'", [recoveryHost.userId]);
+    assert.equal(Number(recoveredWallet[0].available_balance), 7000, 'recorded two-hour recovery must credit once even if migration is retried');
+    const [recoveredLedger] = await root.query<RowDataPacket[]>("SELECT COUNT(*) count FROM ledger_transactions WHERE destination_id = ? AND transaction_type = 'HOST_HOURLY_DIAMONDS'", [recoveryHost.userId]);
+    assert.equal(Number(recoveredLedger[0].count), 1);
+    const [partialRecovery] = await root.query<RowDataPacket[]>("SELECT status, reward_coins FROM live_session_accounting WHERE id = ?", [recoverySessions[1]]);
+    assert.equal(partialRecovery[0].status, 'VOID', 'an unfinished hour must not be invented as a recovery payment');
+    assert.equal(Number(partialRecovery[0].reward_coins), 0);
+    console.log('PASS recorded Live recovery: 7,000 Diamonds once, no payment for unfinished hours');
+
     await root.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type, available_balance) VALUES (?, 'APPLICATION_USER', ?, 'DIAMOND', 500000) ON DUPLICATE KEY UPDATE available_balance = 500000, reserved_balance = 0", [randomUUID(), rewardHost.userId]);
     const socialCoinsBeforeWithdrawal = (await product.mobileBootstrap(rewardHost)).wallet.coins;
     await assert.rejects(product.createWithdrawalRequest(rewardHost, 1000, { type: "UPI", accountHolderName: "QA Reward Host", upiId: "qareward@upi" }), /exact 1,00,000/);
