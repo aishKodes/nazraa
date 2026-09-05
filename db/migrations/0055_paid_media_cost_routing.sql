@@ -1,5 +1,5 @@
 -- Paid-media rollout guardrails and daily ZEGO cost telemetry.
--- The paid routing switch remains OFF until ZEGO Interactive Live Streaming,
+-- The paid routing switch remains OFF until ZEGO Live Streaming,
 -- Stream Mixing, and the deployment playback domains are explicitly ready.
 
 SET @nazraa_schema = DATABASE();

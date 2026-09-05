@@ -38,6 +38,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     presenceSuspensionLimit?: number;
     facePassivePlaybackMode?: "rtc_fallback" | "live_streaming";
     partyPassivePlaybackMode?: "dynamic_rtc_fallback" | "live_streaming";
+    passivePlaybackResourceMode?: "cdn" | "interactive_l3";
+    passiveEventDelaySeconds?: number;
     partyStreamingThreshold?: number;
     paidMediaRoutingEnabled?: boolean;
     streamMixingEnabled?: boolean;
@@ -209,8 +211,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Auto-stops before suspension<input name="presenceSuspensionLimit" type="number" min="1" max="20" required defaultValue={roomFeatures?.presenceSuspensionLimit ?? 5} /></label>
         <label>Face passive viewers<select name="facePassivePlaybackMode" defaultValue={roomFeatures?.facePassivePlaybackMode ?? "rtc_fallback"}><option value="rtc_fallback">RTC fallback</option><option value="live_streaming">Live Streaming / CDN</option></select></label>
         <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
+        <label>Passive stream network<select name="passivePlaybackResourceMode" defaultValue={roomFeatures?.passivePlaybackResourceMode ?? "cdn"}><option value="cdn">Standard Live Streaming / CDN</option><option value="interactive_l3">Interactive Live Streaming / L3</option></select><span>Use CDN for the lower-cost Live Streaming Starter plan.</span></label>
+        <label>CDN effect delay (seconds)<input name="passiveEventDelaySeconds" type="number" min="0" max="15" required defaultValue={roomFeatures?.passiveEventDelaySeconds ?? 5} /><span>Delays Gift, Rocket and game effects to align with standard CDN playback; chat remains realtime.</span></label>
         <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 8} /><span>Below this passive-listener count, Party remains RTC. Recommended start: 8.</span></label>
-        <label>Paid media routing<select name="paidMediaRoutingEnabled" defaultValue={String(roomFeatures?.paidMediaRoutingEnabled === true)}><option value="false">Staged / current fallback</option><option value="true">Strict streaming routing</option></select><span>Activate only after ZEGO ILS, mixing, domains, and deployment environment are verified.</span></label>
+        <label>Paid media routing<select name="paidMediaRoutingEnabled" defaultValue={String(roomFeatures?.paidMediaRoutingEnabled === true)}><option value="false">Staged / current fallback</option><option value="true">Strict streaming routing</option></select><span>Activate only after ZEGO Live Streaming, mixing, domains, and deployment environment are verified.</span></label>
         <label>ZEGO stream mixing<select name="streamMixingEnabled" defaultValue={String(roomFeatures?.streamMixingEnabled === true)}><option value="false">Inactive / fallback</option><option value="true">Ready when deployment is activated</option></select><span>The app stays on RTC fallback until the deployment activation gate and signed playback URL are both present.</span></label>
         <label>PK composite stream<select name="pkCompositeStreamingEnabled" defaultValue={String(roomFeatures?.pkCompositeStreamingEnabled !== false)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
         <label>Emergency passive RTC<select name="emergencyRtcFallbackEnabled" defaultValue={String(roomFeatures?.emergencyRtcFallbackEnabled === true)}><option value="false">Off (normal production)</option><option value="true">Temporarily enabled</option></select><span>Normal Face production stays at zero passive RTC viewers. This is an emergency switch only.</span></label>

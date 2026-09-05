@@ -46,6 +46,8 @@ function roomMediaDelivery(
   const passiveBackgroundGraceSeconds = Math.max(5, Math.min(60, Number(features.passiveBackgroundGraceSeconds ?? 15)));
   const maxFaceAudioGuests = Math.max(1, Math.min(12, Number(features.maxFaceAudioGuests ?? 4)));
   const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
+  const passivePlaybackResourceMode = features.passivePlaybackResourceMode === "interactive_l3" ? "interactive_l3" : "cdn";
+  const passiveEventDelaySeconds = Math.max(0, Math.min(15, Number(features.passiveEventDelaySeconds ?? 5)));
   // The panel flag is an operator preference. The deployment gate proves that
   // the ZEGO project, mixer output and signed playback endpoint are actually
   // ready. Never move an audience member away from the working RTC fallback
@@ -83,6 +85,8 @@ function roomMediaDelivery(
     passiveBackgroundGraceSeconds,
     maxFaceAudioGuests,
     rtcPassiveFallbackCeiling,
+    passivePlaybackResourceMode,
+    passiveEventDelaySeconds,
     fallbackReason: streamingActive
       ? null
       : strictStreamingPending
