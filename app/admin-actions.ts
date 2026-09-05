@@ -381,6 +381,9 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     passiveBackgroundGraceSeconds: z.coerce.number().int().min(5).max(60),
     maxFaceAudioGuests: z.coerce.number().int().min(1).max(12),
     rtcPassiveFallbackCeiling: z.coerce.number().int().min(1).max(20),
+    temporaryRtcCostGuardEnabled: z.enum(["true", "false"]),
+    temporaryFaceRtcViewerCeiling: z.coerce.number().int().min(1).max(20),
+    temporaryPartyRtcUserCeiling: z.coerce.number().int().min(2).max(100),
   }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the room interaction, Rocket, PK, and presence values."));
   const interactionRows = parsed.data.interactionRows.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -439,6 +442,9 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     passiveBackgroundGraceSeconds: parsed.data.passiveBackgroundGraceSeconds,
     maxFaceAudioGuests: parsed.data.maxFaceAudioGuests,
     rtcPassiveFallbackCeiling: parsed.data.rtcPassiveFallbackCeiling,
+    temporaryRtcCostGuardEnabled: parsed.data.temporaryRtcCostGuardEnabled === "true",
+    temporaryFaceRtcViewerCeiling: parsed.data.temporaryFaceRtcViewerCeiling,
+    temporaryPartyRtcUserCeiling: parsed.data.temporaryPartyRtcUserCeiling,
   });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Room feature configuration published to the app."));

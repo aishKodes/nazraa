@@ -359,7 +359,16 @@ export async function listRooms(scope: Scope) {
 
 export async function listMediaCostTelemetry(days = 14) {
   const safeDays = Math.max(1, Math.min(90, Math.floor(days)));
-  const [metrics] = await db().query<(RowDataPacket & {
+  const dateKey = (value: unknown) => {
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+    const text = String(value ?? "");
+    const iso = text.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+    if (iso) return iso;
+    const parsed = new Date(text);
+    return Number.isNaN(parsed.getTime()) ? text.slice(0, 10) : parsed.toISOString().slice(0, 10);
+  };
+  const [[metrics], [alerts], [settings], [active], [topRooms]] = await Promise.all([
+    db().query<(RowDataPacket & {
     usage_date: string;
     rtc_voice_seconds: number;
     rtc_video_seconds: number;
@@ -373,13 +382,13 @@ export async function listMediaCostTelemetry(days = 14) {
     face_rtc_passive_viewer_peak: number;
     media_concurrency_count: number;
     peak_concurrency: number;
-  })[]>(
+    })[]>(
     `SELECT * FROM live_media_daily_metrics
      WHERE usage_date >= CURRENT_DATE() - INTERVAL ? DAY
      ORDER BY usage_date DESC`,
     [safeDays - 1],
-  );
-  const [alerts] = await db().query<(RowDataPacket & {
+    ),
+    db().query<(RowDataPacket & {
     id: string;
     usage_date: string;
     room_code: string;
@@ -387,17 +396,69 @@ export async function listMediaCostTelemetry(days = 14) {
     expected_ceiling: number;
     status: string;
     last_seen_at: string;
-  })[]>(
+    })[]>(
     `SELECT alert.id, alert.usage_date, room.room_code, alert.observed_count,
             alert.expected_ceiling, alert.status, alert.last_seen_at
      FROM live_media_cost_alerts alert
      INNER JOIN live_rooms room ON room.id = alert.room_id
      WHERE alert.status = 'OPEN'
      ORDER BY alert.last_seen_at DESC LIMIT 50`,
-  );
+    ),
+    db().query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'media.zego_cost_config' LIMIT 1",
+    ),
+    db().query<(RowDataPacket & {
+      active_rtc_users: number;
+      active_face_rtc_viewers: number;
+      active_party_rtc_users: number;
+    })[]>(
+      `SELECT
+         COUNT(DISTINCT CASE WHEN usage_type IN ('FACE_HOST_RTC','FACE_AUDIO_GUEST_RTC','FACE_PASSIVE_RTC_FALLBACK','PARTY_SPEAKER_RTC','PARTY_PASSIVE_RTC_FALLBACK')
+           THEN CONCAT(room_id, ':', application_user_id) END) active_rtc_users,
+         COUNT(DISTINCT CASE WHEN usage_type = 'FACE_PASSIVE_RTC_FALLBACK'
+           THEN CONCAT(room_id, ':', application_user_id) END) active_face_rtc_viewers,
+         COUNT(DISTINCT CASE WHEN usage_type IN ('PARTY_SPEAKER_RTC','PARTY_PASSIVE_RTC_FALLBACK')
+           THEN CONCAT(room_id, ':', application_user_id) END) active_party_rtc_users
+       FROM live_media_usage
+       WHERE ended_at IS NULL
+         AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND`,
+    ),
+    db().query<(RowDataPacket & {
+      room_code: string;
+      room_type: string;
+      paid_seconds: number;
+      rtc_users: number;
+    })[]>(
+      `SELECT room.room_code, room.room_type, SUM(media_usage.duration_seconds) paid_seconds,
+              COUNT(DISTINCT media_usage.application_user_id) rtc_users
+       FROM live_media_usage media_usage
+       INNER JOIN live_rooms room ON room.id = media_usage.room_id
+       WHERE media_usage.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 48 HOUR
+         AND media_usage.usage_type IN ('FACE_HOST_RTC','FACE_AUDIO_GUEST_RTC','FACE_PASSIVE_RTC_FALLBACK','PARTY_SPEAKER_RTC','PARTY_PASSIVE_RTC_FALLBACK')
+       GROUP BY room.id, room.room_code, room.room_type
+       ORDER BY paid_seconds DESC LIMIT 10`,
+    ),
+  ]);
+  const rawCostConfig = settings[0]?.setting_value;
+  const costConfig = ((typeof rawCostConfig === "string" ? JSON.parse(rawCostConfig) : rawCostConfig) ?? {}) as Record<string, unknown>;
+  const voiceRate = Math.max(0, Number(costConfig.voiceUsdPer1000Minutes ?? 0.99));
+  const hdVideoRate = Math.max(0, Number(costConfig.hdVideoUsdPer1000Minutes ?? 3.99));
+  const liveAudioRate = Math.max(0, Number(costConfig.liveAudioAudienceUsdPer1000Minutes ?? 0.39));
+  const liveHdRate = Math.max(0, Number(costConfig.liveHdAudienceUsdPer1000Minutes ?? 1.49));
+  const warningUsd = Math.max(0, Number(costConfig.dailyWarningUsd ?? 3));
+  const criticalUsd = Math.max(warningUsd, Number(costConfig.dailyCriticalUsd ?? 5));
+  const estimate = (row: (typeof metrics)[number]) =>
+    Number((
+      Number(row.rtc_voice_seconds) * voiceRate / 60_000 +
+      Number(row.rtc_video_seconds) * hdVideoRate / 60_000 +
+      Number(row.face_passive_stream_seconds) * liveHdRate / 60_000 +
+      Number(row.party_passive_stream_seconds) * liveAudioRate / 60_000
+    ).toFixed(4));
+  const todayMetric = metrics.find((row) => dateKey(row.usage_date) === new Date().toISOString().slice(0, 10));
+  const todayEstimatedSpendUsd = todayMetric ? estimate(todayMetric) : 0;
   return {
     days: metrics.map((row) => ({
-      date: row.usage_date,
+      date: dateKey(row.usage_date),
       rtcVoiceSeconds: Number(row.rtc_voice_seconds),
       rtcVideoSeconds: Number(row.rtc_video_seconds),
       facePassiveStreamSeconds: Number(row.face_passive_stream_seconds),
@@ -410,6 +471,7 @@ export async function listMediaCostTelemetry(days = 14) {
       faceRtcPassiveViewerPeak: Number(row.face_rtc_passive_viewer_peak),
       mediaConcurrencyCount: Number(row.media_concurrency_count),
       peakConcurrency: Number(row.peak_concurrency),
+      estimatedSpendUsd: estimate(row),
     })),
     alerts: alerts.map((row) => ({
       id: row.id,
@@ -420,6 +482,21 @@ export async function listMediaCostTelemetry(days = 14) {
       status: row.status,
       lastSeenAt: row.last_seen_at,
     })),
+    current: {
+      activeRtcUsers: Number(active[0]?.active_rtc_users ?? 0),
+      activeFaceRtcViewers: Number(active[0]?.active_face_rtc_viewers ?? 0),
+      activePartyRtcUsers: Number(active[0]?.active_party_rtc_users ?? 0),
+      todayEstimatedSpendUsd,
+    },
+    thresholds: { warningUsd, criticalUsd },
+    costLevel: todayEstimatedSpendUsd >= criticalUsd ? "CRITICAL" : todayEstimatedSpendUsd >= warningUsd ? "WARNING" : "NORMAL",
+    topRooms: topRooms.map((row) => ({
+      roomCode: row.room_code,
+      roomType: row.room_type,
+      paidSeconds: Number(row.paid_seconds),
+      rtcUsers: Number(row.rtc_users),
+    })),
+    rates: { voiceRate, hdVideoRate, liveAudioRate, liveHdRate },
   };
 }
 

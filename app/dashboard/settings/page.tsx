@@ -49,6 +49,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     passiveBackgroundGraceSeconds?: number;
     maxFaceAudioGuests?: number;
     rtcPassiveFallbackCeiling?: number;
+    temporaryRtcCostGuardEnabled?: boolean;
+    temporaryFaceRtcViewerCeiling?: number;
+    temporaryPartyRtcUserCeiling?: number;
   } | undefined;
   const interactions = roomFeatures?.interactions ?? [
     { key: "kiss", label: "Kiss", emoji: "💋", enabled: true },
@@ -222,6 +225,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Passive background grace (seconds)<input name="passiveBackgroundGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.passiveBackgroundGraceSeconds ?? 15} /></label>
         <label>Maximum Face audio guests<input name="maxFaceAudioGuests" type="number" min="1" max="12" required defaultValue={roomFeatures?.maxFaceAudioGuests ?? 4} /></label>
         <label>Emergency RTC ceiling<input name="rtcPassiveFallbackCeiling" type="number" min="1" max="20" required defaultValue={roomFeatures?.rtcPassiveFallbackCeiling ?? 3} /><span>Maximum short-lived passive RTC users when the emergency switch is explicitly enabled.</span></label>
+        <label>Temporary RTC cost guard<select name="temporaryRtcCostGuardEnabled" defaultValue={String(roomFeatures?.temporaryRtcCostGuardEnabled !== false)}><option value="true">Active while CDN is pending</option><option value="false">Off after verified CDN cutover</option></select><span>This hard cap works even while paid routing is disabled.</span></label>
+        <label>Temporary Face RTC viewers<input name="temporaryFaceRtcViewerCeiling" type="number" min="1" max="20" required defaultValue={roomFeatures?.temporaryFaceRtcViewerCeiling ?? 3} /><span>Passive viewers only; Host and accepted audio guests are not included.</span></label>
+        <label>Temporary Party RTC users<input name="temporaryPartyRtcUserCeiling" type="number" min="2" max="100" required defaultValue={roomFeatures?.temporaryPartyRtcUserCeiling ?? 12} /><span>Total RTC users in one Party until mixed playback is verified.</span></label>
         <label>Confirm<button className="primary-button" type="submit">Publish room features</button></label>
       </form>
     </Card>

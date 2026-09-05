@@ -71,6 +71,9 @@ export async function authorizeRoomRtc(
     const features = objectValue(room.room_features_json);
     const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
     const fallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
+    const temporaryCostGuardEnabled = features.temporaryRtcCostGuardEnabled !== false;
+    const temporaryFaceViewerCeiling = Math.max(1, Math.min(20, Number(features.temporaryFaceRtcViewerCeiling ?? 3)));
+    const temporaryPartyUserCeiling = Math.max(2, Math.min(100, Number(features.temporaryPartyRtcUserCeiling ?? 12)));
     const deploymentReady = process.env.ZEGO_STREAM_MIXING_READY === "true";
     const mixerConfigured = enabled(features.streamMixingEnabled) && deploymentReady;
     const [counts] = await connection.query<(RowDataPacket & { participant_count: number; passive_count: number })[]>(
@@ -113,6 +116,99 @@ export async function authorizeRoomRtc(
     if (!input.canPublish && passiveRole && publicStreamActive) {
       throw new Error("Passive audience media is delivered by the public Live stream; RTC access is not issued.");
     }
+
+    // Refuse a second fresh RTC room for the same signed-in user or physical
+    // device. Stale grants are revoked below so an interrupted join cannot
+    // lock the person out indefinitely, but a live heartbeat must explicitly
+    // leave before another room can start.
+    const [otherRoomRows] = await connection.query<(RowDataPacket & { room_code: string })[]>(
+      `SELECT other_room.room_code
+       FROM live_media_access_grants grant_row
+       INNER JOIN live_rooms other_room ON other_room.id = grant_row.room_id
+       LEFT JOIN mobile_sessions grant_session ON grant_session.id = grant_row.mobile_session_id
+       LEFT JOIN live_media_usage media_usage ON media_usage.room_id = grant_row.room_id
+         AND media_usage.application_user_id = grant_row.application_user_id
+         AND media_usage.ended_at IS NULL
+         AND media_usage.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+       WHERE grant_row.room_id <> ? AND grant_row.revoked_at IS NULL
+         AND grant_row.expires_at > CURRENT_TIMESTAMP(3)
+         AND (grant_row.issued_at >= CURRENT_TIMESTAMP(3) - INTERVAL 45 SECOND
+           OR media_usage.application_user_id IS NOT NULL)
+         AND (grant_row.application_user_id = ?
+           OR (? IS NOT NULL AND grant_session.device_id_hash = ?))
+       LIMIT 1`,
+      [room.room_id, identity.userId, identity.deviceIdHash ?? null, identity.deviceIdHash ?? null],
+    );
+    if (otherRoomRows[0]) {
+      throw new Error(`Leave room ${otherRoomRows[0].room_code} before connecting to another Live room.`);
+    }
+    await connection.execute(
+      `UPDATE live_media_access_grants grant_row
+       LEFT JOIN mobile_sessions grant_session ON grant_session.id = grant_row.mobile_session_id
+       SET grant_row.revoked_at = COALESCE(grant_row.revoked_at, CURRENT_TIMESTAMP(3))
+       WHERE grant_row.room_id <> ? AND grant_row.revoked_at IS NULL
+         AND grant_row.expires_at > CURRENT_TIMESTAMP(3)
+         AND (grant_row.application_user_id = ?
+           OR (? IS NOT NULL AND grant_session.device_id_hash = ?))`,
+      [room.room_id, identity.userId, identity.deviceIdHash ?? null, identity.deviceIdHash ?? null],
+    );
+    await connection.execute(
+      `UPDATE live_media_usage media_usage
+       INNER JOIN live_media_access_grants grant_row ON grant_row.room_id = media_usage.room_id
+         AND grant_row.application_user_id = media_usage.application_user_id
+       LEFT JOIN mobile_sessions session_row ON session_row.id = grant_row.mobile_session_id
+       SET media_usage.ended_at = COALESCE(media_usage.ended_at, CURRENT_TIMESTAMP(3))
+       WHERE media_usage.room_id <> ? AND media_usage.ended_at IS NULL
+         AND (media_usage.application_user_id = ?
+           OR (? IS NOT NULL AND session_row.device_id_hash = ?))
+         AND media_usage.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND`,
+      [room.room_id, identity.userId, identity.deviceIdHash ?? null, identity.deviceIdHash ?? null],
+    );
+
+    // While the public stream is unavailable, the temporary cost guard is
+    // deliberately independent from paidMediaRoutingEnabled. Previously the
+    // fallback cap lived only inside the paid-routing branch, which allowed an
+    // unlimited launch audience to receive billable RTC tokens while CDN was
+    // still provisioning.
+    if (temporaryCostGuardEnabled && !publicStreamActive) {
+      const [activeGrantRows] = await connection.query<(RowDataPacket & {
+        face_passive_users: number;
+        party_rtc_users: number;
+        current_user_active: number;
+      })[]>(
+        `SELECT
+           COUNT(DISTINCT CASE WHEN transport = 'RTC_PASSIVE_FALLBACK'
+             AND application_user_id <> ? THEN application_user_id END) face_passive_users,
+           COUNT(DISTINCT CASE WHEN application_user_id <> ? THEN application_user_id END) party_rtc_users,
+           MAX(application_user_id = ?) current_user_active
+         FROM live_media_access_grants grant_row
+         WHERE room_id = ? AND revoked_at IS NULL
+           AND expires_at > CURRENT_TIMESTAMP(3)
+           AND (issued_at >= CURRENT_TIMESTAMP(3) - INTERVAL 45 SECOND
+             OR EXISTS (
+               SELECT 1 FROM live_media_usage media_usage
+               WHERE media_usage.room_id = grant_row.room_id
+                 AND media_usage.application_user_id = grant_row.application_user_id
+                 AND media_usage.ended_at IS NULL
+                 AND media_usage.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+             ))`,
+        [identity.userId, identity.userId, identity.userId, room.room_id],
+      );
+      const active = activeGrantRows[0];
+      const currentUserActive = Boolean(Number(active?.current_user_active ?? 0));
+      if (!currentUserActive && room.room_type !== "PARTY" && !input.canPublish && passiveRole) {
+        const activeFaceViewers = Number(active?.face_passive_users ?? 0);
+        if (activeFaceViewers >= temporaryFaceViewerCeiling) {
+          throw new Error(`This Live temporarily supports ${temporaryFaceViewerCeiling} viewers while CDN activation finishes. Please retry shortly.`);
+        }
+      }
+      if (!currentUserActive && room.room_type === "PARTY") {
+        const activePartyUsers = Number(active?.party_rtc_users ?? 0);
+        if (activePartyUsers >= temporaryPartyUserCeiling) {
+          throw new Error(`This Party temporarily supports ${temporaryPartyUserCeiling} RTC members while streaming activation finishes. Please retry shortly.`);
+        }
+      }
+    }
     // Paid routing is strict: a passive Face viewer never receives an RTC
     // token just because the public stream is still starting. A remotely
     // enabled emergency fallback is the only exception, and it is capped.
@@ -125,8 +221,8 @@ export async function authorizeRoomRtc(
          FROM live_media_access_grants
          WHERE room_id = ? AND transport = 'RTC_PASSIVE_FALLBACK'
            AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP(3)
-           AND issued_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND`,
-        [room.room_id],
+           AND application_user_id <> ?`,
+        [room.room_id, identity.userId],
       );
       const activeFallbacks = Number(fallbackRows[0]?.active_fallbacks ?? 0);
       if (activeFallbacks >= fallbackCeiling) {
@@ -139,11 +235,20 @@ export async function authorizeRoomRtc(
 
     const ttlSeconds = Math.max(300, Math.min(7200, input.ttlSeconds ?? 3600));
     const streamId = input.canPublish ? `${input.roomCode}_${identity.publicId}_main` : null;
+    // One active grant per user/room/transport prevents token retries from
+    // looking like extra fallback viewers and keeps the guard deterministic.
+    await connection.execute(
+      `UPDATE live_media_access_grants
+       SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3))
+       WHERE room_id = ? AND application_user_id = ?
+         AND revoked_at IS NULL`,
+      [room.room_id, identity.userId],
+    );
     await connection.execute(
       `INSERT INTO live_media_access_grants
-        (id, room_id, application_user_id, media_role, transport, can_publish, stream_id, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND)`,
-      [randomUUID(), room.room_id, identity.userId, role,
+        (id, room_id, application_user_id, mobile_session_id, media_role, transport, can_publish, stream_id, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND)`,
+      [randomUUID(), room.room_id, identity.userId, identity.sessionId ?? null, role,
         input.canPublish ? "RTC_PUBLISHER" : "RTC_PASSIVE_FALLBACK",
         input.canPublish, streamId, ttlSeconds],
     );

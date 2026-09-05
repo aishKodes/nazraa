@@ -46,6 +46,8 @@ function roomMediaDelivery(
   const passiveBackgroundGraceSeconds = Math.max(5, Math.min(60, Number(features.passiveBackgroundGraceSeconds ?? 15)));
   const maxFaceAudioGuests = Math.max(1, Math.min(12, Number(features.maxFaceAudioGuests ?? 4)));
   const rtcPassiveFallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
+  const temporaryRtcCostGuardEnabled = features.temporaryRtcCostGuardEnabled !== false;
+  const temporaryFaceRtcViewerCeiling = Math.max(1, Math.min(20, Number(features.temporaryFaceRtcViewerCeiling ?? 3)));
   const passivePlaybackResourceMode = features.passivePlaybackResourceMode === "interactive_l3" ? "interactive_l3" : "cdn";
   const passiveEventDelaySeconds = Math.max(0, Math.min(15, Number(features.passiveEventDelaySeconds ?? 5)));
   // The panel flag is an operator preference. The deployment gate proves that
@@ -85,6 +87,8 @@ function roomMediaDelivery(
     passiveBackgroundGraceSeconds,
     maxFaceAudioGuests,
     rtcPassiveFallbackCeiling,
+    temporaryRtcCostGuardEnabled,
+    temporaryFaceRtcViewerCeiling,
     passivePlaybackResourceMode,
     passiveEventDelaySeconds,
     fallbackReason: streamingActive
@@ -742,7 +746,9 @@ export async function refreshRoomPresence(identity: MobileIdentity, roomCode: st
       applicationUserId: identity.userId,
       usageType,
       active: activeMedia,
-      expectedFaceFallbackCeiling: mediaDelivery.paidMediaRoutingEnabled
+      expectedFaceFallbackCeiling: mediaDelivery.temporaryRtcCostGuardEnabled
+        ? mediaDelivery.temporaryFaceRtcViewerCeiling
+        : mediaDelivery.paidMediaRoutingEnabled
         ? mediaDelivery.emergencyRtcFallbackEnabled ? mediaDelivery.rtcPassiveFallbackCeiling : 0
         : undefined,
     });

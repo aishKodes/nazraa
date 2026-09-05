@@ -293,6 +293,47 @@ async function main() {
     }
     console.log("PASS Face Live broadcast authority: one Host video/audio publisher, zero-RTC pending/active public stream, accepted audio-only guests, targeted disconnect");
 
+    await root.execute(
+      `UPDATE system_settings SET setting_value = JSON_SET(setting_value,
+        '$.paidMediaRoutingEnabled', FALSE,
+        '$.streamMixingEnabled', FALSE,
+        '$.facePassivePlaybackMode', 'rtc_fallback',
+        '$.partyPassivePlaybackMode', 'dynamic_rtc_fallback',
+        '$.temporaryRtcCostGuardEnabled', TRUE,
+        '$.temporaryFaceRtcViewerCeiling', 3,
+        '$.temporaryPartyRtcUserCeiling', 12)
+       WHERE setting_key = 'mobile.room_features'`,
+    );
+    await root.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?", [owner.userId]);
+    await root.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?", [owner.userId]);
+    const cappedFaceCode = `QACF${Date.now()}`;
+    await product.createRoom(owner, { roomCode: cappedFaceCode, kind: "face", title: "QA Capped Face", category: "Talk", language: "Hindi", privacy: "public", seatCount: 0, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    await mediaAuthority.authorizeRoomRtc(owner, { roomCode: cappedFaceCode, canPublish: true });
+    const faceFallbackUsers = await Promise.all([1, 2, 3, 4].map((index) => user(`QA Face Fallback ${index}`)));
+    for (const fallbackUser of faceFallbackUsers) await rooms.joinLiveRoom(fallbackUser, cappedFaceCode);
+    for (const fallbackUser of faceFallbackUsers.slice(0, 3)) {
+      await mediaAuthority.authorizeRoomRtc(fallbackUser, { roomCode: cappedFaceCode, canPublish: false });
+    }
+    await assert.rejects(
+      mediaAuthority.authorizeRoomRtc(faceFallbackUsers[3], { roomCode: cappedFaceCode, canPublish: false }),
+      /temporarily supports 3 viewers/,
+    );
+    await root.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?", [owner.userId]);
+    await root.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?", [owner.userId]);
+    const cappedPartyCode = `QACP${Date.now()}`;
+    await product.createRoom(owner, { roomCode: cappedPartyCode, kind: "party", title: "QA Capped Party", category: "Talk", language: "Hindi", privacy: "public", seatCount: 8, themeIndex: 0, themeEnabled: false, countryCode: "IN" });
+    await mediaAuthority.authorizeRoomRtc(owner, { roomCode: cappedPartyCode, canPublish: true });
+    const partyFallbackUsers = await Promise.all(Array.from({ length: 12 }, (_, index) => user(`QA Party Fallback ${index + 1}`)));
+    for (const fallbackUser of partyFallbackUsers) await rooms.joinLiveRoom(fallbackUser, cappedPartyCode);
+    for (const fallbackUser of partyFallbackUsers.slice(0, 11)) {
+      await mediaAuthority.authorizeRoomRtc(fallbackUser, { roomCode: cappedPartyCode, canPublish: false });
+    }
+    await assert.rejects(
+      mediaAuthority.authorizeRoomRtc(partyFallbackUsers[11], { roomCode: cappedPartyCode, canPublish: false }),
+      /temporarily supports 12 RTC members/,
+    );
+    console.log("PASS temporary RTC cost guard: Face passive hard cap 3; Party total hard cap 12; no overflow token issued");
+
     await product.setFollow(owner, "user", guest.publicId, true);
     const followers = await social.socialDirectory(guest, { targetPublicId: guest.publicId, kind: "followers" });
     const following = await social.socialDirectory(owner, { targetPublicId: owner.publicId, kind: "following" });

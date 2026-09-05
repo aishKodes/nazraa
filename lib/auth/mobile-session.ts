@@ -18,6 +18,8 @@ export type MobileRole =
   | "MASTER";
 
 export type MobileIdentity = {
+  sessionId?: string;
+  deviceIdHash?: string | null;
   userId: string;
   publicId: string;
   externalUserId: string;
@@ -238,8 +240,9 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     live_restricted: number;
     live_restricted_until: Date | string | null;
     live_restriction_reason: string | null;
+    device_id_hash: string | null;
   })[]>(
-    `SELECT session.id session_id, user.id user_id, user.public_id, user.external_user_id,
+    `SELECT session.id session_id, session.device_id_hash, user.id user_id, user.public_id, user.external_user_id,
             user.full_name, user.account_status, user.face_verification_status, user.is_host,
             user.agency_account_id, user.agency_face_live_authorized, user.super_admin_face_live_authorized,
             account.role platform_role,
@@ -282,6 +285,8 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     [row.session_id],
   )).catch(() => undefined);
   return {
+    sessionId: row.session_id,
+    deviceIdHash: row.device_id_hash,
     userId: row.user_id,
     publicId: String(row.public_id),
     externalUserId: row.external_user_id,

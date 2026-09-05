@@ -291,6 +291,9 @@ export async function saveRoomFeatureSettings(input: {
   passiveBackgroundGraceSeconds: number;
   maxFaceAudioGuests: number;
   rtcPassiveFallbackCeiling: number;
+  temporaryRtcCostGuardEnabled: boolean;
+  temporaryFaceRtcViewerCeiling: number;
+  temporaryPartyRtcUserCeiling: number;
 }) {
   await auditedMutation({
     scope: input.scope,
@@ -346,6 +349,9 @@ export async function saveRoomFeatureSettings(input: {
           passiveBackgroundGraceSeconds: input.passiveBackgroundGraceSeconds,
           maxFaceAudioGuests: input.maxFaceAudioGuests,
           rtcPassiveFallbackCeiling: input.rtcPassiveFallbackCeiling,
+          temporaryRtcCostGuardEnabled: input.temporaryRtcCostGuardEnabled,
+          temporaryFaceRtcViewerCeiling: input.temporaryFaceRtcViewerCeiling,
+          temporaryPartyRtcUserCeiling: input.temporaryPartyRtcUserCeiling,
         }), input.scope.account.id],
       );
     },

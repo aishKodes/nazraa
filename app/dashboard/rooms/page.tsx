@@ -17,7 +17,7 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
   const [result, incidents, mediaCost] = await Promise.all([
     listRoomsPage(scope, { page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1) }),
     listPresenceIncidents(scope),
-    mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [] }),
+    mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [], current: { activeRtcUsers: 0, activeFaceRtcViewers: 0, activePartyRtcUsers: 0, todayEstimatedSpendUsd: 0 }, thresholds: { warningUsd: 3, criticalUsd: 5 }, costLevel: "NORMAL", topRooms: [], rates: { voiceRate: .99, hdVideoRate: 3.99, liveAudioRate: .39, liveHdRate: 1.49 } }),
   ]);
   const rooms = result.items;
   const mayRestrict = can(scope.account.role, "rooms.restrict");
@@ -26,18 +26,22 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
     <SectionHeading title="Live rooms" description="Live and Party status in your branch. Every moderation action requires a reason and is audited." />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
     {mayViewCostTelemetry && mediaCost.alerts.length ? <Notice type="error">Media cost warning: Face passive RTC exceeded its configured ceiling in {mediaCost.alerts.length} room{mediaCost.alerts.length === 1 ? "" : "s"}. Check the rooms and ZEGO streaming output immediately.</Notice> : null}
+    {mayViewCostTelemetry && mediaCost.costLevel !== "NORMAL" ? <Notice type="error">{mediaCost.costLevel} ZEGO cost warning: today&apos;s server-observed PAYG equivalent has reached ${mediaCost.current.todayEstimatedSpendUsd.toFixed(2)}. Warning ${mediaCost.thresholds.warningUsd.toFixed(2)} · critical ${mediaCost.thresholds.criticalUsd.toFixed(2)}.</Notice> : null}
     {mayViewCostTelemetry ? <Card>
       <div className="card-title"><div><h2>ZEGO daily media telemetry</h2><p>Server-observed minutes. Face passive RTC should remain zero after paid streaming routing is activated.</p></div></div>
-      {mediaCost.days.length ? <div className="table-scroll"><table><thead><tr><th>Date</th><th>RTC voice</th><th>RTC video</th><th>Face stream</th><th>Party stream</th><th>Mixer</th><th>Passive RTC current/peak</th><th>Peak concurrency</th></tr></thead><tbody>{mediaCost.days.map((day) => <tr key={day.date}>
+      <div className="scope-lock">Active now: <b>{formatNumber(mediaCost.current.activeRtcUsers)} RTC users</b> · Face RTC viewers <b>{formatNumber(mediaCost.current.activeFaceRtcViewers)}</b> · Party RTC users <b>{formatNumber(mediaCost.current.activePartyRtcUsers)}</b></div>
+      {mediaCost.days.length ? <div className="table-scroll"><table><thead><tr><th>Date</th><th>RTC voice</th><th>RTC video</th><th>Estimated spend</th><th>Face stream</th><th>Party stream</th><th>Mixer</th><th>Passive RTC current/peak</th><th>Peak concurrency</th></tr></thead><tbody>{mediaCost.days.map((day) => <tr key={day.date}>
         <td data-label="Date">{String(day.date).slice(0, 10)}</td>
         <td data-label="RTC voice">{formatNumber(Math.round(day.rtcVoiceSeconds / 60))} min</td>
         <td data-label="RTC video">{formatNumber(Math.round(day.rtcVideoSeconds / 60))} min</td>
+        <td data-label="Estimated spend"><b>${day.estimatedSpendUsd.toFixed(2)}</b></td>
         <td data-label="Face stream">{formatNumber(Math.round(day.facePassiveStreamSeconds / 60))} min</td>
         <td data-label="Party stream">{formatNumber(Math.round(day.partyPassiveStreamSeconds / 60))} min</td>
         <td data-label="Mixer">{formatNumber(Math.round(day.mixerCreationSeconds / 60))} min</td>
         <td data-label="Passive RTC"><b>{day.rtcPassiveViewerCount}/{day.rtcPassiveViewerPeak}</b><small className="block">Face {day.faceRtcPassiveViewerCount}/{day.faceRtcPassiveViewerPeak}</small></td>
         <td data-label="Peak concurrency">{formatNumber(day.peakConcurrency)}</td>
       </tr>)}</tbody></table></div> : <EmptyState title="No media telemetry yet" detail="Daily values appear after the next room media heartbeat." />}
+      {mediaCost.topRooms.length ? <><div className="section-subheading"><h3>Top RTC rooms · last 48 hours</h3><p>Server-observed paid media time, highest first.</p></div><div className="table-scroll"><table><thead><tr><th>Room</th><th>Type</th><th>RTC users</th><th>Paid minutes</th></tr></thead><tbody>{mediaCost.topRooms.map((room) => <tr key={room.roomCode}><td data-label="Room" className="mono">{room.roomCode}</td><td data-label="Type">{room.roomType}</td><td data-label="RTC users">{formatNumber(room.rtcUsers)}</td><td data-label="Paid minutes">{formatNumber(Math.round(room.paidSeconds / 60))}</td></tr>)}</tbody></table></div></> : null}
     </Card> : null}
     <Card>{rooms.length ? <div className="table-scroll"><table><thead><tr><th>Room</th><th>Host</th><th>Type</th><th>Tools</th><th>Audience</th><th>Started</th><th>Status</th>{mayRestrict || mayManage ? <th>Moderation</th> : null}</tr></thead><tbody>{rooms.map((room) => <tr key={room.id}>
       <td data-label="Room" className="mono">{room.roomCode}</td>
