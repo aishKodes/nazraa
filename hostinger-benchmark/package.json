@@ -7,6 +7,7 @@
     "node": ">=20 <25"
   },
   "scripts": {
+    "build": "node --check server.mjs",
     "start": "node server.mjs"
   },
   "dependencies": {
