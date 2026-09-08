@@ -163,7 +163,11 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       // Keep details out of a publicly reachable endpoint; the application
       // dashboard/host logs retain the provider-side diagnostic.
-      console.error("canary probe failed", error instanceof Error ? error.name : "unknown");
+      // The code is enough to diagnose provider connectivity/auth issues without
+      // ever logging SQL, request values, database credentials, or user data.
+      console.error("canary probe failed", error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : error instanceof Error ? error.name : "unknown");
       return send(response, 503, { message: "Benchmark service is temporarily unavailable." });
     }
   });
