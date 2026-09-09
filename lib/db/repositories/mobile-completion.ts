@@ -1731,10 +1731,11 @@ export async function refreshRoomPresence(
             secondsSinceEvidence <= evidenceWindowSeconds
               ? secondsSinceEvidence
               : 0;
-          if (secondsSinceEvidence > evidenceWindowSeconds) {
-            // A long evidence gap may be an offline broadcaster.  Preserve a
-            // completed hour, but do not silently credit the unknown gap or
-            // carry an unfinished continuous block across it.
+          if (secondsSinceHeartbeat > reconnectGrace) {
+            // Do not credit an unobserved gap.  A shorter gap remains one
+            // recoverable session segment (so a weak-network reconnect does
+            // not throw away already-earned progress); a gap beyond the
+            // configured grace breaks an unfinished continuous block.
             rewardEligibleSeconds +=
               Math.floor(rewardSegmentSeconds / 3600) * 3600;
             rewardSegmentSeconds = 0;
@@ -1750,7 +1751,7 @@ export async function refreshRoomPresence(
             secondsSinceEvidence <= evidenceWindowSeconds
               ? secondsSinceEvidence
               : 0;
-          if (secondsSinceEvidence > evidenceWindowSeconds) {
+          if (secondsSinceHeartbeat > reconnectGrace) {
             rewardEligibleSeconds +=
               Math.floor(rewardSegmentSeconds / 3600) * 3600;
             rewardSegmentSeconds = 0;

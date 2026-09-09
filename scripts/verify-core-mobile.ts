@@ -36,6 +36,9 @@ async function main() {
     connectionLimit: 8,
     timezone: "Z",
   });
+  // Production obtains this proxy lazily in db(); the isolated harness
+  // supplies its own pool, so bind the same local pool for repository calls.
+  global.nazraaInstrumentedPool = global.nazraaPool;
   process.env.DOCUMENT_ENCRYPTION_KEY = "nazraa-local-mobile-qa-only-key-2026";
   let keep = false;
   try {
@@ -2753,8 +2756,9 @@ async function main() {
     assert.ok(liveProgress.liveRewardProgress);
     assert.equal(liveProgress.liveRewardProgress!.rewardDiamondsPerHour, 3500);
     assert.ok(
-      liveProgress.liveRewardProgress!.continuousSeconds >= 3690,
-      "a brief reconnect must preserve the completed hour even with a muted microphone",
+      liveProgress.liveRewardProgress!.continuousSeconds >= 3600 &&
+        liveProgress.liveRewardProgress!.continuousSeconds <= 3630,
+      "a reconnect must preserve the completed hour while excluding the unobserved outage window",
     );
     assert.equal(
       liveProgress.liveRewardProgress!.publishing,
@@ -2801,6 +2805,66 @@ async function main() {
       "Host Live rewards must not mint spendable social coins",
     );
     assert.equal(rewardBootstrap.hostRewardHistory[0].rewardCoins, 3500);
+
+    // Accelerated regression checks use a dedicated reviewer Host and write a
+    // non-financial audit row only. The production 60-minute reward rule and
+    // every wallet balance remain untouched.
+    await root.execute(
+      `INSERT INTO play_reviewer_credentials
+        (id, application_user_id, username, password_hash, reviewer_role, active)
+       VALUES (?, ?, ?, 'qa-only-hash', 'HOST', TRUE)`,
+      [randomUUID(), rewardHost.userId, `qa-live-${Date.now()}`],
+    );
+    await root.execute(
+      `INSERT INTO mobile_access_overrides
+        (application_user_id, host_access_override, play_reviewer_access_override,
+         live_reward_qa_enabled, live_reward_qa_threshold_seconds,
+         live_reward_qa_expires_at, note)
+       VALUES (?, FALSE, FALSE, TRUE, 60,
+               DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE), 'Core mobile QA')
+       ON DUPLICATE KEY UPDATE live_reward_qa_enabled = TRUE,
+         live_reward_qa_threshold_seconds = 60,
+         live_reward_qa_expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 10 MINUTE)`,
+      [rewardHost.userId],
+    );
+    const qaProbeRoomId = randomUUID();
+    const qaProbeAccountingId = randomUUID();
+    const qaProbeRoomCode = `QAPROBE${Date.now()}`;
+    await root.execute(
+      `INSERT INTO live_rooms
+        (id, room_code, host_application_user_id, agency_account_id, room_type,
+         title, category, language_code, privacy, seat_count, theme_index,
+         theme_enabled, country_code, status)
+       VALUES (?, ?, ?, ?, 'FACE', 'QA probe', 'Talk', 'Hindi', 'PUBLIC',
+               0, 0, FALSE, 'IN', 'ACTIVE')`,
+      [qaProbeRoomId, qaProbeRoomCode, rewardHost.userId, qaAgency.accountId],
+    );
+    await root.execute(
+      "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)",
+      [qaProbeRoomId, rewardHost.userId],
+    );
+    await root.execute(
+      `INSERT INTO live_session_accounting
+        (id, room_id, host_application_user_id, room_type, started_at,
+         media_publishing, last_media_heartbeat_at, last_media_evidence_at,
+         eligible_seconds_committed, media_segment_seconds, valid_media_seconds,
+         reward_rule_id)
+       SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), TRUE,
+              CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), 60, 60, 60, id
+       FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE
+       ORDER BY effective_from DESC LIMIT 1`,
+      [qaProbeAccountingId, qaProbeRoomId, rewardHost.userId],
+    );
+    const diamondsBeforeQaProbe = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
+    await rooms.refreshRoomPresence(rewardHost, qaProbeRoomCode, true);
+    await rooms.refreshRoomPresence(rewardHost, qaProbeRoomCode, true);
+    const [qaRuns] = await root.query<RowDataPacket[]>(
+      "SELECT COUNT(*) count FROM live_reward_qa_runs WHERE live_session_accounting_id = ?",
+      [qaProbeAccountingId],
+    );
+    assert.equal(Number(qaRuns[0].count), 1, "duplicate QA heartbeats must create one non-financial probe record");
+    assert.equal((await product.mobileBootstrap(rewardHost)).wallet.diamonds, diamondsBeforeQaProbe, "QA threshold must never credit Diamonds");
+    console.log("PASS accelerated Live reward QA: 60-second dedicated reviewer threshold, duplicate heartbeat dedupe, no entitlement and no wallet credit");
     const rewardId = String(rewardBootstrap.liveRewards[0].id);
     const duplicateClaims = await Promise.all([
       rooms.claimLiveReward(rewardHost, rewardId),
