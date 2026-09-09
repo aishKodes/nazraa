@@ -41,6 +41,8 @@ import {
   listRoomBlockedUsers,
   leaveLiveRoom,
   markMobileNotificationsRead,
+  mobileDailyRewardsSnapshot,
+  mobileFaceVerificationSnapshot,
   refreshRoomPresence,
   refreshRoomMediaBootstrap,
   refreshLiveRoomAudienceCount,
@@ -261,6 +263,19 @@ export async function GET(
     try {
       const identity = await authenticateMobileRequest(request);
       if (!identity) return errorResponse(new Error("Unauthorized."), 401);
+      // These screens are opened and refreshed independently.  They used to
+      // materialize the full Home bootstrap before selecting two fields,
+      // which made a status-only read wait behind discovery/catalog queries.
+      if (resource === "daily-rewards") {
+        return NextResponse.json(await mobileDailyRewardsSnapshot(identity), {
+          headers: { "Cache-Control": "private, no-store" },
+        });
+      }
+      if (resource === "face") {
+        return NextResponse.json(await mobileFaceVerificationSnapshot(identity), {
+          headers: { "Cache-Control": "private, no-store" },
+        });
+      }
       if (!mediaCriticalResources.has(resource))
         await expireEndedVipMemberships();
       if (resource === "rooms") {

@@ -4254,3 +4254,95 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     privateMessaging,
   };
 }
+
+/**
+ * The Rewards sheet is opened independently of the initial mobile bootstrap.
+ * Loading the complete Home payload here (catalogues, discovery, private
+ * messages and three leaderboards) made a simple claim-status refresh compete
+ * with room traffic for the small production database pool.  Keep this read
+ * intentionally narrow: it exposes the same rewards shape without changing
+ * settlement, claimability, or wallet state.
+ */
+export async function mobileDailyRewardsSnapshot(identity: MobileIdentity) {
+  const [rewardRules, claimRows, liveRewardRows, clockRows] = await Promise.all([
+    db().query<RowDataPacket[]>(
+      "SELECT day_number, reward_coins, label FROM daily_reward_rules WHERE enabled = TRUE ORDER BY day_number",
+    ),
+    db().query<RowDataPacket[]>(
+      `SELECT DATE_FORMAT(claim_date, '%Y-%m-%d') claim_date, streak_day,
+              reward_coins, claim_code, claimed_at
+       FROM daily_reward_claims
+       WHERE application_user_id = ?
+       ORDER BY claim_date DESC LIMIT 31`,
+      [identity.userId],
+    ),
+    db().query<RowDataPacket[]>(
+      `SELECT reward.id, reward.live_session_accounting_id session_id,
+              reward.completed_hour, reward.amount, reward.currency,
+              reward.source, reward.earned_at, reward.claim_status,
+              reward.claimed_at, agency.public_id agency_public_id,
+              agency.full_name agency_name
+       FROM live_reward_entitlements reward
+       LEFT JOIN platform_accounts agency ON agency.id = reward.agency_account_id
+       WHERE reward.application_user_id = ?
+       ORDER BY reward.earned_at DESC, reward.completed_hour DESC LIMIT 100`,
+      [identity.userId],
+    ),
+    db().query<(RowDataPacket & { today: string })[]>(
+      "SELECT DATE_FORMAT(CURRENT_DATE, '%Y-%m-%d') today",
+    ),
+  ]);
+  const claims = claimRows[0];
+  const lastClaimDate = claims[0]?.claim_date
+    ? String(claims[0].claim_date).slice(0, 10)
+    : null;
+  const today = String(clockRows[0][0]?.today ?? "").slice(0, 10);
+  return {
+    dailyRewards: {
+      rules: rewardRules[0].map((row) => ({
+        dayNumber: Number(row.day_number),
+        rewardCoins: Number(row.reward_coins),
+        label: String(row.label),
+      })),
+      currentStreak: claims.length ? Number(claims[0].streak_day) : 0,
+      claimable: lastClaimDate !== today,
+      serverDate: today,
+      lastClaimDate,
+      history: claims.map((row) => ({
+        date: String(row.claim_date).slice(0, 10),
+        streakDay: Number(row.streak_day),
+        rewardCoins: Number(row.reward_coins),
+        transactionId: String(row.claim_code),
+        claimedAt: row.claimed_at,
+      })),
+    },
+    liveRewards: liveRewardRows[0].map((row) => ({
+      id: String(row.id),
+      sessionId: String(row.session_id),
+      completedHour: Number(row.completed_hour),
+      amount: Number(row.amount),
+      currency: String(row.currency),
+      source: String(row.source),
+      earnedAt: row.earned_at,
+      status: String(row.claim_status).toLowerCase(),
+      claimedAt: row.claimed_at,
+      agencyId:
+        row.agency_public_id == null ? null : String(row.agency_public_id),
+      agencyName: row.agency_name == null ? null : String(row.agency_name),
+    })),
+  };
+}
+
+/** A verification-status refresh must never wait behind Home-only queries. */
+export async function mobileFaceVerificationSnapshot(identity: MobileIdentity) {
+  const [rows] = await db().query<(RowDataPacket & {
+    face_verification_status: string;
+  })[]>(
+    "SELECT face_verification_status FROM application_users WHERE id = ? LIMIT 1",
+    [identity.userId],
+  );
+  if (!rows[0]) throw new Error("User account was not found.");
+  return {
+    faceVerificationStatus: String(rows[0].face_verification_status).toLowerCase(),
+  };
+}
