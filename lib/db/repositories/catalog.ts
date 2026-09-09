@@ -381,6 +381,12 @@ export async function saveRoomFeatureSettings(input: {
   facePassivePlaybackMode: "rtc_fallback" | "live_streaming";
   partyPassivePlaybackMode: "dynamic_rtc_fallback" | "live_streaming";
   passivePlaybackResourceMode: "cdn" | "interactive_l3";
+  faceViewerTransport: "hls" | "l3" | "auto";
+  faceL3Enabled: boolean;
+  faceL3ReviewerOnly: boolean;
+  nazraaNaturalBeautyEnabled: boolean;
+  nazraaNaturalBeautyLandmarksEnabled: boolean;
+  nazraaNaturalBeautyDefaultStrength: number;
   passiveEventDelaySeconds: number;
   partyStreamingThreshold: number;
   faceCdnKeepWarmWhileHostLive: boolean;
@@ -441,6 +447,12 @@ export async function saveRoomFeatureSettings(input: {
           facePassivePlaybackMode: input.facePassivePlaybackMode,
           partyPassivePlaybackMode: input.partyPassivePlaybackMode,
           passivePlaybackResourceMode: input.passivePlaybackResourceMode,
+          faceViewerTransport: input.faceViewerTransport,
+          faceL3Enabled: input.faceL3Enabled,
+          faceL3ReviewerOnly: input.faceL3ReviewerOnly,
+          nazraaNaturalBeautyEnabled: input.nazraaNaturalBeautyEnabled,
+          nazraaNaturalBeautyLandmarksEnabled: input.nazraaNaturalBeautyLandmarksEnabled,
+          nazraaNaturalBeautyDefaultStrength: input.nazraaNaturalBeautyDefaultStrength,
           passiveEventDelaySeconds: input.passiveEventDelaySeconds,
           partyStreamingThreshold: input.partyStreamingThreshold,
           faceCdnKeepWarmWhileHostLive: input.faceCdnKeepWarmWhileHostLive,

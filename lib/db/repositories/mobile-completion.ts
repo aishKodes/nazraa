@@ -80,6 +80,7 @@ function roomMediaDelivery(
   row: RowDataPacket,
   passiveCount: number,
   preferredFacePlaybackProtocol?: "hls" | "flv",
+  allowReviewerL3 = false,
 ) {
   const features = jsonObject(row.room_features_json);
   const threshold = Math.max(
@@ -108,10 +109,21 @@ function roomMediaDelivery(
     1,
     Math.min(20, Number(features.temporaryFaceRtcViewerCeiling ?? 3)),
   );
-  const passivePlaybackResourceMode =
-    features.passivePlaybackResourceMode === "interactive_l3"
-      ? "interactive_l3"
-      : "cdn";
+  const configuredFaceViewerTransport =
+    features.faceViewerTransport === "l3" || features.faceViewerTransport === "auto"
+      ? features.faceViewerTransport
+      : "hls";
+  const l3EligibleForThisRequest =
+    row.room_type !== "PARTY" &&
+    settingEnabled(features.faceL3Enabled) &&
+    (!settingEnabled(features.faceL3ReviewerOnly) || allowReviewerL3) &&
+    configuredFaceViewerTransport !== "hls";
+  // L3 is deliberately gated per response. Ordinary users retain the known
+  // paid CDN route until the account service and its commercial rate have
+  // passed reviewer QA. This branch never grants an RTC audience session.
+  const effectivePassivePlaybackResourceMode = l3EligibleForThisRequest
+    ? "interactive_l3"
+    : "cdn";
   // Standard HLS remains the safe default. Android can also play ZEGO's
   // authenticated FLV output through Media3's progressive source; this is an
   // operator-controlled latency option, never a client-side endpoint swap.
@@ -207,7 +219,15 @@ function roomMediaDelivery(
     rtcPassiveFallbackCeiling,
     temporaryRtcCostGuardEnabled,
     temporaryFaceRtcViewerCeiling,
-    passivePlaybackResourceMode,
+    passivePlaybackResourceMode: effectivePassivePlaybackResourceMode,
+    viewerTransport: l3EligibleForThisRequest
+      ? configuredFaceViewerTransport
+      : "hls",
+    naturalBeauty: {
+      enabled: settingEnabled(features.nazraaNaturalBeautyEnabled),
+      landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
+      defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
+    },
     playbackProtocol,
     passiveEventDelaySeconds,
     fallbackReason: streamingActive
@@ -1493,6 +1513,7 @@ async function refreshRoomMediaBootstrapWithConnection(
       row,
       Number(row.passive_count ?? 0),
       preferredFacePlaybackProtocol,
+      Boolean(identity.playReviewerAccessOverride),
     ),
   };
 }
@@ -2084,6 +2105,7 @@ export async function refreshRoomPresence(
       rows[0],
       passiveCount,
       preferredFacePlaybackProtocol,
+      Boolean(identity.playReviewerAccessOverride),
     );
     const currentMediaRole = String(rows[0].media_role);
     const publishingRole = [

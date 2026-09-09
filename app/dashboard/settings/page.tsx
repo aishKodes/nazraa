@@ -56,6 +56,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     facePassivePlaybackMode?: "rtc_fallback" | "live_streaming";
     partyPassivePlaybackMode?: "dynamic_rtc_fallback" | "live_streaming";
     passivePlaybackResourceMode?: "cdn" | "interactive_l3";
+    faceViewerTransport?: "hls" | "l3" | "auto";
+    faceL3Enabled?: boolean;
+    faceL3ReviewerOnly?: boolean;
+    nazraaNaturalBeautyEnabled?: boolean;
+    nazraaNaturalBeautyLandmarksEnabled?: boolean;
+    nazraaNaturalBeautyDefaultStrength?: number;
     passiveEventDelaySeconds?: number;
     partyStreamingThreshold?: number;
     faceCdnKeepWarmWhileHostLive?: boolean;
@@ -294,6 +300,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Face passive viewers<select name="facePassivePlaybackMode" defaultValue={roomFeatures?.facePassivePlaybackMode ?? "rtc_fallback"}><option value="rtc_fallback">RTC fallback</option><option value="live_streaming">Live Streaming / CDN</option></select></label>
         <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
         <label>Passive stream network<select name="passivePlaybackResourceMode" defaultValue={roomFeatures?.passivePlaybackResourceMode ?? "cdn"}><option value="cdn">Standard Live Streaming / CDN</option><option value="interactive_l3">Interactive Live Streaming / L3</option></select><span>Use CDN for the lower-cost Live Streaming Starter plan.</span></label>
+        <label>Face viewer transport<select name="faceViewerTransport" defaultValue={roomFeatures?.faceViewerTransport ?? "hls"}><option value="hls">HLS</option><option value="l3">L3 only</option><option value="auto">L3 with HLS fallback</option></select><span>L3 remains reviewer-only until ZEGO entitlement, cost, and first-frame QA pass.</span></label>
+        <label>L3 enabled<select name="faceL3Enabled" defaultValue={String(roomFeatures?.faceL3Enabled === true)}><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+        <label>L3 reviewer-only<select name="faceL3ReviewerOnly" defaultValue={String(roomFeatures?.faceL3ReviewerOnly !== false)}><option value="true">Reviewer accounts only</option><option value="false">All eligible viewers</option></select></label>
+        <label>Natural beauty<select name="nazraaNaturalBeautyEnabled" defaultValue={String(roomFeatures?.nazraaNaturalBeautyEnabled === true)}><option value="false">Disabled</option><option value="true">Enabled</option></select><span>On-device optional enhancement. Disable remotely if any camera/GPU issue occurs.</span></label>
+        <label>Beauty landmarks<select name="nazraaNaturalBeautyLandmarksEnabled" defaultValue={String(roomFeatures?.nazraaNaturalBeautyLandmarksEnabled === true)}><option value="false">Basic path only</option><option value="true">MediaPipe region masks</option></select></label>
+        <label>Beauty default strength<input name="nazraaNaturalBeautyDefaultStrength" type="number" min="0" max="100" required defaultValue={roomFeatures?.nazraaNaturalBeautyDefaultStrength ?? 50} /></label>
         <label>CDN effect delay (seconds)<input name="passiveEventDelaySeconds" type="number" min="0" max="15" required defaultValue={roomFeatures?.passiveEventDelaySeconds ?? 5} /><span>Delays Gift, Rocket and game effects to align with standard CDN playback; chat remains realtime.</span></label>
         <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="1" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 8} /><span>Below this passive-listener count, Party remains RTC. Recommended production start: 8; 1 is reserved for controlled QA.</span></label>
         <label>Face CDN warm output<select name="faceCdnKeepWarmWhileHostLive" defaultValue={String(roomFeatures?.faceCdnKeepWarmWhileHostLive !== false)}><option value="true">Keep warm while Host is live</option><option value="false">Start when first viewer joins</option></select><span>Keeping Face output warm removes mixer-start delay for the first viewer. It is separate from Party’s threshold and can be changed without an APK.</span></label>
