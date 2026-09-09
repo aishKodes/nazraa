@@ -2864,7 +2864,13 @@ async function main() {
     );
     assert.equal(Number(qaRuns[0].count), 1, "duplicate QA heartbeats must create one non-financial probe record");
     assert.equal((await product.mobileBootstrap(rewardHost)).wallet.diamonds, diamondsBeforeQaProbe, "QA threshold must never credit Diamonds");
+    const liveDiagnostics = await import("@/lib/db/repositories/live-accounting-diagnostics");
+    const diagnostic = await liveDiagnostics.getLiveRewardDiagnostics(1);
+    assert.ok(diagnostic.expectedRewardUnits >= 1, "diagnostic must count immutable eligible reward decisions");
+    assert.equal(diagnostic.missingRewardUnits, 0, "fresh eligible decisions must have matching claimable entitlements");
+    assert.equal(diagnostic.qaNonFinancialRuns, 1, "diagnostic must count the isolated QA crossing without exposing a user");
     console.log("PASS accelerated Live reward QA: 60-second dedicated reviewer threshold, duplicate heartbeat dedupe, no entitlement and no wallet credit");
+    console.log("PASS Live reward diagnostics: aggregate expected/generated/missing counts and non-financial QA history");
     const rewardId = String(rewardBootstrap.liveRewards[0].id);
     const duplicateClaims = await Promise.all([
       rooms.claimLiveReward(rewardHost, rewardId),
