@@ -31,9 +31,54 @@ import { isPanelCountry } from "@/lib/countries";
 import { configurableGameIds } from "@/lib/games/game-config";
 import { updateSafetyReport } from "@/lib/db/repositories/safety-moderation";
 import { saveManagedLevelDefinitions, type ManagedLevelDefinition, type ManagedLevelTrack } from "@/lib/db/repositories/level-administration";
+import { configureLiveRewardQaOverride, repairMissingLiveRewardEntitlements } from "@/lib/db/repositories/live-accounting-diagnostics";
 
 function destination(path: string, kind: "error" | "success", message: string) {
   return `${path}?${kind}=${encodeURIComponent(message)}`;
+}
+
+export async function submitLiveRewardQaOverride(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    applicationUserId: z.string().uuid(),
+    thresholdSeconds: z.coerce.number().int().min(60).max(180),
+    expiresInMinutes: z.coerce.number().int().min(1).max(120),
+    enabled: z.enum(["true", "false"]),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    redirect(destination("/dashboard/settings", "error", "Choose a dedicated QA Host, a 60–180 second threshold, short expiry, and audit reason."));
+  }
+  try {
+    await configureLiveRewardQaOverride({
+      scope,
+      ...parsed.data,
+      enabled: parsed.data.enabled === "true",
+    });
+  } catch (error) {
+    redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Live reward QA override could not be saved."));
+  }
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", parsed.data.enabled === "true" ? "Non-financial QA reward probe enabled for the short audited window." : "Live reward QA override disabled."));
+}
+
+export async function submitLiveRewardEntitlementRepair(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    days: z.coerce.number().int().min(1).max(3650),
+    reason: z.string().trim().min(5).max(500),
+    confirmed: z.literal("REPAIR"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    redirect(destination("/dashboard/settings", "error", "Enter a valid period, reason, and type REPAIR to restore only already-decided missing entitlements."));
+  }
+  try {
+    const result = await repairMissingLiveRewardEntitlements({ scope, ...parsed.data });
+    revalidatePath("/dashboard/settings");
+    redirect(destination("/dashboard/settings", "success", `${result.insertedEntitlements} already-decided missing entitlement(s) restored; no wallet was credited.`));
+  } catch (error) {
+    redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Live reward entitlement repair could not run."));
+  }
 }
 
 export async function submitLevelDefinitions(formData: FormData) {

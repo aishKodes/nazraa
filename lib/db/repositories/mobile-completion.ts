@@ -311,6 +311,53 @@ type SettledLiveHours = {
   newlyClaimableRewards: number;
 };
 
+/**
+ * A short-lived QA probe proves the same durable clock used by Live rewards
+ * without creating an entitlement, ledger transaction, notification, or
+ * wallet mutation. Its server-side allow-list can only be changed by Master
+ * and is restricted again here to an active dedicated reviewer Host.
+ */
+async function recordNonFinancialLiveRewardQaProbe(
+  connection: PoolConnection,
+  input: {
+    accountingId: string;
+    hostApplicationUserId: string;
+    durableEligibleSeconds: number;
+  },
+) {
+  const [rows] = await connection.query<
+    (RowDataPacket & { threshold_seconds: number | null })[]
+  >(
+    `SELECT access_override.live_reward_qa_threshold_seconds threshold_seconds
+     FROM mobile_access_overrides access_override
+     INNER JOIN play_reviewer_credentials reviewer
+       ON reviewer.application_user_id = access_override.application_user_id
+      AND reviewer.reviewer_role = 'HOST' AND reviewer.active = TRUE
+     WHERE access_override.application_user_id = ?
+       AND access_override.live_reward_qa_enabled = TRUE
+       AND access_override.live_reward_qa_expires_at > CURRENT_TIMESTAMP(3)
+     LIMIT 1`,
+    [input.hostApplicationUserId],
+  );
+  const thresholdSeconds = Number(rows[0]?.threshold_seconds ?? 0);
+  if (thresholdSeconds < 60 || thresholdSeconds > 180) return false;
+  if (input.durableEligibleSeconds < thresholdSeconds) return false;
+  await connection.execute(
+    `INSERT IGNORE INTO live_reward_qa_runs
+      (id, live_session_accounting_id, application_user_id, threshold_seconds,
+       observed_eligible_seconds, outcome)
+     VALUES (?, ?, ?, ?, ?, 'WOULD_CREATE_NON_FINANCIAL')`,
+    [
+      randomUUID(),
+      input.accountingId,
+      input.hostApplicationUserId,
+      thresholdSeconds,
+      input.durableEligibleSeconds,
+    ],
+  );
+  return true;
+}
+
 function liveRewardBusinessDate(at: Date, timezone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
@@ -1512,7 +1559,9 @@ export async function refreshRoomPresence(
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
-              accounting.id reward_accounting_id, accounting.started_at reward_started_at,
+              accounting.id reward_accounting_id,
+              accounting.host_application_user_id reward_host_application_user_id,
+              accounting.started_at reward_started_at,
               accounting.media_publishing reward_media_publishing,
               accounting.last_media_heartbeat_at reward_last_media_heartbeat_at,
               accounting.media_segment_seconds reward_media_segment_seconds,
@@ -1798,6 +1847,11 @@ export async function refreshRoomPresence(
         completedRewardHours,
         faceLiveRules ?? undefined,
       );
+      await recordNonFinancialLiveRewardQaProbe(connection, {
+        accountingId: String(rows[0].reward_accounting_id),
+        hostApplicationUserId: String(rows[0].reward_host_application_user_id),
+        durableEligibleSeconds: durableEligibleLiveSeconds,
+      });
       rows[0].reward_coins_paid = settledLiveHours.totalRewardDiamonds;
       const [rewardUnitRows] = await connection.query<
         (RowDataPacket & { count: number })[]
@@ -3707,6 +3761,13 @@ export async function finalizeLiveSession(
             session.accounting_id,
             completedHours,
           );
+    if (session.room_type !== "PARTY") {
+      await recordNonFinancialLiveRewardQaProbe(connection, {
+        accountingId: session.accounting_id,
+        hostApplicationUserId: session.host_application_user_id,
+        durableEligibleSeconds: committedSeconds,
+      });
+    }
     const rewardCoins = settled?.totalRewardDiamonds ?? 0;
     const [latestRewardRows] = await connection.query<
       (RowDataPacket & { id: string | null; transaction_code: string | null })[]

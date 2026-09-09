@@ -11,6 +11,8 @@ import {
   submitPolicySettings,
   submitRoomFeatureSettings,
   submitRocketSettings,
+  submitLiveRewardEntitlementRepair,
+  submitLiveRewardQaOverride,
   submitVipValidity,
   submitWithdrawalEconomy,
 } from "@/app/admin-actions";
@@ -20,12 +22,19 @@ import { getSystemSettings } from "@/lib/db/repositories/catalog";
 import { getCompletionAdminSettings } from "@/lib/db/repositories/completion-administration";
 import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config";
 import { parseWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { getLiveRewardDiagnostics } from "@/lib/db/repositories/live-accounting-diagnostics";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
-  await requirePermission("settings.manage");
-  const [{ error, success }, settings, completion] = await Promise.all([searchParams, getSystemSettings(), getCompletionAdminSettings()]);
+  const scope = await requirePermission("settings.manage");
+  const isMaster = scope.account.role === "MASTER";
+  const [{ error, success }, settings, completion, liveRewardDiagnostics] = await Promise.all([
+    searchParams,
+    getSystemSettings(),
+    getCompletionAdminSettings(),
+    isMaster ? getLiveRewardDiagnostics(30) : Promise.resolve(null),
+  ]);
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
@@ -165,6 +174,35 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Confirm<button className="primary-button" type="submit">Save Live rules</button></label>
       </form>
     </Card>
+
+    {isMaster && liveRewardDiagnostics ? <Card className="settings-card">
+      <div className="card-title"><div><h2>Live reward ledger audit · 30 days</h2><p>Aggregate-only production evidence from the same durable ledger used for Host duration and claimable rewards. No names, tokens, or financial balances are displayed.</p></div></div>
+      <div className="report-grid">
+        <div><b>{liveRewardDiagnostics.sessions.toLocaleString("en-IN")}</b><span className="block">sessions · {liveRewardDiagnostics.activeSessions.toLocaleString("en-IN")} active</span></div>
+        <div><b>{liveRewardDiagnostics.expectedRewardUnits.toLocaleString("en-IN")}</b><span className="block">expected immutable decisions</span></div>
+        <div><b>{liveRewardDiagnostics.generatedRewardUnits.toLocaleString("en-IN")}</b><span className="block">claimable/claimed entitlements</span></div>
+        <div><b>{liveRewardDiagnostics.missingRewardUnits.toLocaleString("en-IN")}</b><span className="block">decision without entitlement</span></div>
+      </div>
+      <p className="scope-lock">Accounting confidence: confirmed {liveRewardDiagnostics.accuracy.confirmed} · reconciled {liveRewardDiagnostics.accuracy.reconciled} · estimated {liveRewardDiagnostics.accuracy.estimated}. Candidate sessions requiring review: {liveRewardDiagnostics.inconsistentSessionCandidates}. Repairable missing units: {liveRewardDiagnostics.repairableMissingRewardUnits} · uncertain historical missing units: {liveRewardDiagnostics.uncertainMissingRewardUnits} · duplicates: {liveRewardDiagnostics.duplicateRewardUnits}. Non-financial QA crossings: {liveRewardDiagnostics.qaNonFinancialRuns}.</p>
+      <div className="split-grid">
+        <form action={submitLiveRewardQaOverride} className="stack-form full-width">
+          <h3>Dedicated QA threshold</h3><p className="quiet-empty">Creates only a non-financial audit event. It never changes ordinary Live rules, creates an entitlement, or credits Diamonds.</p>
+          <label>Dedicated reviewer Host application ID<input name="applicationUserId" placeholder="UUID" required /></label>
+          <label>QA threshold seconds<input name="thresholdSeconds" type="number" min="60" max="180" defaultValue="120" required /></label>
+          <label>Expiry minutes<input name="expiresInMinutes" type="number" min="1" max="120" defaultValue="30" required /></label>
+          <label>Mode<select name="enabled" defaultValue="true"><option value="true">Enable non-financial probe</option><option value="false">Disable override</option></select></label>
+          <label>Audit reason<input name="reason" minLength={5} maxLength={500} required placeholder="Controlled ledger regression" /></label>
+          <button className="secondary-button" type="submit">Save QA override</button>
+        </form>
+        <form action={submitLiveRewardEntitlementRepair} className="stack-form full-width">
+          <h3>Repair already-decided missing rewards</h3><p className="quiet-empty">Repairs only an eligible immutable decision with no entitlement. It never recalculates eligibility or credits a wallet.</p>
+          <label>Lookback days<input name="days" type="number" min="1" max="3650" defaultValue="30" required /></label>
+          <label>Audit reason<input name="reason" minLength={5} maxLength={500} required placeholder="Ledger audit repair" /></label>
+          <label>Type REPAIR<input name="confirmed" required placeholder="REPAIR" /></label>
+          <button className="danger-button" type="submit">Repair missing entitlements</button>
+        </form>
+      </div>
+    </Card> : null}
 
     <Card className="settings-card">
       <div className="card-title"><div><h2>Mobile app configuration</h2><p>Version, maintenance, update, support, and withdrawal links returned by the public config endpoint.</p></div></div>
