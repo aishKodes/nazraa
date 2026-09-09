@@ -13,6 +13,18 @@ export type LiveMediaUsageType =
   | "PARTY_PASSIVE_STREAM"
   | "PARTY_PASSIVE_RTC_FALLBACK";
 
+export type RoomRuntimeDiagnostics = {
+  connectionPhase: string;
+  reconnectCount: number;
+  publishing: boolean;
+  playbackActive: boolean;
+  lastTerminalErrorCategory?: string | null;
+  activeSpeakers: number;
+  passiveViewers: number;
+  animationQueueLength: number;
+  messageDeliveryLatencyMs?: number | null;
+};
+
 type MetricIncrement = {
   rtcVoiceSeconds?: number;
   rtcVideoSeconds?: number;
@@ -113,6 +125,7 @@ export async function recordMediaUsageHeartbeat(
     usageType?: LiveMediaUsageType;
     active: boolean;
     expectedFaceFallbackCeiling?: number;
+    runtimeDiagnostics?: RoomRuntimeDiagnostics;
   },
 ) {
   let deltaSeconds = 0;
@@ -140,6 +153,34 @@ export async function recordMediaUsageHeartbeat(
          last_seen_at = CURRENT_TIMESTAMP(3), ended_at = NULL`,
       [input.roomId, input.applicationUserId, input.usageType, deltaSeconds],
     );
+    const runtime = input.runtimeDiagnostics;
+    if (runtime) {
+      await connection.execute(
+        `UPDATE live_media_usage
+         SET connection_phase = ?, reconnect_count = GREATEST(reconnect_count, ?),
+             publish_state = ?, playback_state = ?,
+             last_terminal_error_category = COALESCE(?, last_terminal_error_category),
+             active_speakers = ?, passive_viewers = ?, animation_queue_length = ?,
+             message_delivery_latency_ms = ?, diagnostics_updated_at = CURRENT_TIMESTAMP(3)
+         WHERE room_id = ? AND application_user_id = ? AND usage_type = ?`,
+        [
+          runtime.connectionPhase,
+          Math.max(0, Math.min(1000, Math.floor(runtime.reconnectCount))),
+          runtime.publishing,
+          runtime.playbackActive,
+          runtime.lastTerminalErrorCategory?.slice(0, 64) || null,
+          Math.max(0, Math.min(10000, Math.floor(runtime.activeSpeakers))),
+          Math.max(0, Math.min(100000, Math.floor(runtime.passiveViewers))),
+          Math.max(0, Math.min(100, Math.floor(runtime.animationQueueLength))),
+          runtime.messageDeliveryLatencyMs == null
+            ? null
+            : Math.max(0, Math.min(300000, Math.floor(runtime.messageDeliveryLatencyMs))),
+          input.roomId,
+          input.applicationUserId,
+          input.usageType,
+        ],
+      );
+    }
   } else {
     await connection.execute(
       `UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3))

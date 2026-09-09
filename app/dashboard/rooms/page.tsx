@@ -5,7 +5,8 @@ import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
-import { listMediaCostTelemetry, listPresenceIncidents, listRoomsPage } from "@/lib/db/repositories/operations";
+import { listMediaCostTelemetry, listMobileLatencyDiagnostics, listPresenceIncidents, listRoomsPage } from "@/lib/db/repositories/operations";
+import { roomMediaDeliveryDiagnostics } from "@/lib/db/repositories/mobile-completion";
 import { formatDate, formatNumber } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
@@ -14,12 +15,17 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
   const scope = await requirePermission("rooms.read");
   const { error, success, page: rawPage } = await searchParams;
   const mayViewCostTelemetry = can(scope.account.role, "settings.manage");
-  const [result, incidents, mediaCost] = await Promise.all([
+  const [result, incidents, mediaCost, latency] = await Promise.all([
     listRoomsPage(scope, { page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1) }),
     listPresenceIncidents(scope),
     mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [], current: { activeRtcUsers: 0, activeFaceRtcViewers: 0, activePartyRtcUsers: 0, todayEstimatedSpendUsd: 0 }, thresholds: { warningUsd: 3, criticalUsd: 5 }, costLevel: "NORMAL", topRooms: [], rates: { voiceRate: .99, hdVideoRate: 3.99, liveAudioRate: .39, liveHdRate: 1.49 } }),
+    mayViewCostTelemetry ? listMobileLatencyDiagnostics() : Promise.resolve([]),
   ]);
   const rooms = result.items;
+  const deliveryDiagnostics = mayViewCostTelemetry
+    ? await Promise.all(rooms.filter((room) => room.status !== "ENDED").map((room) => roomMediaDeliveryDiagnostics(room.roomCode)))
+    : [];
+  const diagnosticFor = (roomCode: string) => deliveryDiagnostics.find((item) => item?.roomCode === roomCode) ?? null;
   const mayRestrict = can(scope.account.role, "rooms.restrict");
   const mayManage = can(scope.account.role, "rooms.manage");
   return <>
@@ -43,16 +49,20 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
       </tr>)}</tbody></table></div> : <EmptyState title="No media telemetry yet" detail="Daily values appear after the next room media heartbeat." />}
       {mediaCost.topRooms.length ? <><div className="section-subheading"><h3>Top RTC rooms · last 48 hours</h3><p>Server-observed paid media time, highest first.</p></div><div className="table-scroll"><table><thead><tr><th>Room</th><th>Type</th><th>RTC users</th><th>Paid minutes</th></tr></thead><tbody>{mediaCost.topRooms.map((room) => <tr key={room.roomCode}><td data-label="Room" className="mono">{room.roomCode}</td><td data-label="Type">{room.roomType}</td><td data-label="RTC users">{formatNumber(room.rtcUsers)}</td><td data-label="Paid minutes">{formatNumber(Math.round(room.paidSeconds / 60))}</td></tr>)}</tbody></table></div></> : null}
     </Card> : null}
+    {mayViewCostTelemetry ? <Card>
+      <div className="card-title"><div><h2>Mobile latency diagnostics</h2><p>Server-side rolling 7-day aggregates. Network, Flutter route, and ZEGO/HLS first-frame time are measured separately by the client; these values isolate API and MySQL work.</p></div></div>
+      {latency.length ? <div className="table-scroll"><table><thead><tr><th>Operation</th><th>Stage</th><th>Samples</th><th>Average</th><th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr></thead><tbody>{latency.map((item) => <tr key={`${item.operation}:${item.stage}`}><td data-label="Operation" className="mono">{item.operation}</td><td data-label="Stage">{item.stage.replaceAll("_", " ")}</td><td data-label="Samples">{formatNumber(item.samples)}</td><td data-label="Average">{item.averageMs} ms</td><td data-label="p50">{item.p50Ms} ms</td><td data-label="p95">{item.p95Ms} ms</td><td data-label="p99">{item.p99Ms} ms</td><td data-label="Max">{item.maxMs} ms</td></tr>)}</tbody></table></div> : <EmptyState title="Collecting latency samples" detail="Rows appear after production mobile requests. No message, token, user identifier, or request body is retained." />}
+    </Card> : null}
     <Card>{rooms.length ? <div className="table-scroll"><table><thead><tr><th>Room</th><th>Host</th><th>Type</th><th>Tools</th><th>Audience</th><th>Started</th><th>Status</th>{mayRestrict || mayManage ? <th>Moderation</th> : null}</tr></thead><tbody>{rooms.map((room) => <tr key={room.id}>
       <td data-label="Room" className="mono">{room.roomCode}</td>
       <td data-label="Host"><b>{room.hostName}</b><small className="mono block">{room.hostExternalId}</small></td>
       <td data-label="Type">{room.roomType}</td>
-      <td data-label="Tools"><small className="block">{room.themeEnabled ? `Theme ${room.themeIndex + 1}` : "Theme off"} · {room.passwordProtected ? "Password" : "Open"} · {room.chatLocked ? "Chat locked" : "Chat open"}</small><small className="block">PK {room.pkRequestsEnabled ? `${room.pkCount} · requests on` : "requests off"} · Incidents {room.presenceIncidents}</small><small className="block"><b>Media {room.mixerStatus === "ACTIVE" ? "HYBRID" : "RTC FALLBACK"}</b> · RTC publishers {room.rtcPublishers} · Passive stream {room.passiveStreaming} · Passive RTC {room.passiveRtcFallback} · Mixer {room.mixerStatus}</small></td>
+      <td data-label="Tools"><small className="block">{room.themeEnabled ? `Theme ${room.themeIndex + 1}` : "Theme off"} · {room.passwordProtected ? "Password" : "Open"} · {room.chatLocked ? "Chat locked" : "Chat open"}</small><small className="block">PK {room.pkRequestsEnabled ? `${room.pkCount} · requests on` : "requests off"} · Incidents {room.presenceIncidents}</small><small className="block"><b>Media {room.mixerStatus === "ACTIVE" ? "HYBRID" : "RTC FALLBACK"}</b> · RTC publishers {room.rtcPublishers} · Passive stream {room.passiveStreaming} · Passive RTC {room.passiveRtcFallback} · Mixer {room.mixerStatus}</small>{diagnosticFor(room.roomCode) ? <small className="block"><b>Delivery {diagnosticFor(room.roomCode)!.deliveryMode}</b> · auth {diagnosticFor(room.roomCode)!.signedPlaybackAvailable ? "ready" : diagnosticFor(room.roomCode)!.playbackAuthHealth} · {diagnosticFor(room.roomCode)!.fallbackReason}</small> : null}<small className="block"><b>Runtime {room.connectionPhase}</b> · reconnects {room.reconnectCount} · speakers {room.activeSpeakers} · passive {room.passiveViewers} · effects queued {room.animationQueueLength}{room.messageDeliveryLatencyMs == null ? "" : ` · message ${room.messageDeliveryLatencyMs} ms`}{room.lastTerminalErrorCategory ? ` · last failure ${room.lastTerminalErrorCategory}` : ""}</small></td>
       <td data-label="Audience">{formatNumber(room.audience)}</td><td data-label="Started">{formatDate(room.startedAt)}</td><td data-label="Status"><StatusBadge value={room.status} /></td>
       {mayRestrict || mayManage ? <td data-label="Moderation"><div className="room-actions">
         {mayRestrict && room.status !== "ENDED" ? <details className="moderation"><summary><Ban size={14} />Restrict host</summary><form action={submitTemporaryRestriction}>
           <input type="hidden" name="applicationUserId" value={room.applicationUserId} /><input type="hidden" name="returnTo" value="rooms" />
-          <select name="durationMinutes" defaultValue="30"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option></select>
+          <select name="durationMinutes" defaultValue="1440"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="120">2 hours</option><option value="1440">24 hours</option></select>
           <input name="reason" minLength={5} maxLength={500} required placeholder="Reason is required" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm</label><button className="danger-button" type="submit">Apply restriction</button>
         </form></details> : null}
         {mayManage && room.status !== "ENDED" ? <details className="moderation"><summary>Room action</summary><form action={submitRoomStatus}>
@@ -67,6 +77,6 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
       <td data-label="Host"><b>{incident.userName}</b><small className="mono block">{incident.userPublicId}</small></td><td data-label="Room"><span className="mono">{incident.roomCode}</span><small className="block">{incident.roomType}</small></td><td data-label="Event"><StatusBadge value={incident.incidentType} /></td><td data-label="Failures">{incident.consecutiveFailures}</td><td data-label="Time">{formatDate(incident.createdAt)}</td>
       <td data-label="Live access">{incident.restrictionId ? mayRestrict ? <details className="row-action"><summary>Restricted · review</summary><form action={submitRestoreLiveAccess}><input type="hidden" name="restrictionId" value={incident.restrictionId} /><input type="hidden" name="returnTo" value="rooms" /><input name="reason" minLength={5} maxLength={500} required placeholder="Restoration reason" /><button className="secondary-button" type="submit">Restore Live access</button></form></details> : <StatusBadge value="SUSPENDED" /> : <StatusBadge value="ACTIVE" />}</td>
     </tr>)}</tbody></table></div> : <EmptyState title="No camera-presence incidents" detail="Automatic Live stops will be listed here for authorized staff review." />}</Card>
-    <p className="footnote"><Radio size={14} />Temporary restrictions automatically expire after 30, 60, or 120 minutes. Permanent bans are Master-only.</p>
+    <p className="footnote"><Radio size={14} />Temporary Face/Video Live restrictions expire automatically, including the dedicated 24-hour block. Permanent bans and unbans are Master-only.</p>
   </>;
 }

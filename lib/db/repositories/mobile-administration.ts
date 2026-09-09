@@ -45,8 +45,8 @@ export async function listCoinCommerce(scope: Scope, page = 1) {
   const filter = orderScope(scope);
   const sellerScope = scopeWhere(scope, "account.id");
   const [packageRows, sellerRows, supportRows, orderRows] = await Promise.all([
-    db().query<(RowDataPacket & { id: string; public_id: number; name: string; badge_label: string | null; coin_amount: number; display_price: number | null; currency: string | null; active: number; sort_order: number })[]>(
-      "SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, active, sort_order FROM coin_packages ORDER BY active DESC, sort_order, coin_amount",
+    db().query<(RowDataPacket & { id: string; public_id: number; name: string; badge_label: string | null; coin_amount: number; display_price: number | null; currency: string | null; play_product_id: string | null; active: number; sort_order: number })[]>(
+      "SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, play_product_id, active, sort_order FROM coin_packages ORDER BY active DESC, sort_order, coin_amount",
     ),
     db().query<(RowDataPacket & { id: string; public_id: number; full_name: string; role: string; country_code: string | null; verification_status: string | null; business_whatsapp_e164: string | null; whatsapp_public: number | null; availability_status: string | null; supported_region: string | null })[]>(
       `SELECT account.id, account.public_id, account.full_name, account.role, account.country_code,
@@ -85,30 +85,30 @@ export async function listCoinCommerce(scope: Scope, page = 1) {
     packageSupport.set(row.seller_account_id, ids);
   }
   return {
-    packages: packageRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.name, badge: row.badge_label, coins: Number(row.coin_amount), price: row.display_price == null ? null : Number(row.display_price), currency: row.currency, active: Boolean(row.active), sortOrder: Number(row.sort_order) })),
+    packages: packageRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.name, badge: row.badge_label, coins: Number(row.coin_amount), price: row.display_price == null ? null : Number(row.display_price), currency: row.currency, playProductId: row.play_product_id, active: Boolean(row.active), sortOrder: Number(row.sort_order) })),
     sellers: sellerRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), name: row.full_name, role: row.role, country: row.country_code, verification: row.verification_status ?? "UNVERIFIED", whatsapp: row.business_whatsapp_e164, whatsappPublic: Boolean(row.whatsapp_public), availability: row.availability_status ?? "OFFLINE", region: row.supported_region, packageIds: packageSupport.get(row.id) ?? [] })),
     orders: orderRows[0].map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), userName: row.user_name, sellerName: row.seller_name, packageName: row.package_name, coins: Number(row.coin_amount), status: row.status, reviewNote: row.review_note, createdAt: row.created_at, updatedAt: row.updated_at })),
   };
 }
 
-export async function createCoinPackage(input: { scope: Scope; name: string; badge?: string; coins: number; price?: number; currency?: string; sortOrder: number }) {
+export async function createCoinPackage(input: { scope: Scope; name: string; badge?: string; coins: number; price?: number; currency?: string; playProductId?: string; sortOrder: number }) {
   const id = randomUUID();
   await withTransaction(async (connection) => {
     await connection.execute(
-      "INSERT INTO coin_packages (id, name, badge_label, coin_amount, display_price, currency, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, input.name, input.badge || null, input.coins, input.price ?? null, input.currency || null, input.sortOrder, input.scope.account.id],
+      "INSERT INTO coin_packages (id, name, badge_label, coin_amount, display_price, currency, play_product_id, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, input.name, input.badge || null, input.coins, input.price ?? null, input.currency || null, input.playProductId || null, input.sortOrder, input.scope.account.id],
     );
     await audit(connection, { scope: input.scope, action: "coin_package.create", module: "commerce", targetType: "coin_package", targetId: id, reason: "Created sellable coin package", next: { name: input.name, coins: input.coins, price: input.price, currency: input.currency } });
   });
 }
 
-export async function updateCoinPackage(input: { scope: Scope; packageId: string; name: string; badge?: string; coins: number; price?: number; currency: string; sortOrder: number; reason: string }) {
+export async function updateCoinPackage(input: { scope: Scope; packageId: string; name: string; badge?: string; coins: number; price?: number; currency: string; playProductId?: string; sortOrder: number; reason: string }) {
   await withTransaction(async (connection) => {
-    const [rows] = await connection.query<RowDataPacket[]>("SELECT name, badge_label, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE id = ? FOR UPDATE", [input.packageId]);
+    const [rows] = await connection.query<RowDataPacket[]>("SELECT name, badge_label, coin_amount, display_price, currency, play_product_id, sort_order FROM coin_packages WHERE id = ? FOR UPDATE", [input.packageId]);
     if (!rows[0]) throw new Error("Coin package was not found.");
     await connection.execute(
-      "UPDATE coin_packages SET name = ?, badge_label = ?, coin_amount = ?, display_price = ?, currency = ?, sort_order = ? WHERE id = ?",
-      [input.name, input.badge || null, input.coins, input.price ?? null, input.currency, input.sortOrder, input.packageId],
+      "UPDATE coin_packages SET name = ?, badge_label = ?, coin_amount = ?, display_price = ?, currency = ?, play_product_id = ?, sort_order = ? WHERE id = ?",
+      [input.name, input.badge || null, input.coins, input.price ?? null, input.currency, input.playProductId || null, input.sortOrder, input.packageId],
     );
     await audit(connection, { scope: input.scope, action: "coin_package.update", module: "commerce", targetType: "coin_package", targetId: input.packageId, reason: input.reason, previous: rows[0], next: { name: input.name, badge: input.badge, coins: input.coins, price: input.price, currency: input.currency, sortOrder: input.sortOrder } });
   });

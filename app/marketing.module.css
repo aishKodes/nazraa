@@ -1,0 +1,51 @@
+.page {
+  --m-ink: #181129;
+  --m-muted: #776e87;
+  --m-purple: #7147eb;
+  --m-purple-deep: #3d1d91;
+  --m-pink: #e94dbe;
+  min-height: 100vh;
+  overflow: hidden;
+  color: var(--m-ink);
+  background:
+    radial-gradient(circle at 83% 3%, rgba(228, 183, 255, .45), transparent 31rem),
+    radial-gradient(circle at 9% 32%, rgba(255, 207, 230, .32), transparent 28rem),
+    #fcfbff;
+}
+
+.nav, .hero, .section, .footer { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+.nav { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 78px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 850; letter-spacing: -.5px; }
+.brand img { width: 36px; height: 36px; border-radius: 12px; box-shadow: 0 7px 18px rgba(75, 35, 166, .22); }
+.navLinks { display: flex; align-items: center; gap: 21px; color: #5e556c; font-size: 13px; font-weight: 700; }
+.navLinks a:hover { color: var(--m-purple); }
+.navDownload, .primary, .downloadButton { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border-radius: 999px; padding: 0 20px; color: white; background: linear-gradient(135deg, var(--m-purple), var(--m-pink)); box-shadow: 0 10px 24px rgba(104, 54, 205, .25); font-weight: 800; transition: transform .18s, box-shadow .18s; }
+.navDownload { min-height: 38px; padding: 0 15px; font-size: 12px; }
+.navDownload:hover, .primary:hover, .downloadButton:hover { transform: translateY(-2px); box-shadow: 0 14px 28px rgba(104, 54, 205, .3); }
+.hero { display: grid; grid-template-columns: minmax(0, 1.02fr) minmax(330px, .98fr); align-items: center; gap: 52px; min-height: 630px; padding: 63px 0 70px; }
+.eyebrow { display: inline-flex; padding: 7px 11px; border: 1px solid rgba(113, 71, 235, .18); border-radius: 999px; color: var(--m-purple-deep); background: rgba(255,255,255,.75); font-size: 11px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+.hero h1 { max-width: 620px; margin: 18px 0; font-size: clamp(45px, 6.3vw, 78px); line-height: .98; letter-spacing: -3.3px; }
+.hero h1 span { color: var(--m-purple); }
+.hero p { max-width: 535px; margin: 0; color: var(--m-muted); font-size: 18px; line-height: 1.58; }
+.heroActions { display: flex; flex-wrap: wrap; align-items: center; gap: 13px; margin-top: 30px; }
+.secondary { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 17px; border: 1px solid rgba(70, 40, 133, .15); border-radius: 999px; color: #4b346c; background: rgba(255,255,255,.72); font-size: 13px; font-weight: 800; }
+.availability { display: flex; align-items: center; gap: 8px; margin-top: 24px; color: #655b72; font-size: 12px; font-weight: 700; }.availability b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: white; background: #43a047; font-size: 12px; }
+
+.phoneStage { position: relative; display: grid; place-items: center; min-height: 470px; }
+.orb { position: absolute; width: 390px; height: 390px; border-radius: 50%; background: conic-gradient(from 20deg, #f0d1ff, #d7c8ff, #ffd4ed, #f0d1ff); filter: blur(1px); opacity: .85; }
+.phone { position: relative; width: min(330px, 76vw); padding: 9px; border: 8px solid #201734; border-radius: 40px; background: #201734; box-shadow: 0 35px 70px rgba(48, 23, 104, .28); transform: rotate(4deg); }
+.phone::before { content: ""; position: absolute; z-index: 2; top: 11px; left: 50%; width: 91px; height: 18px; border-radius: 999px; background: #201734; transform: translateX(-50%); }
+.phoneScreen { min-height: 530px; overflow: hidden; border-radius: 25px; color: white; background: linear-gradient(165deg, #241851, #4d1671 45%, #d73f92 100%); }
+.phoneTop { display: flex; align-items: center; justify-content: space-between; padding: 35px 17px 15px; color: rgba(255,255,255,.9); font-size: 11px; font-weight: 800; }.livePill { border-radius: 999px; padding: 5px 8px; background: #ff4f7a; font-size: 9px; letter-spacing: .07em; }
+.liveAvatar { width: 142px; height: 142px; margin: 18px auto 13px; border: 3px solid rgba(255,255,255,.82); border-radius: 50%; background: radial-gradient(circle at 35% 26%, #f6baac 0 12%, #784764 13% 33%, #2b184b 34% 67%, #e585bd 68%); box-shadow: 0 0 0 8px rgba(255,255,255,.12); }.hostName { text-align: center; font-size: 17px; font-weight: 850; }.hostTag { margin-top: 5px; color: rgba(255,255,255,.7); text-align: center; font-size: 11px; }
+.chatLines { display: grid; gap: 8px; margin: 29px 12px 0; }.chatLines i { display: block; width: var(--width); height: 29px; border-radius: 12px; background: rgba(26,12,59,.4); }.chatLines i::after { content: "Live chat"; display: block; padding: 7px 10px; color: rgba(255,255,255,.76); font-size: 9px; font-style: normal; }
+.phoneBottom { display: flex; gap: 8px; margin-top: 19px; padding: 11px; background: rgba(14,7,30,.35); }.phoneBottom b { display: block; width: 31px; height: 31px; border-radius: 50%; background: rgba(255,255,255,.22); }.phoneBottom b:first-child { margin-right: auto; width: 132px; border-radius: 999px; }
+
+.section { padding: 78px 0; }.sectionIntro { max-width: 600px; }.sectionIntro h2 { margin: 0; font-size: clamp(31px, 4vw, 48px); line-height: 1.04; letter-spacing: -1.7px; }.sectionIntro p { margin: 16px 0 0; color: var(--m-muted); font-size: 16px; line-height: 1.55; }
+.featureGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-top: 34px; }.feature { min-height: 174px; padding: 22px; border: 1px solid rgba(87, 54, 151, .12); border-radius: 22px; background: rgba(255,255,255,.76); box-shadow: 0 10px 32px rgba(57, 28, 116, .045); }.featureIcon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 14px; color: var(--m-purple-deep); background: linear-gradient(145deg, #efe8ff, #ffe3f4); font-size: 20px; }.feature h3 { margin: 16px 0 6px; font-size: 16px; }.feature p { margin: 0; color: var(--m-muted); font-size: 13px; line-height: 1.45; }
+.release { padding: 70px 0 96px; }.releaseCard { display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: center; padding: clamp(25px, 5vw, 52px); border: 1px solid rgba(255,255,255,.72); border-radius: 30px; color: white; background: linear-gradient(135deg, #2a155c, #6b2aaa 58%, #c54191); box-shadow: 0 25px 60px rgba(58, 23, 130, .25); }.releaseCard h2 { margin: 0; font-size: clamp(29px, 4vw, 43px); letter-spacing: -1.5px; }.releaseCard p { margin: 10px 0 0; color: rgba(255,255,255,.78); }.releaseMeta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 19px; }.releaseMeta span { padding: 7px 9px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(255,255,255,.12); font-size: 11px; font-weight: 800; }.releaseCard .downloadButton { min-width: 155px; background: white; color: #4a218a; box-shadow: none; }.releaseCard .downloadButton[aria-disabled="true"] { cursor: not-allowed; opacity: .82; }.releaseCard a { color: white; text-decoration: underline; text-underline-offset: 3px; font-size: 12px; font-weight: 750; }
+.footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 18px; padding: 26px 0 35px; border-top: 1px solid rgba(83, 53, 135, .1); color: #766d80; font-size: 12px; }.footerLinks { display: flex; flex-wrap: wrap; gap: 14px; font-weight: 700; }.footerLinks a:hover { color: var(--m-purple); }
+.checksum { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+@media (max-width: 760px) { .nav, .hero, .section, .footer { width: min(100% - 28px, 1120px); }.nav { min-height: 65px; }.navLinks { display: none; }.hero { grid-template-columns: 1fr; gap: 24px; min-height: 0; padding: 52px 0 45px; }.hero h1 { font-size: clamp(45px, 14vw, 64px); }.hero p { font-size: 16px; }.phoneStage { min-height: 430px; }.orb { width: 315px; height: 315px; }.phone { width: 265px; transform: rotate(2deg); }.phoneScreen { min-height: 425px; }.liveAvatar { width: 112px; height: 112px; }.featureGrid { grid-template-columns: repeat(2, 1fr); }.releaseCard { grid-template-columns: 1fr; }.releaseCard .downloadButton { width: max-content; }.footer { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 440px) { .navDownload { padding: 0 12px; }.brand { font-size: 16px; }.featureGrid { grid-template-columns: 1fr; }.feature { min-height: 142px; }.heroActions { align-items: stretch; flex-direction: column; }.primary, .secondary { width: 100%; }.phoneStage { transform: scale(.94); margin: -14px 0; }.releaseCard .downloadButton { width: 100%; }.releaseMeta span { font-size: 10px; } }

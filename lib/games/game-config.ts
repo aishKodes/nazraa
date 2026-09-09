@@ -51,10 +51,10 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
   winnings_deduction_rate: 0.01,
   games: {
     teen_patti_pro: {
-      enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 5,
+      enabled: true, maintenance: false, bettingSeconds: 12, drawingSeconds: 4,
       targetWinRate: 0.5, targetRtp: 0.95, payoutScalePpm: 1_029_014,
       sideBetPayoutScalePpm: 1_008_049, maximumPayoutMultiplier: 70,
-      resultSeconds: 7, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 100_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       // Inverse-paytable lane weights make every normal lane return the same
@@ -62,7 +62,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [10_741, 10_001, 10_358],
     },
     luck77: {
-      enabled: true, maintenance: false, bettingSeconds: 10, drawingSeconds: 3,
+      enabled: true, maintenance: false, bettingSeconds: 8, drawingSeconds: 2,
       targetWinRate: 0.5, targetRtp: 0.95, payoutScalePpm: 1_079_545,
       maximumPayoutMultiplier: 9,
       resultSeconds: 3, minimumBet: 100, maximumBet: 50_000_000,
@@ -71,10 +71,10 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [1, 4, 4],
     },
     greedy_lion: {
-      enabled: true, maintenance: false, bettingSeconds: 20, drawingSeconds: 3,
+      enabled: true, maintenance: false, bettingSeconds: 16, drawingSeconds: 3,
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
-      resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 50_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: true,
       // The references do not establish these probabilities or contribution
@@ -85,10 +85,10 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [9000, 1000, 1800, 9000, 3000, 9000, 9000, 4500],
     },
     greedy_king: {
-      enabled: true, maintenance: false, bettingSeconds: 30, drawingSeconds: 3,
+      enabled: true, maintenance: false, bettingSeconds: 24, drawingSeconds: 3,
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
-      resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 5000, 10_000, 50_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       saladWeight: 0, pizzaWeight: 0, poolContributionBps: 0,
@@ -96,10 +96,10 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [9000, 4500, 3000, 1800, 1000, 9000, 9000, 9000],
     },
     bounty_football: {
-      enabled: true, maintenance: false, bettingSeconds: 10, drawingSeconds: 4,
+      enabled: true, maintenance: false, bettingSeconds: 8, drawingSeconds: 3,
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 979_176,
       maximumPayoutMultiplier: 100,
-      resultSeconds: 4, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 5000, 50_000, 100_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       outcomeWeights: [490000, 196000, 122500, 54444, 14848, 19600, 9800, 11136, 32667, 49000],

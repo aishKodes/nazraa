@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
+import { signedZegoCdnPlaybackUrl } from "@/lib/services/zego-cdn-playback-auth";
 
 type MediaRole =
   | "HOST"
@@ -52,10 +53,12 @@ export async function authorizeRoomRtc(
       room_features_json: unknown;
       mixer_status: string | null;
       mixer_output_stream_id: string | null;
+      mixer_playback_url: string | null;
     })[]>(
       `SELECT room.id room_id, room.room_type, member.room_role, member.media_role, member.muted,
               settings.setting_value room_features_json, mixer.status mixer_status,
-              mixer.output_stream_id mixer_output_stream_id
+              mixer.output_stream_id mixer_output_stream_id,
+              mixer.playback_url mixer_playback_url
        FROM live_rooms room
        INNER JOIN live_room_members member ON member.room_id = room.id
          AND member.application_user_id = ? AND member.left_at IS NULL
@@ -69,7 +72,7 @@ export async function authorizeRoomRtc(
     if (!room) throw new Error("Join this active room before requesting media access.");
 
     const features = objectValue(room.room_features_json);
-    const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
+    const threshold = Math.max(1, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
     const fallbackCeiling = Math.max(1, Math.min(100, Number(features.rtcPassiveFallbackCeiling ?? 3)));
     const temporaryCostGuardEnabled = features.temporaryRtcCostGuardEnabled !== false;
     const temporaryFaceViewerCeiling = Math.max(1, Math.min(20, Number(features.temporaryFaceRtcViewerCeiling ?? 3)));
@@ -91,7 +94,16 @@ export async function authorizeRoomRtc(
         ? features.partyPassivePlaybackMode === "live_streaming" && passiveCount >= threshold
         : false;
     const hasInteractiveOutput = Boolean(room.mixer_output_stream_id?.trim());
-    const publicStreamActive = mixerConfigured && streamingRequested && room.mixer_status === "ACTIVE" && hasInteractiveOutput;
+    const outputStreamId = room.mixer_output_stream_id?.trim() ?? "";
+    const playbackTemplate = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
+    const unsignedPlaybackUrl = room.mixer_playback_url?.trim()
+      || (playbackTemplate ? playbackTemplate.replaceAll("{streamId}", encodeURIComponent(outputStreamId)) : "");
+    // RTC authorization and the media-delivery snapshot must use precisely
+    // the same availability test. Otherwise a viewer can be denied an RTC
+    // token before the backend has a usable signed CDN URL to give them.
+    const signedPlaybackAvailable = hasInteractiveOutput
+      && signedZegoCdnPlaybackUrl(outputStreamId, unsignedPlaybackUrl) !== null;
+    const publicStreamActive = mixerConfigured && streamingRequested && room.mixer_status === "ACTIVE" && signedPlaybackAvailable;
     const paidRoutingActive = enabled(features.paidMediaRoutingEnabled) && deploymentReady;
     const emergencyFallbackEnabled = enabled(features.emergencyRtcFallbackEnabled);
 

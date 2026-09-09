@@ -1,9 +1,22 @@
 import "server-only";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
-import { db } from "@/lib/db/pool";
+import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { PreparedDocument } from "@/lib/security/documents";
+
+type PublicMobileConfig = {
+  gifts: RowDataPacket[];
+  banners: RowDataPacket[];
+  notifications: RowDataPacket[];
+  settings: Record<string, unknown>;
+};
+
+// This payload is intentionally public and already advertises a 60-second
+// shared-cache lifetime. Keeping the same short lifetime in a warm runtime
+// prevents every Home launch from opening a remote Hostinger query while
+// preserving timely catalog/config updates and avoiding any financial state.
+let publicConfigCache: { value: PublicMobileConfig; expiresAt: number } | null = null;
 
 export async function syncApplicationUser(input: { externalUserId: string; fullName: string; countryCode: string; avatarUrl?: string }) {
   const id = randomUUID();
@@ -56,15 +69,48 @@ export async function createMobileSupportTicket(input: { externalUserId: string;
 }
 
 export async function publicMobileConfig() {
-  const [gifts] = await db().query<RowDataPacket[]>("SELECT gift_key `key`, name, category, emoji, coin_price coinPrice, visual_url visualUrl, animation_key animationKey FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name");
-  const [banners] = await db().query<RowDataPacket[]>(
-    `SELECT id, placement, title, subtitle, image_url imageUrl, action_type actionType, action_target actionTarget, priority
-     FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3)) AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3)) ORDER BY priority DESC`,
-  );
-  const [notifications] = await db().query<RowDataPacket[]>(
-    `SELECT id, title, message, audience_role audienceRole, action_target actionTarget, COALESCE(published_at, scheduled_at) publishedAt
-     FROM platform_notifications WHERE status = 'PUBLISHED' OR (status = 'SCHEDULED' AND scheduled_at <= CURRENT_TIMESTAMP(3)) ORDER BY COALESCE(published_at, scheduled_at) DESC LIMIT 30`,
-  );
-  const [settings] = await db().query<(RowDataPacket & { setting_key: string; setting_value: unknown })[]>("SELECT setting_key, setting_value FROM system_settings");
-  return { gifts, banners, notifications, settings: Object.fromEntries(settings.map((item) => [item.setting_key, typeof item.setting_value === "string" ? JSON.parse(item.setting_value) : item.setting_value])) };
+  const now = Date.now();
+  if (publicConfigCache && publicConfigCache.expiresAt > now) {
+    return publicConfigCache.value;
+  }
+
+  const value = await withDatabaseReadRetry(async () => {
+    const [giftResult, bannerResult, notificationResult, settingResult] =
+      await Promise.all([
+        db().query<RowDataPacket[]>(
+          "SELECT gift_key `key`, name, category, emoji, coin_price coinPrice, visual_url visualUrl, animation_key animationKey FROM gift_catalog WHERE active = TRUE ORDER BY coin_price, name",
+        ),
+        db().query<RowDataPacket[]>(
+          `SELECT id, placement, title, subtitle, image_url imageUrl, action_type actionType, action_target actionTarget, priority
+           FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3)) AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3)) ORDER BY priority DESC`,
+        ),
+        db().query<RowDataPacket[]>(
+          `SELECT id, title, message, audience_role audienceRole, action_target actionTarget, COALESCE(published_at, scheduled_at) publishedAt
+           FROM platform_notifications WHERE status = 'PUBLISHED' OR (status = 'SCHEDULED' AND scheduled_at <= CURRENT_TIMESTAMP(3)) ORDER BY COALESCE(published_at, scheduled_at) DESC LIMIT 30`,
+        ),
+        db().query<(RowDataPacket & { setting_key: string; setting_value: unknown })[]>(
+          "SELECT setting_key, setting_value FROM system_settings",
+        ),
+      ]);
+    const [gifts] = giftResult;
+    const [banners] = bannerResult;
+    const [notifications] = notificationResult;
+    const [settings] = settingResult;
+    return {
+      gifts,
+      banners,
+      notifications,
+      settings: Object.fromEntries(
+        settings.map((item) => [
+          item.setting_key,
+          typeof item.setting_value === "string"
+            ? JSON.parse(item.setting_value)
+            : item.setting_value,
+        ]),
+      ),
+    } satisfies PublicMobileConfig;
+  });
+
+  publicConfigCache = { value, expiresAt: now + 60_000 };
+  return value;
 }

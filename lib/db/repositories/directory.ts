@@ -145,7 +145,20 @@ export async function listHostsPage(scope: Scope, input: PageRequest = {}): Prom
   }
   const [rows] = await db().query<HostRow[]>(
     `SELECT h.id, u.full_name, u.external_user_id, h.status, h.verification_status, agency.full_name agency_name,
-            h.live_minutes_30d, h.sessions_30d, h.gifts_value_30d, COALESCE(documents.document_count, 0) document_count
+            COALESCE((
+              SELECT SUM(accounting.eligible_seconds_committed)
+              FROM live_session_accounting accounting
+              WHERE accounting.host_application_user_id = h.application_user_id
+                AND accounting.room_type IN ('LIVE', 'FACE')
+                AND accounting.started_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 DAY
+            ) DIV 60, 0) live_minutes_30d,
+            COALESCE((
+              SELECT COUNT(*) FROM live_session_accounting accounting
+              WHERE accounting.host_application_user_id = h.application_user_id
+                AND accounting.room_type IN ('LIVE', 'FACE')
+                AND accounting.started_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 DAY
+            ), 0) sessions_30d,
+            h.gifts_value_30d, COALESCE(documents.document_count, 0) document_count
      FROM host_profiles h
      INNER JOIN application_users u ON u.id = h.application_user_id
      LEFT JOIN platform_accounts agency ON agency.id = h.agency_account_id

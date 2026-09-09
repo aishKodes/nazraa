@@ -41,7 +41,9 @@ export async function agencyApplicationsForUser(identity: MobileIdentity) {
   }
 }
 
-export async function searchAgency(publicId: string) {
+export async function searchAgency(rawQuery: string) {
+  const query = rawQuery.trim().replace(/\s+/g, " ");
+  const exactPublicId = /^\d{6}$/.test(query) ? query : null;
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT agency.id, agency.public_id, agency.full_name, agency.country_code, agency.status,
             owner.public_id owner_public_id, owner.full_name owner_name,
@@ -52,18 +54,36 @@ export async function searchAgency(publicId: string) {
        OR owner.external_user_id = agency.application_user_id
        OR CAST(owner.public_id AS CHAR) = agency.application_user_id
      LEFT JOIN host_profiles host ON host.agency_account_id = agency.id AND host.status = 'ACTIVE'
-     WHERE agency.public_id = ? AND agency.role = 'AGENCY' AND agency.status = 'ACTIVE'
+     WHERE agency.role = 'AGENCY'
+       AND (? IS NULL OR agency.public_id = ?)
+       AND (? IS NOT NULL OR agency.full_name LIKE CONCAT('%', ?, '%'))
      GROUP BY agency.id, agency.public_id, agency.full_name, agency.country_code, agency.status,
-              owner.public_id, owner.full_name LIMIT 1`,
-    [publicId],
+              owner.public_id, owner.full_name
+     ORDER BY (agency.public_id = ?) DESC, (agency.status = 'ACTIVE') DESC,
+              agency.full_name ASC, agency.public_id ASC
+     LIMIT 20`,
+    [exactPublicId, exactPublicId, exactPublicId, query, exactPublicId ?? 0],
   );
-  const agency = rows[0];
-  if (!agency) throw new Error("No active Agency was found with that six-digit ID.");
-  if (agency.owner_public_id == null) throw new Error("This Agency does not have an active Agency Owner yet.");
   return {
-    id: String(agency.public_id), name: String(agency.full_name), country: agency.country_code ?? "",
-    status: String(agency.status), hostCount: Number(agency.host_count),
-    owner: agency.owner_public_id == null ? null : { id: String(agency.owner_public_id), name: String(agency.owner_name) },
+    query,
+    results: rows.map((agency) => {
+      const eligible = agency.status === "ACTIVE" && agency.owner_public_id != null;
+      return {
+        id: String(agency.public_id),
+        name: String(agency.full_name),
+        logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${agency.public_id}`,
+        country: agency.country_code ?? "",
+        status: eligible ? "ACTIVE" : "UNAVAILABLE",
+        statusMessage: eligible
+          ? null
+          : agency.status !== "ACTIVE"
+            ? "This Agency is currently unavailable."
+            : "This Agency is waiting for an active owner.",
+        canApply: eligible,
+        hostCount: Number(agency.host_count),
+        owner: agency.owner_public_id == null ? null : { id: String(agency.owner_public_id), name: String(agency.owner_name) },
+      };
+    }),
   };
 }
 
@@ -110,6 +130,26 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
     if (!agencies[0]) throw new Error("No active Agency was found with that six-digit ID.");
     if (!agencies[0].owner_user_id) throw new Error("This Agency does not have an active Agency Owner yet.");
     if (agencies[0].owner_user_id === identity.userId) throw new Error("You already own this Agency.");
+    await connection.execute(
+      "INSERT IGNORE INTO agency_membership_application_keys (application_user_id, agency_account_id) VALUES (?, ?)",
+      [identity.userId, agencies[0].id],
+    );
+    await connection.query(
+      "SELECT application_user_id FROM agency_membership_application_keys WHERE application_user_id = ? AND agency_account_id = ? FOR UPDATE",
+      [identity.userId, agencies[0].id],
+    );
+    const [existingTargetApplications] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(
+      `SELECT id, status FROM agency_membership_applications
+       WHERE application_user_id = ? AND agency_account_id = ? LIMIT 1 FOR UPDATE`,
+      [identity.userId, agencies[0].id],
+    );
+    if (existingTargetApplications[0]) {
+      return {
+        id: existingTargetApplications[0].id,
+        status: String(existingTargetApplications[0].status).toLowerCase(),
+        alreadyExisted: true,
+      };
+    }
     const [openMemberships] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_membership_applications WHERE application_user_id = ? AND status IN ('PENDING','APPROVED') LIMIT 1", [identity.userId]);
     if (openMemberships.length) throw new Error("You already have an active or pending Agency membership.");
     const [pendingCreations] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [identity.userId]);
@@ -118,7 +158,7 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
     await connection.execute("INSERT INTO agency_membership_applications (id, application_user_id, agency_account_id) VALUES (?, ?, ?)", [applicationId, identity.userId, agencies[0].id]);
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'Agency application pending', ?, 'agency')", [randomUUID(), identity.userId, `Your request to join ${agencies[0].full_name} is waiting for approval.`]);
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'AGENCY', 'New Agency join request', ?, 'agency')", [randomUUID(), agencies[0].owner_user_id, `${identity.fullName} requested to join ${agencies[0].full_name}.`]);
-    return { id: applicationId, status: "pending" };
+    return { id: applicationId, status: "pending", alreadyExisted: false };
   });
 }
 
@@ -135,7 +175,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
   const [hosts, requests] = await Promise.all([
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.country_code, user.language_code, user.level_number,
-              user.anchor_income_points, user.vip_tier, user.is_host, host.status, host.live_minutes_30d,
+              user.anchor_level_number, user.vip_tier, user.is_host, host.status, host.live_minutes_30d,
               host.sessions_30d, host.gifts_value_30d,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
@@ -149,7 +189,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT application.id, application.created_at, user.public_id, user.full_name, user.country_code,
-              user.language_code, user.level_number, user.anchor_income_points, user.vip_tier, user.is_host,
+              user.language_code, user.level_number, user.anchor_level_number, user.vip_tier, user.is_host,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
@@ -164,7 +204,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
   const user = (row: RowDataPacket) => ({
     id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
     country: row.country_code ?? "", language: row.language_code ?? "", level: Number(row.level_number),
-    anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
+    anchorLevel: Number(row.anchor_level_number ?? 1),
     vip: Number(row.vip_tier), role: row.is_host ? "host" : "user",
   });
   return {
@@ -299,21 +339,26 @@ export async function applyToCreateAgency(identity: MobileIdentity, input: {
   });
 }
 
-export async function discoveryPosts(after?: string) {
+export async function discoveryPosts(identity?: MobileIdentity, after?: string) {
   try {
     const [rows] = await db().query<RowDataPacket[]>(
       `SELECT post.id, post.caption, post.status, post.created_at, asset.id asset_id,
               user.public_id, user.full_name, user.country_code,
               CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000)) ELSE user.avatar_url END avatar_url,
-              user.level_number, LEAST(200, FLOOR(SQRT(GREATEST(0, user.anchor_income_points) / 10000)) + 1) anchor_level, user.vip_tier, user.is_host
+              user.level_number, user.anchor_level_number anchor_level, user.vip_tier, user.is_host
        FROM discovery_posts post
        LEFT JOIN discovery_post_assets asset ON asset.id = post.asset_id
        INNER JOIN application_users user ON user.id = post.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE post.status IN ('VISIBLE','UNDER_REVIEW')
+         ${identity ? `AND NOT EXISTS (
+           SELECT 1 FROM private_message_blocks block
+           WHERE (block.blocker_application_user_id = ? AND block.blocked_application_user_id = post.application_user_id)
+              OR (block.blocker_application_user_id = post.application_user_id AND block.blocked_application_user_id = ?)
+         )` : ""}
          ${after ? "AND (post.created_at, post.id) < (SELECT created_at, id FROM discovery_posts WHERE id = ?)" : ""}
        ORDER BY post.created_at DESC, post.id DESC LIMIT 30`,
-      after ? [after] : [],
+      [...(identity ? [identity.userId, identity.userId] : []), ...(after ? [after] : [])],
     );
     return rows.map((row) => ({
       id: String(row.id), type: row.asset_id ? "photo" : "text", caption: String(row.caption),
@@ -351,6 +396,22 @@ export async function reportDiscoveryPost(identity: MobileIdentity, input: { pos
     if (!posts[0] || posts[0].status === "REMOVED") throw new Error("This post is no longer available.");
     if (posts[0].application_user_id === identity.userId) throw new Error("You cannot report your own post.");
     await connection.execute("INSERT INTO discovery_post_reports (post_id, reporter_application_user_id, reason) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE reason = VALUES(reason)", [input.postId, identity.userId, input.reason]);
+    const [unified] = await connection.query<(RowDataPacket & { id: string })[]>(
+      "SELECT id FROM safety_reports WHERE reporter_application_user_id = ? AND report_type = 'CONTENT' AND content_id = ? LIMIT 1 FOR UPDATE",
+      [identity.userId, input.postId],
+    );
+    if (unified[0]) {
+      await connection.execute("UPDATE safety_reports SET reason_detail = ?, status = IF(status = 'DISMISSED', 'NEW', status) WHERE id = ?", [input.reason.trim(), unified[0].id]);
+    } else {
+      await connection.execute(
+        `INSERT INTO safety_reports
+          (id, client_report_id, reporter_application_user_id, report_type, reason_code, reason_detail,
+           target_application_user_id, content_id, evidence_metadata)
+         VALUES (?, ?, ?, 'CONTENT', 'community_safety', ?, ?, ?, ?)`,
+        [randomUUID(), randomUUID(), identity.userId, input.reason.trim(), posts[0].application_user_id, input.postId,
+          JSON.stringify({ source: "discovery_post_report" })],
+      );
+    }
     const [counts] = await connection.query<(RowDataPacket & { total: number })[]>("SELECT COUNT(*) total FROM discovery_post_reports WHERE post_id = ?", [input.postId]);
     if (Number(counts[0].total) >= 3) await connection.execute("UPDATE discovery_posts SET status = 'UNDER_REVIEW' WHERE id = ? AND status = 'VISIBLE'", [input.postId]);
   });
@@ -381,7 +442,7 @@ export async function searchPrivateMessageRecipients(identity: MobileIdentity, r
   const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.country_code, user.language_code,
-            user.level_number, user.anchor_income_points, user.vip_tier, user.is_host,
+            user.level_number, user.anchor_level_number, user.vip_tier, user.is_host,
             user.bio,
             CASE WHEN avatar.updated_at IS NOT NULL
               THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id,
@@ -403,7 +464,7 @@ export async function searchPrivateMessageRecipients(identity: MobileIdentity, r
       country: row.country_code ?? "",
       language: row.language_code ?? "en",
       level: Number(row.level_number ?? 1),
-      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
+      anchorLevel: Number(row.anchor_level_number ?? 1),
       vip: Number(row.vip_tier ?? 0),
       role: row.is_host ? "host" : "user",
       bio: String(row.bio ?? ""),
@@ -425,7 +486,7 @@ export async function socialDirectory(
   const ownerColumn = input.kind === "followers" ? "follow_link.followed_application_user_id" : "follow_link.follower_application_user_id";
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT person.public_id, person.full_name, person.country_code, person.language_code,
-            person.level_number, person.consumption_points, person.anchor_income_points, person.vip_tier,
+            person.level_number, person.anchor_level_number, person.vip_tier,
             person.is_host, person.bio,
             (SELECT COUNT(*) FROM user_follows followers WHERE followers.followed_application_user_id = person.id) followers,
             (SELECT COUNT(*) FROM user_follows following WHERE following.follower_application_user_id = person.id) following,
@@ -450,8 +511,8 @@ export async function socialDirectory(
     people: page.map((row) => ({
       id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url,
       country: row.country_code ?? "", language: row.language_code ?? "en", bio: String(row.bio ?? ""),
-      level: Math.min(120, Math.floor(Math.sqrt(Math.max(0, Number(row.consumption_points ?? 0)) / 5000)) + 1),
-      anchorLevel: Math.min(200, Math.floor(Math.sqrt(Math.max(0, Number(row.anchor_income_points ?? 0)) / 10000)) + 1),
+      level: Number(row.level_number ?? 1),
+      anchorLevel: Number(row.anchor_level_number ?? 1),
       vip: Number(row.vip_tier ?? 0), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0),
       role: row.is_host ? "host" : "user",
     })),
@@ -626,8 +687,17 @@ export async function respondToPrivateRequest(identity: MobileIdentity, input: {
 export async function setPrivateMessageBlock(identity: MobileIdentity, input: { targetPublicId: string; blocked: boolean }) {
   const [targets] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM application_users WHERE public_id = ? AND account_status = 'ACTIVE' LIMIT 1", [input.targetPublicId]);
   if (!targets[0] || targets[0].id === identity.userId) throw new Error("That user cannot be blocked.");
-  if (input.blocked) await db().execute("INSERT IGNORE INTO private_message_blocks (blocker_application_user_id, blocked_application_user_id) VALUES (?, ?)", [identity.userId, targets[0].id]);
-  else await db().execute("DELETE FROM private_message_blocks WHERE blocker_application_user_id = ? AND blocked_application_user_id = ?", [identity.userId, targets[0].id]);
+  if (input.blocked) {
+    await withTransaction(async (connection) => {
+      await connection.execute("INSERT IGNORE INTO private_message_blocks (blocker_application_user_id, blocked_application_user_id) VALUES (?, ?)", [identity.userId, targets[0].id]);
+      await connection.execute(
+        `DELETE FROM user_follows
+         WHERE (follower_application_user_id = ? AND followed_application_user_id = ?)
+            OR (follower_application_user_id = ? AND followed_application_user_id = ?)`,
+        [identity.userId, targets[0].id, targets[0].id, identity.userId],
+      );
+    });
+  } else await db().execute("DELETE FROM private_message_blocks WHERE blocker_application_user_id = ? AND blocked_application_user_id = ?", [identity.userId, targets[0].id]);
   return { blocked: input.blocked };
 }
 
@@ -643,8 +713,26 @@ export async function markPrivateConversationRead(identity: MobileIdentity, targ
 }
 
 export async function reportPrivateMessage(identity: MobileIdentity, input: { messageId: string; reason: string }) {
-  const [messages] = await db().query<(RowDataPacket & { recipient_application_user_id: string })[]>("SELECT recipient_application_user_id FROM private_messages WHERE id = ? LIMIT 1", [input.messageId]);
+  const [messages] = await db().query<(RowDataPacket & { sender_application_user_id: string; recipient_application_user_id: string })[]>("SELECT sender_application_user_id, recipient_application_user_id FROM private_messages WHERE id = ? LIMIT 1", [input.messageId]);
   if (!messages[0] || messages[0].recipient_application_user_id !== identity.userId) throw new Error("Only a received message can be reported.");
-  await db().execute("INSERT INTO private_message_reports (message_id, reporter_application_user_id, reason) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE reason = VALUES(reason)", [input.messageId, identity.userId, input.reason]);
+  await withTransaction(async (connection) => {
+    await connection.execute("INSERT INTO private_message_reports (message_id, reporter_application_user_id, reason) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE reason = VALUES(reason)", [input.messageId, identity.userId, input.reason]);
+    const [unified] = await connection.query<(RowDataPacket & { id: string })[]>(
+      "SELECT id FROM safety_reports WHERE reporter_application_user_id = ? AND report_type = 'DIRECT_MESSAGE' AND message_id = ? LIMIT 1 FOR UPDATE",
+      [identity.userId, input.messageId],
+    );
+    if (unified[0]) {
+      await connection.execute("UPDATE safety_reports SET reason_detail = ?, status = IF(status = 'DISMISSED', 'NEW', status) WHERE id = ?", [input.reason.trim(), unified[0].id]);
+    } else {
+      await connection.execute(
+        `INSERT INTO safety_reports
+          (id, client_report_id, reporter_application_user_id, report_type, reason_code, reason_detail,
+           target_application_user_id, message_id, evidence_metadata)
+         VALUES (?, ?, ?, 'DIRECT_MESSAGE', 'community_safety', ?, ?, ?, ?)`,
+        [randomUUID(), randomUUID(), identity.userId, input.reason.trim(), messages[0].sender_application_user_id,
+          input.messageId, JSON.stringify({ source: "private_message_report" })],
+      );
+    }
+  });
   return { reported: true };
 }

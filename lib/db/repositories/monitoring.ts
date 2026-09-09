@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "crypto";
-import type { RowDataPacket } from "mysql2";
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
@@ -21,13 +21,13 @@ export async function searchMonitoring(scope: Scope, query: string) {
     country_code: string | null; account_status: string; face_verification_status: string; is_host: number;
     host_status: string | null; verification_status: string | null; agency_name: string | null;
     room_code: string | null; room_type: string | null; room_status: string | null;
-    restriction_id: string | null; restriction_ends_at: string | null; complaint_count: number; risk_count: number;
+    restriction_id: string | null; restriction_type: string | null; restriction_ends_at: string | null; complaint_count: number; risk_count: number;
   })[]>(
     `SELECT u.id, u.public_id, u.external_user_id, u.full_name, u.whatsapp_e164, u.country_code,
             u.account_status, u.face_verification_status, u.is_host, host.status host_status,
             host.verification_status, agency.full_name agency_name,
             active_room.room_code, active_room.room_type, active_room.status room_status,
-            restriction.id restriction_id, restriction.ends_at restriction_ends_at,
+            restriction.id restriction_id, restriction.restriction_type, restriction.ends_at restriction_ends_at,
             COALESCE(complaints.complaint_count, 0) complaint_count,
             COALESCE(risks.risk_count, 0) risk_count
      FROM application_users u
@@ -42,9 +42,17 @@ export async function searchMonitoring(scope: Scope, query: string) {
        ) latest ON latest.host_application_user_id = room.host_application_user_id AND latest.started_at = room.started_at
      ) active_room ON active_room.host_application_user_id = u.id
      LEFT JOIN moderation_restrictions restriction
-       ON restriction.application_user_id = u.id AND restriction.status = 'ACTIVE'
-      AND restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
-      AND (restriction.ends_at IS NULL OR restriction.ends_at > CURRENT_TIMESTAMP(3))
+       ON restriction.id = (
+         SELECT current_restriction.id
+         FROM moderation_restrictions current_restriction
+         WHERE current_restriction.application_user_id = u.id
+           AND current_restriction.status = 'ACTIVE'
+           AND current_restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+           AND (current_restriction.ends_at IS NULL OR current_restriction.ends_at > CURRENT_TIMESTAMP(3))
+         ORDER BY (current_restriction.restriction_type = 'SUSPENSION') DESC,
+                  current_restriction.created_at DESC
+         LIMIT 1
+       )
      LEFT JOIN (
        SELECT application_user_id, COUNT(*) complaint_count FROM support_tickets
        WHERE status NOT IN ('RESOLVED','CLOSED') GROUP BY application_user_id
@@ -63,7 +71,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
     faceStatus: row.face_verification_status, isHost: Boolean(row.is_host), hostStatus: row.host_status,
     verificationStatus: row.verification_status, agencyName: row.agency_name,
     roomCode: row.room_code, roomType: row.room_type, roomStatus: row.room_status,
-    restrictionId: row.restriction_id, restrictionEndsAt: row.restriction_ends_at,
+    restrictionId: row.restriction_id, restrictionType: row.restriction_type, restrictionEndsAt: row.restriction_ends_at,
     complaintCount: Number(row.complaint_count), riskCount: Number(row.risk_count),
   }));
 }
@@ -98,13 +106,18 @@ export async function listUserDevices(scope: Scope, applicationUserId: string) {
   const scoped = scopeWhere(scope, "u.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; device_label: string | null; device_id_hash: string | null; last_used_at: string; expires_at: string; revoked_at: string | null;
-    blocked_id: string | null; blocked_reason: string | null; blocked_at: string | null;
+    blocked_id: string | null; blocked_reason: string | null; blocked_at: string | null; blocked_by_name: string | null;
   })[]>(
     `SELECT session.id, session.device_label, session.device_id_hash, session.last_used_at, session.expires_at, session.revoked_at,
-            block.id blocked_id, block.reason blocked_reason, block.blocked_at
+            block.id blocked_id, block.reason blocked_reason, block.blocked_at, block_actor.full_name blocked_by_name
      FROM mobile_sessions session
      INNER JOIN application_users u ON u.id = session.application_user_id
-     LEFT JOIN mobile_device_blocks block ON block.mobile_session_id = session.id AND block.status = 'ACTIVE'
+     LEFT JOIN mobile_device_blocks block
+       ON block.application_user_id = session.application_user_id
+      AND block.status = 'ACTIVE'
+      AND (block.mobile_session_id = session.id
+        OR (session.device_id_hash IS NOT NULL AND block.device_id_hash = session.device_id_hash))
+     LEFT JOIN platform_accounts block_actor ON block_actor.id = block.blocked_by
      WHERE session.application_user_id = ? AND ${scoped.clause}
      ORDER BY session.last_used_at DESC LIMIT 20`,
     [applicationUserId, ...scoped.values],
@@ -112,7 +125,7 @@ export async function listUserDevices(scope: Scope, applicationUserId: string) {
   return rows.map((row) => ({
     id: row.id, label: row.device_label ?? "Unknown device", persistentDevice: Boolean(row.device_id_hash), lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at, revokedAt: row.revoked_at, blockId: row.blocked_id,
-    blockReason: row.blocked_reason, blockedAt: row.blocked_at,
+    blockReason: row.blocked_reason, blockedAt: row.blocked_at, blockedByName: row.blocked_by_name,
   }));
 }
 
@@ -145,11 +158,17 @@ export async function blockUserDevice(input: { scope: Scope; sessionId: string; 
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [blockId, session.application_user_id, session.id, session.device_id_hash, session.device_label, input.reason.trim(), input.scope.account.id],
     );
-    await connection.execute("UPDATE mobile_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.id]);
+    const [sessionResult] = await connection.execute<ResultSetHeader>(
+      `UPDATE mobile_sessions
+       SET revoked_at = CURRENT_TIMESTAMP(3), revoked_reason = 'DEVICE_BLOCK', revoked_reference_id = ?
+       WHERE application_user_id = ? AND revoked_at IS NULL
+         AND (id = ? OR (? IS NOT NULL AND device_id_hash = ?))`,
+      [blockId, session.application_user_id, session.id, session.device_id_hash, session.device_id_hash],
+    );
     await connection.execute(
       `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, new_data, reason)
-       VALUES (?, ?, ?, 'device.block', 'devices', 'mobile_session', ?, ?, ?)`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, session.id, JSON.stringify({ blockId, applicationUserId: session.application_user_id }), input.reason.trim()],
+       VALUES (?, ?, ?, 'device.block', 'devices', 'mobile_device_block', ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, blockId, JSON.stringify({ applicationUserId: session.application_user_id, mobileSessionId: session.id, persistentDevice: Boolean(session.device_id_hash), revokedSessions: sessionResult.affectedRows }), input.reason.trim()],
     );
   });
 }
@@ -159,8 +178,8 @@ export async function unblockUserDevice(input: { scope: Scope; blockId: string; 
   if (input.reason.trim().length < 5) throw new Error("Provide a clear unblock reason.");
   const scoped = scopeWhere(input.scope, "u.agency_account_id");
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { id: string; mobile_session_id: string | null })[]>(
-      `SELECT block.id, block.mobile_session_id FROM mobile_device_blocks block
+    const [rows] = await connection.query<(RowDataPacket & { id: string; mobile_session_id: string | null; application_user_id: string })[]>(
+      `SELECT block.id, block.mobile_session_id, block.application_user_id FROM mobile_device_blocks block
        INNER JOIN application_users u ON u.id = block.application_user_id
        WHERE block.id = ? AND block.status = 'ACTIVE' AND ${scoped.clause} LIMIT 1 FOR UPDATE`,
       [input.blockId, ...scoped.values],
@@ -168,24 +187,26 @@ export async function unblockUserDevice(input: { scope: Scope; blockId: string; 
     const block = rows[0];
     if (!block) throw new Error("Active device block was not found in your permitted branch.");
     await connection.execute("UPDATE mobile_device_blocks SET status = 'REVOKED', revoked_by = ?, revoked_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [input.scope.account.id, block.id]);
-    if (block.mobile_session_id) {
-      await connection.execute(
-        `UPDATE mobile_sessions session SET session.revoked_at = NULL
-         WHERE session.id = ? AND session.expires_at > CURRENT_TIMESTAMP(3)
-           AND NOT EXISTS (
-             SELECT 1 FROM mobile_device_blocks active_block
-             WHERE active_block.application_user_id = session.application_user_id
-               AND active_block.status = 'ACTIVE'
-               AND (active_block.mobile_session_id = session.id
-                 OR (session.device_id_hash IS NOT NULL AND active_block.device_id_hash = session.device_id_hash))
-           )`,
-        [block.mobile_session_id],
-      );
-    }
+    const [sessionResult] = await connection.execute<ResultSetHeader>(
+      `UPDATE mobile_sessions session_row
+       SET session_row.revoked_at = NULL, session_row.revoked_reason = NULL, session_row.revoked_reference_id = NULL
+       WHERE session_row.application_user_id = ?
+         AND session_row.revoked_reason = 'DEVICE_BLOCK'
+         AND session_row.revoked_reference_id = ?
+         AND session_row.expires_at > CURRENT_TIMESTAMP(3)
+         AND NOT EXISTS (
+           SELECT 1 FROM mobile_device_blocks active_block
+           WHERE active_block.application_user_id = session_row.application_user_id
+             AND active_block.status = 'ACTIVE'
+             AND (active_block.mobile_session_id = session_row.id
+               OR (session_row.device_id_hash IS NOT NULL AND active_block.device_id_hash = session_row.device_id_hash))
+         )`,
+      [block.application_user_id, block.id],
+    );
     await connection.execute(
-      `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, reason)
-       VALUES (?, ?, ?, 'device.unblock', 'devices', 'mobile_session', ?, ?)`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, block.mobile_session_id, input.reason.trim()],
+      `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
+       VALUES (?, ?, ?, 'device.unblock', 'devices', 'mobile_device_block', ?, ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, block.id, JSON.stringify({ status: "ACTIVE" }), JSON.stringify({ status: "REVOKED", restoredSessions: sessionResult.affectedRows }), input.reason.trim()],
     );
   });
 }

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHash, randomBytes, randomUUID } from "crypto";
+import bcrypt from "bcryptjs";
 import type { RowDataPacket } from "mysql2";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
@@ -24,6 +25,7 @@ export type MobileIdentity = {
   publicId: string;
   externalUserId: string;
   fullName: string;
+  gender?: string | null;
   role: MobileRole;
   accountStatus: string;
   faceVerificationStatus: string;
@@ -31,11 +33,25 @@ export type MobileIdentity = {
   agencyFaceLiveAuthorized: boolean;
   superAdminFaceLiveAuthorized: boolean;
   hostAccessOverride: boolean;
+  playReviewerAccessOverride?: boolean;
   hostProfileStatus: string | null;
   liveRestricted: boolean;
   liveRestrictedUntil: string | null;
   liveRestrictionReason: string | null;
+  temporaryLiveRestricted: boolean;
+  temporaryLiveRestrictedUntil: string | null;
+  temporaryLiveRestrictionReason: string | null;
+  hostingSuspended: boolean;
+  hostingSuspendedUntil: string | null;
+  hostingSuspensionReason: string | null;
 };
+
+export class MobileAccessDeniedError extends Error {
+  constructor(public readonly accessCode: "ACCOUNT_BANNED" | "ACCOUNT_RESTRICTED" | "DEVICE_BLOCKED", message: string) {
+    super(message);
+    this.name = "MobileAccessDeniedError";
+  }
+}
 
 const rolePermissions: Record<MobileRole, string[]> = {
   NORMAL_USER: ["rooms.read", "party.join", "gifts.send", "wallet.read", "coin_orders.create", "face.submit", "profile.update", "daily_rewards.claim", "diamonds.exchange"],
@@ -103,11 +119,21 @@ export async function createGoogleMobileSession(input: {
   deviceId?: string;
 }) {
   const google = await verifyGoogleIdentity(input.idToken);
-  const [existingRows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null })[]>(
-    "SELECT id, public_id, onboarding_completed, whatsapp_e164 FROM application_users WHERE google_subject = ? LIMIT 1",
+  const hashedDeviceId = deviceHash(input.deviceId);
+  const [existingRows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null; account_status: string })[]>(
+    "SELECT id, public_id, onboarding_completed, whatsapp_e164, account_status FROM application_users WHERE google_subject = ? LIMIT 1",
     [google.subject],
   ));
   const existing = existingRows[0];
+  if (existing?.account_status === "BANNED") throw new MobileAccessDeniedError("ACCOUNT_BANNED", "This Nazraa account is banned. Contact Nazraa support.");
+  if (existing && existing.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This Nazraa account is not active. Contact Nazraa support.");
+  if (existing && hashedDeviceId) {
+    const [blocks] = await withDatabaseReadRetry(() => db().query<RowDataPacket[]>(
+      "SELECT id FROM mobile_device_blocks WHERE application_user_id = ? AND device_id_hash = ? AND status = 'ACTIVE' LIMIT 1",
+      [existing.id, hashedDeviceId],
+    ));
+    if (blocks[0]) throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This device is blocked for this Nazraa account. Contact Nazraa support.");
+  }
   const profileRequired = !existing || !existing.onboarding_completed || !/^\+[1-9]\d{7,14}$/.test(existing.whatsapp_e164 ?? "");
   if (profileRequired && !input.profile) {
     return { requiresProfile: true, prefill: { fullName: google.name, email: google.email, avatarUrl: google.picture ?? null } };
@@ -115,7 +141,6 @@ export async function createGoogleMobileSession(input: {
 
   const token = randomBytes(32).toString("base64url");
   const sessionId = randomUUID();
-  const hashedDeviceId = deviceHash(input.deviceId);
 
   const result = await withTransaction(async (connection) => {
     let userId = existing?.id;
@@ -140,12 +165,18 @@ export async function createGoogleMobileSession(input: {
       publicId = String(users[0].public_id);
       await connection.execute("UPDATE application_users SET external_user_id = ? WHERE id = ?", [publicId, userId]);
     } else {
+      const [statusRows] = await connection.query<(RowDataPacket & { account_status: string })[]>(
+        "SELECT account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE",
+        [userId],
+      );
+      if (statusRows[0]?.account_status === "BANNED") throw new MobileAccessDeniedError("ACCOUNT_BANNED", "This Nazraa account is banned. Contact Nazraa support.");
+      if (statusRows[0]?.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This Nazraa account is not active. Contact Nazraa support.");
       if (hashedDeviceId) {
         const [blocks] = await connection.query<RowDataPacket[]>(
           "SELECT id FROM mobile_device_blocks WHERE application_user_id = ? AND device_id_hash = ? AND status = 'ACTIVE' LIMIT 1",
           [userId, hashedDeviceId],
         );
-        if (blocks[0]) throw new Error("This device is blocked. Contact Nazraa support.");
+        if (blocks[0]) throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This device is blocked for this Nazraa account. Contact Nazraa support.");
       }
       await connection.execute(
         "UPDATE application_users SET email = ?, avatar_url = COALESCE(avatar_url, ?), last_active_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
@@ -213,10 +244,53 @@ export async function createDevelopmentMobileSession(input: { fullName: string; 
   return { token, userId: publicId, requiresProfile: false };
 }
 
+export async function createPlayReviewerMobileSession(input: { username: string; password: string; deviceLabel?: string; deviceId?: string }) {
+  const hashedDeviceId = deviceHash(input.deviceId);
+  const [rows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & {
+    id: string; application_user_id: string; password_hash: string; account_status: string;
+  })[]>(
+    `SELECT credential.id, credential.application_user_id, credential.password_hash, user.account_status
+     FROM play_reviewer_credentials credential
+     INNER JOIN application_users user ON user.id = credential.application_user_id
+     WHERE credential.username = ? AND credential.active = TRUE LIMIT 1`,
+    [input.username.trim().toLowerCase()],
+  ));
+  const credential = rows[0];
+  if (!credential || !await bcrypt.compare(input.password, credential.password_hash)) {
+    throw new Error("The reviewer username or password is incorrect.");
+  }
+  if (credential.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This reviewer account is not active.");
+  if (hashedDeviceId) {
+    const [blocks] = await db().query<RowDataPacket[]>(
+      "SELECT id FROM mobile_device_blocks WHERE application_user_id = ? AND device_id_hash = ? AND status = 'ACTIVE' LIMIT 1",
+      [credential.application_user_id, hashedDeviceId],
+    );
+    if (blocks[0]) throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This reviewer device is blocked.");
+  }
+  const token = randomBytes(32).toString("base64url");
+  await withTransaction(async (connection) => {
+    await connection.execute(
+      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 365 DAY))`,
+      [randomUUID(), credential.application_user_id, tokenHash(token), input.deviceLabel || "Google Play reviewer", hashedDeviceId],
+    );
+    await connection.execute("UPDATE play_reviewer_credentials SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [credential.id]);
+    await connection.execute(
+      `INSERT INTO audit_logs (id, action, module, target_type, target_id, new_data, reason)
+       VALUES (?, 'play_reviewer.login', 'security', 'application_user', ?, ?, 'Google Play reviewer access')`,
+      [randomUUID(), credential.application_user_id, JSON.stringify({ deviceIdRecorded: Boolean(hashedDeviceId) })],
+    );
+  });
+  return { token, requiresProfile: false, reviewerAccess: true };
+}
+
 export async function revokeMobileSession(request: Request) {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!token) return;
-  await db().execute("UPDATE mobile_sessions SET revoked_at = CURRENT_TIMESTAMP(3) WHERE token_hash = ?", [tokenHash(token)]);
+  await db().execute(
+    "UPDATE mobile_sessions SET revoked_at = CURRENT_TIMESTAMP(3), revoked_reason = 'USER_LOGOUT', revoked_reference_id = NULL WHERE token_hash = ?",
+    [tokenHash(token)],
+  );
 }
 
 export async function authenticateMobileRequest(request: Request): Promise<MobileIdentity | null> {
@@ -228,58 +302,99 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     public_id: number;
     external_user_id: string;
     full_name: string;
+    gender: string | null;
     account_status: string;
     face_verification_status: string;
     agency_account_id: string | null;
+    owned_agency_account_id: string | null;
     agency_face_live_authorized: number;
     super_admin_face_live_authorized: number;
     is_host: number;
     platform_role: string | null;
     host_access_override: number;
+    play_reviewer_access_override: number;
     host_profile_status: string | null;
     live_restricted: number;
     live_restricted_until: Date | string | null;
     live_restriction_reason: string | null;
+    temporary_live_restricted: number;
+    temporary_live_restricted_until: Date | string | null;
+    temporary_live_restriction_reason: string | null;
+    hosting_suspended: number;
+    hosting_suspended_until: Date | string | null;
+    hosting_suspension_reason: string | null;
+    revoked_at: Date | string | null;
+    active_device_block_id: string | null;
+    active_device_block_reason: string | null;
     device_id_hash: string | null;
   })[]>(
-    `SELECT session.id session_id, session.device_id_hash, user.id user_id, user.public_id, user.external_user_id,
-            user.full_name, user.account_status, user.face_verification_status, user.is_host,
-            user.agency_account_id, user.agency_face_live_authorized, user.super_admin_face_live_authorized,
+    `SELECT session.id session_id, session.device_id_hash, session.revoked_at,
+            user.id user_id, user.public_id, user.external_user_id,
+            user.full_name, user.gender, user.account_status, user.face_verification_status, user.is_host,
+            user.agency_account_id, owned_agency.id owned_agency_account_id,
+            user.agency_face_live_authorized, user.super_admin_face_live_authorized,
             account.role platform_role,
             (COALESCE(access_override.host_access_override, FALSE) OR user.public_id = 12000006) host_access_override,
+            COALESCE(access_override.play_reviewer_access_override, FALSE) play_reviewer_access_override,
             host_profile.status host_profile_status,
-            (live_restriction.id IS NOT NULL) live_restricted,
-            live_restriction.ends_at live_restricted_until,
-            live_restriction.reason live_restriction_reason
+            (temporary_live_restriction.id IS NOT NULL OR hosting_suspension.id IS NOT NULL) live_restricted,
+            COALESCE(hosting_suspension.ends_at, temporary_live_restriction.ends_at) live_restricted_until,
+            COALESCE(hosting_suspension.reason, temporary_live_restriction.reason) live_restriction_reason,
+            (temporary_live_restriction.id IS NOT NULL) temporary_live_restricted,
+            temporary_live_restriction.ends_at temporary_live_restricted_until,
+            temporary_live_restriction.reason temporary_live_restriction_reason,
+            (hosting_suspension.id IS NOT NULL) hosting_suspended,
+            hosting_suspension.ends_at hosting_suspended_until,
+            hosting_suspension.reason hosting_suspension_reason,
+            active_device_block.id active_device_block_id,
+            active_device_block.reason active_device_block_reason
      FROM mobile_sessions session
      INNER JOIN application_users user ON user.id = session.application_user_id
      LEFT JOIN platform_accounts account
        ON account.status = 'ACTIVE'
       AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
+     LEFT JOIN platform_accounts owned_agency
+       ON owned_agency.role = 'AGENCY' AND owned_agency.status = 'ACTIVE'
+      AND (owned_agency.application_user_id = user.id
+        OR owned_agency.application_user_id = user.external_user_id
+        OR owned_agency.application_user_id = CAST(user.public_id AS CHAR))
      LEFT JOIN mobile_access_overrides access_override ON access_override.application_user_id = user.id
      LEFT JOIN host_profiles host_profile ON host_profile.application_user_id = user.id
-     LEFT JOIN moderation_restrictions live_restriction
-       ON live_restriction.id = (
+     LEFT JOIN moderation_restrictions temporary_live_restriction
+       ON temporary_live_restriction.id = (
          SELECT current_restriction.id
          FROM moderation_restrictions current_restriction
          WHERE current_restriction.application_user_id = user.id
            AND current_restriction.status = 'ACTIVE'
-           AND current_restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
-           AND (current_restriction.ends_at IS NULL OR current_restriction.ends_at > CURRENT_TIMESTAMP(3))
+           AND current_restriction.restriction_type = 'TEMP_LIVE_BAN'
+           AND current_restriction.ends_at > CURRENT_TIMESTAMP(3)
          ORDER BY current_restriction.created_at DESC LIMIT 1
        )
-     WHERE session.token_hash = ? AND session.revoked_at IS NULL
-       AND session.expires_at > CURRENT_TIMESTAMP(3) AND user.account_status = 'ACTIVE'
-       AND NOT EXISTS (
-         SELECT 1 FROM mobile_device_blocks block
-         WHERE block.status = 'ACTIVE' AND block.application_user_id = user.id
-           AND (block.mobile_session_id = session.id OR (session.device_id_hash IS NOT NULL AND block.device_id_hash = session.device_id_hash))
+     LEFT JOIN moderation_restrictions hosting_suspension
+       ON hosting_suspension.id = (
+         SELECT current_suspension.id
+         FROM moderation_restrictions current_suspension
+         WHERE current_suspension.application_user_id = user.id
+           AND current_suspension.status = 'ACTIVE'
+           AND current_suspension.restriction_type = 'SUSPENSION'
+           AND (current_suspension.ends_at IS NULL OR current_suspension.ends_at > CURRENT_TIMESTAMP(3))
+         ORDER BY current_suspension.created_at DESC LIMIT 1
        )
+     LEFT JOIN mobile_device_blocks active_device_block
+       ON active_device_block.application_user_id = user.id
+      AND active_device_block.status = 'ACTIVE'
+      AND (active_device_block.mobile_session_id = session.id
+        OR (session.device_id_hash IS NOT NULL AND active_device_block.device_id_hash = session.device_id_hash))
+     WHERE session.token_hash = ? AND session.expires_at > CURRENT_TIMESTAMP(3)
      ORDER BY account.created_at ASC LIMIT 1`,
     [tokenHash(token)],
   ));
   const row = rows[0];
   if (!row) return null;
+  if (row.account_status === "BANNED") throw new MobileAccessDeniedError("ACCOUNT_BANNED", "This Nazraa account is banned. Contact Nazraa support.");
+  if (row.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This Nazraa account is not active. Contact Nazraa support.");
+  if (row.active_device_block_id) throw new MobileAccessDeniedError("DEVICE_BLOCKED", `${row.active_device_block_reason || "This device is blocked for this Nazraa account."} Contact Nazraa support.`);
+  if (row.revoked_at) return null;
   void withDatabaseReadRetry(() => db().execute(
     "UPDATE mobile_sessions SET last_used_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND last_used_at < DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 5 MINUTE)",
     [row.session_id],
@@ -291,16 +406,27 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     publicId: String(row.public_id),
     externalUserId: row.external_user_id,
     fullName: row.full_name,
+    gender: row.gender,
     role: mapPlatformRole(row.platform_role, row.is_host),
     accountStatus: row.account_status,
     faceVerificationStatus: row.face_verification_status,
-    agencyAccountId: row.agency_account_id,
+    // An approved Agency owner is also a normal Host. Their own active Agency
+    // is the required managed-Live authorization; they never need to join a
+    // second Agency merely to stream.
+    agencyAccountId: row.agency_account_id ?? row.owned_agency_account_id,
     agencyFaceLiveAuthorized: Boolean(row.agency_face_live_authorized),
     superAdminFaceLiveAuthorized: Boolean(row.super_admin_face_live_authorized),
     hostAccessOverride: Boolean(row.host_access_override),
+    playReviewerAccessOverride: Boolean(row.play_reviewer_access_override),
     hostProfileStatus: row.host_profile_status,
     liveRestricted: Boolean(row.live_restricted),
     liveRestrictedUntil: row.live_restricted_until ? new Date(row.live_restricted_until).toISOString() : null,
     liveRestrictionReason: row.live_restriction_reason,
+    temporaryLiveRestricted: Boolean(row.temporary_live_restricted),
+    temporaryLiveRestrictedUntil: row.temporary_live_restricted_until ? new Date(row.temporary_live_restricted_until).toISOString() : null,
+    temporaryLiveRestrictionReason: row.temporary_live_restriction_reason,
+    hostingSuspended: Boolean(row.hosting_suspended),
+    hostingSuspendedUntil: row.hosting_suspended_until ? new Date(row.hosting_suspended_until).toISOString() : null,
+    hostingSuspensionReason: row.hosting_suspension_reason,
   };
 }

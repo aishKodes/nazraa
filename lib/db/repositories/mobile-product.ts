@@ -9,18 +9,34 @@ import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { permissionsForMobileIdentity } from "@/lib/auth/mobile-session";
 import { encryptPrivateText } from "@/lib/security/documents";
-import { finalizeStaleLiveSession, mobileCompletionSnapshot } from "@/lib/db/repositories/mobile-completion";
+import {
+  finalizeClosedFaceLiveSessions,
+  finalizeStaleLiveSession,
+  mobileCompletionSnapshot,
+} from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
+import { evaluateFaceLiveSchedule, loadFaceLiveRules } from "@/lib/services/live-business-policy";
+import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
+import { currentPolicyAcceptance } from "@/lib/db/repositories/mobile-safety";
+import {
+  cosmeticSnapshot,
+  equippedCosmeticLoadoutsByPublicId,
+  type CosmeticLoadoutPayload,
+} from "@/lib/db/repositories/mobile-cosmetics";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
+  if (Buffer.isBuffer(value)) {
+    try { return JSON.parse(value.toString("utf8")) as Record<string, unknown>; } catch { return {}; }
+  }
   if (typeof value === "string") {
     try { return JSON.parse(value) as Record<string, unknown>; } catch { return {}; }
   }
@@ -34,7 +50,47 @@ export function giftDiamondValue(coinValue: number, giftCoinUnits = 100, receive
   return Math.floor((coinValue * receiverDiamondUnits) / giftCoinUnits);
 }
 
-function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome", maximumLevel = track === "anchorIncome" ? 200 : 120) {
+type LevelDefinition = {
+  level: number;
+  threshold: number;
+  badgeKey: string;
+  label: string;
+  enabled: boolean;
+  perks: Record<string, unknown> | null;
+};
+
+function levelProgress(
+  totalPoints: number,
+  track: "consumption" | "anchorIncome",
+  maximumLevel = track === "anchorIncome" ? 200 : 120,
+  definitions: LevelDefinition[] = [],
+  grandfatheredLevel = 1,
+) {
+  const enabledDefinitions = definitions
+    .filter((definition) => definition.enabled && definition.level <= maximumLevel)
+    .sort((left, right) => left.level - right.level);
+  if (enabledDefinitions.length > 0) {
+    const points = Math.max(0, Math.trunc(totalPoints));
+    const earned = enabledDefinitions.filter((definition) => definition.threshold <= points).at(-1)
+      ?? enabledDefinitions[0];
+    const displayed = enabledDefinitions.find((definition) => definition.level >= Math.max(earned.level, grandfatheredLevel))
+      ?? enabledDefinitions.at(-1)!;
+    const next = enabledDefinitions.find((definition) => definition.level > displayed.level) ?? null;
+    return {
+      track,
+      totalPoints: points,
+      level: displayed.level,
+      earnedLevel: earned.level,
+      pointsIntoLevel: Math.max(0, points - (earned.threshold ?? 0)),
+      pointsForNextLevel: next == null ? 0 : Math.max(0, next.threshold - (earned.threshold ?? 0)),
+      threshold: earned.threshold,
+      nextThreshold: next?.threshold ?? null,
+      badgeKey: displayed.badgeKey,
+      label: displayed.label,
+      perks: displayed.perks,
+      grandfathered: displayed.level > earned.level,
+    };
+  }
   const pointScale = track === "anchorIncome" ? 10_000 : 5_000;
   const level = Math.min(maximumLevel, Math.floor(Math.sqrt(Math.max(0, totalPoints) / pointScale)) + 1);
   const start = (level - 1) * (level - 1) * pointScale;
@@ -45,7 +101,31 @@ function levelProgress(totalPoints: number, track: "consumption" | "anchorIncome
     level,
     pointsIntoLevel: Math.max(0, totalPoints - start),
     pointsForNextLevel: level >= maximumLevel ? 0 : end - start,
+    threshold: start,
+    nextThreshold: level >= maximumLevel ? null : end,
+    badgeKey: null,
+    label: null,
+    perks: null,
+    grandfathered: false,
   };
+}
+
+function levelDefinitionManifest(rows: RowDataPacket[]) {
+  const consumption: LevelDefinition[] = [];
+  const anchorIncome: LevelDefinition[] = [];
+  for (const row of rows) {
+    const target = String(row.track) === "ANCHOR_INCOME" ? anchorIncome : consumption;
+    const perks = asObject(row.perks_json);
+    target.push({
+      level: Number(row.level_number),
+      threshold: Number(row.points_required),
+      badgeKey: String(row.badge_key),
+      label: String(row.level_label ?? "Level"),
+      enabled: row.enabled !== false && row.enabled !== 0,
+      perks: Object.keys(perks).length > 0 ? perks : null,
+    });
+  }
+  return { consumption, anchorIncome };
 }
 
 function productRole(platformRole: unknown, isHost: unknown) {
@@ -150,6 +230,11 @@ async function settingsMap() {
 
 
 async function activeRoomRows(after?: string) {
+  const closedFaceRooms = await finalizeClosedFaceLiveSessions();
+  // Presence refresh is the normal mixer-stop path. Discovery also performs
+  // this best-effort sweep so an abandoned broadcast cannot leave a relay
+  // running after the configured close boundary.
+  await Promise.allSettled(closedFaceRooms.map((roomCode) => syncZegoRoomMixer(roomCode)));
   return db().query<RowDataPacket[]>(
       `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
               room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.face_background_asset_id, room.country_code,
@@ -157,11 +242,11 @@ async function activeRoomRows(after?: string) {
               top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
               top_avatar.updated_at top_avatar_updated_at,
               top_user.country_code top_country, top_user.language_code top_language,
-              top_user.anchor_income_points top_anchor_points, top_user.level_number top_level, top_user.vip_tier top_vip,
+              top_user.anchor_level_number top_anchor_level, top_user.level_number top_level, top_user.vip_tier top_vip,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = top_user.id) top_followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = top_user.id) top_following,
               room.status, (SELECT COUNT(*) FROM live_room_members recent WHERE recent.room_id = room.id AND recent.left_at IS NULL AND recent.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE) audience_count,
-              user.public_id host_public_id, user.full_name host_name, user.anchor_income_points host_anchor_points, user.level_number host_level,
+              user.public_id host_public_id, user.full_name host_name, user.anchor_level_number host_anchor_level, user.level_number host_level,
               user.vip_tier host_vip, user.avatar_url host_avatar_url, host_avatar.updated_at host_avatar_updated_at, user.country_code host_country,
               user.language_code host_language,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) host_followers,
@@ -184,7 +269,10 @@ async function activeRoomRows(after?: string) {
     );
 }
 
-function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
+function mapActiveRoom(
+  row: RowDataPacket,
+  cosmeticLoadouts?: ReadonlyMap<string, CosmeticLoadoutPayload>,
+) {
   return {
     id: String(row.room_code), title: String(row.title), category: String(row.category),
     language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
@@ -201,12 +289,14 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
     countryCode: row.country_code,
     agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: row.agency_name,
     host: { id: String(row.host_public_id), name: String(row.host_name), avatarUrl: mobileAvatarUrl(row, "host_"),
-      country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level), anchorLevel: levelProgress(Number(row.host_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
-      vip: Number(row.host_vip), followers: Number(row.host_followers ?? 0), following: Number(row.host_following ?? 0), role: productRole(row.host_platform_role, true) },
+      country: row.host_country ?? "", language: row.host_language ?? "", level: Number(row.host_level), anchorLevel: Number(row.host_anchor_level ?? 1),
+      vip: Number(row.host_vip), followers: Number(row.host_followers ?? 0), following: Number(row.host_following ?? 0), role: productRole(row.host_platform_role, true),
+      cosmetics: cosmeticLoadouts?.get(String(row.host_public_id)) ?? {} },
     topUser: row.top_public_id == null ? null : {
       id: String(row.top_public_id), name: String(row.top_name), avatarUrl: mobileAvatarUrl(row, "top_"),
-      country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level), anchorLevel: levelProgress(Number(row.top_anchor_points ?? 0), "anchorIncome", maximumLevel).level,
+      country: row.top_country ?? "", language: row.top_language ?? "", level: Number(row.top_level), anchorLevel: Number(row.top_anchor_level ?? 1),
       vip: Number(row.top_vip), followers: Number(row.top_followers ?? 0), following: Number(row.top_following ?? 0), role: "user",
+      cosmetics: cosmeticLoadouts?.get(String(row.top_public_id)) ?? {},
     },
     managers: [], participants: [], giftEvents: [],
   };
@@ -215,7 +305,11 @@ function mapActiveRoom(row: RowDataPacket, maximumLevel = 200) {
 export async function activeRoomPage(after?: string) {
   return withDatabaseReadRetry(async () => {
     const [rows] = await activeRoomRows(after);
-    return rows.map((row) => mapActiveRoom(row));
+    const cosmeticLoadouts = await equippedCosmeticLoadoutsByPublicId(rows.flatMap((row) => [
+      row.host_public_id,
+      row.top_public_id,
+    ]).filter((id) => id != null));
+    return rows.map((row) => mapActiveRoom(row, cosmeticLoadouts));
   });
 }
 
@@ -232,8 +326,8 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     platformNotificationRows,
     mobileNotificationRows,
     packageRows,
-    sellerRows,
-    orderRows,
+    ,
+    ,
     payoutRows,
     withdrawalRows,
     followUserRows,
@@ -245,14 +339,17 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     hostRewardRuleRows,
     settings,
     completion,
+    cosmetics,
+    policyAcceptance,
+    levelDefinitionRows,
   ] = await Promise.all([
     db().query<(RowDataPacket & {
       public_id: number; full_name: string; avatar_url: string | null; country_code: string | null;
       date_of_birth: string | null; gender: string | null; bio: string; language_code: string; whatsapp_e164: string | null;
-      level_number: number; vip_tier: number; consumption_points: number; anchor_income_points: number;
+      level_number: number; anchor_level_number: number; vip_tier: number; consumption_points: number; anchor_income_points: number;
       face_verification_status: string; is_host: number; followers: number; following: number;
     })[]>(`SELECT user.public_id, user.full_name, user.avatar_url, user.country_code, user.date_of_birth,
-                   user.gender, user.bio, user.language_code, user.whatsapp_e164, user.level_number,
+                   user.gender, user.bio, user.language_code, user.whatsapp_e164, user.level_number, user.anchor_level_number,
                    user.vip_tier, user.consumption_points, user.anchor_income_points,
                    user.face_verification_status, user.is_host,
                    (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
@@ -262,15 +359,20 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     db().query<RowDataPacket[]>(
       `SELECT id, transaction_code, asset_type, transaction_type, source_id, destination_type, destination_id, amount, reason, created_at
        FROM ledger_transactions
-       WHERE (source_type = 'APPLICATION_USER' AND source_id = ? AND transaction_type <> 'GIFT_RECEIVE')
-          OR (destination_type = 'APPLICATION_USER' AND destination_id = ? AND transaction_type <> 'GIFT_SPEND')
+       WHERE (
+         (source_type = 'APPLICATION_USER' AND source_id = ? AND transaction_type <> 'GIFT_RECEIVE')
+         OR (destination_type = 'APPLICATION_USER' AND destination_id = ? AND transaction_type <> 'GIFT_SPEND')
+       )
+         AND transaction_type NOT LIKE 'GAME%'
+         AND COALESCE(source_type, '') <> 'GAME'
+         AND COALESCE(destination_type, '') <> 'GAME'
        ORDER BY created_at DESC LIMIT 100`,
       [identity.userId, identity.userId],
     ),
     activeRoomRows(),
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at, user.country_code, user.language_code,
-              user.level_number, user.consumption_points, user.anchor_income_points, user.vip_tier, user.is_host,
+              user.level_number, user.anchor_level_number, user.consumption_points, user.anchor_income_points, user.vip_tier, user.is_host,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               account.role platform_role
@@ -280,7 +382,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        WHERE user.account_status = 'ACTIVE' ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
-    db().query<RowDataPacket[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, coin_price, name"),
+    db().query<RowDataPacket[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
     db().query<RowDataPacket[]>(
       `SELECT id, placement, title, subtitle, image_url, action_type, action_target, priority, starts_at, ends_at
        FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3))
@@ -300,7 +402,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
        FROM mobile_notifications WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 60`,
       [identity.userId],
     ),
-    db().query<RowDataPacket[]>("SELECT id, public_id, name, badge_label, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE active = TRUE ORDER BY sort_order, coin_amount"),
+    db().query<RowDataPacket[]>("SELECT id, public_id, name, badge_label, play_product_id, coin_amount, display_price, currency, sort_order FROM coin_packages WHERE active = TRUE ORDER BY sort_order, coin_amount"),
     db().query<RowDataPacket[]>(
       `SELECT account.id, account.public_id, account.full_name, account.country_code, profile.business_whatsapp_e164,
               profile.availability_status, profile.supported_region, profile.verification_status,
@@ -362,7 +464,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT host.id, host.status, agency.full_name agency_name, host.live_minutes_30d,
-              host.sessions_30d, host.gifts_value_30d, user.anchor_income_points
+              host.sessions_30d, host.gifts_value_30d, user.anchor_income_points, user.anchor_level_number
        FROM host_profiles host INNER JOIN application_users user ON user.id = host.application_user_id
        LEFT JOIN platform_accounts agency ON agency.id = host.agency_account_id WHERE user.id = ? LIMIT 1`,
       [identity.userId],
@@ -382,6 +484,13 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     ),
     settingsMap(),
     mobileCompletionSnapshot(identity),
+    cosmeticSnapshot(identity),
+    currentPolicyAcceptance(identity),
+    db().query<RowDataPacket[]>(
+      `SELECT track, level_number, points_required, badge_key, level_label, perks_json, enabled
+       FROM level_definitions
+       ORDER BY track, level_number`,
+    ),
   ]);
 
   const profile = profileRows[0][0];
@@ -394,18 +503,45 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
   const levelConfig = settings["mobile.levels"] ?? {};
   const maximumConsumptionLevel = Number(levelConfig.maximumConsumptionLevel ?? levelConfig.maximumLevel ?? 120);
   const maximumActorLevel = Number(levelConfig.maximumActorLevel ?? 200);
+  const levelManifest = levelDefinitionManifest(levelDefinitionRows[0]);
+  const consumptionProgress = (points: number, grandfatheredLevel = 1) => levelProgress(
+    points,
+    "consumption",
+    maximumConsumptionLevel,
+    levelManifest.consumption,
+    grandfatheredLevel,
+  );
+  const anchorProgress = (points: number, grandfatheredLevel = 1) => levelProgress(
+    points,
+    "anchorIncome",
+    maximumActorLevel,
+    levelManifest.anchorIncome,
+    grandfatheredLevel,
+  );
   const commerce = settings["mobile.commerce"] ?? {};
+  const mobileFeatures = settings["mobile.features"] ?? {};
+  const creatorCashWithdrawals = mobileFeatures.withdrawalEnabled === true
+    && mobileFeatures.creatorCashWithdrawalsEnabled === true;
+
+  const cosmeticLoadouts = await equippedCosmeticLoadoutsByPublicId([
+    ...peopleRows[0].map((row) => row.public_id),
+    ...roomRows[0].flatMap((row) => [row.host_public_id, row.top_public_id]),
+  ].filter((id) => id != null));
+  // The current user's transactional snapshot may have just materialized a
+  // configured VIP grant, so it is the strongest source for their own entry.
+  cosmeticLoadouts.set(String(profile.public_id), cosmetics.loadout);
 
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
 
-  const rooms = roomRows[0].map((row) => mapActiveRoom(row, maximumActorLevel));
+  const rooms = roomRows[0].map((row) => mapActiveRoom(row, cosmeticLoadouts));
 
   const currentAgency = agencyRows[0][0];
   const currentHost = hostRows[0][0];
   const roleName = identity.role.toLowerCase();
   return {
     ...completion,
+    policyAcceptance,
     serverTime: new Date().toISOString(),
     environment: "production",
     profile: {
@@ -415,17 +551,20 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
         : profile.avatar_url,
       country: profile.country_code ?? "", language: profile.language_code, bio: profile.bio,
       gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
-      whatsappE164: profile.whatsapp_e164, level: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel).level,
+      whatsappE164: profile.whatsapp_e164,
+      level: consumptionProgress(Number(profile.consumption_points), Number(profile.level_number)).level,
+      anchorLevel: anchorProgress(Number(profile.anchor_income_points), Number(profile.anchor_level_number)).level,
       vip: Number(profile.vip_tier), role: roleName, faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
       followers: Number(profile.followers), following: Number(profile.following),
       permissions: permissionsForMobileIdentity(identity),
+      cosmetics: cosmetics.loadout,
     },
     config: {
-      features: settings["mobile.features"] ?? {},
+      features: mobileFeatures,
       roomFeatures: settings["mobile.room_features"] ?? {},
       commerce,
       app: settings["mobile.app_config"] ?? {},
-      levels: levelConfig,
+      levels: { ...levelConfig, manifest: levelManifest },
     },
     wallet: { coins, diamonds, reservedDiamonds, gameCredits: coins },
     transactions: transactionRows[0].map((row) => ({
@@ -436,10 +575,12 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     })),
     rooms,
     people: peopleRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), avatarUrl: mobileAvatarUrl(row),
-      country: row.country_code ?? "", language: row.language_code ?? "", level: levelProgress(Number(row.consumption_points ?? 0), "consumption", maximumConsumptionLevel).level, anchorLevel: levelProgress(Number(row.anchor_income_points ?? 0), "anchorIncome", maximumActorLevel).level,
-      vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host) })),
-    gifts: giftRows[0].filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4], visualUrl: row.visual_url, animationKey: row.animation_key })),
-    mallCatalog: giftRows[0].map((row) => ({ id: String(row.gift_key), name: String(row.name), type: String(row.catalog_type), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), visualUrl: row.visual_url, animationKey: row.animation_key })),
+      country: row.country_code ?? "", language: row.language_code ?? "", level: consumptionProgress(Number(row.consumption_points ?? 0), Number(row.level_number)).level, anchorLevel: anchorProgress(Number(row.anchor_income_points ?? 0), Number(row.anchor_level_number)).level,
+      vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host),
+      cosmetics: cosmeticLoadouts.get(String(row.public_id)) ?? {} })),
+    gifts: giftRows[0].filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: Number(asObject(row.asset_config).accent ?? [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4]), visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: asObject(row.asset_config) })),
+    mallCatalog: giftRows[0].map((row) => ({ id: String(row.gift_key), name: String(row.name), type: String(row.catalog_type) === "ENTRY_FRAME" ? "ENTRY_EFFECT" : String(row.catalog_type), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), currency: String(row.currency ?? "COIN"), validityDays: Number(row.validity_days ?? 30), enabled: true, sortOrder: Number(row.sort_order ?? 0), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), category: String(row.category), visualUrl: row.visual_url, animationKey: row.animation_key, assetConfig: asObject(row.asset_config) })),
+    cosmeticEntitlements: cosmetics.entitlements,
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({
       id: String(row.id), message: String(row.message), title: row.title,
@@ -453,25 +594,27 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       // mail is unread until this user opens Nazraa Mail.
       read: row.notification_type ? row.read_at != null : true,
     })),
-    coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),
-    coinSellers: sellerRows[0].map((row) => ({ id: String(row.public_id), name: String(row.full_name), whatsappE164: String(row.business_whatsapp_e164), supportUri: `https://wa.me/${String(row.business_whatsapp_e164).replace(/\D/g, "")}`, availability: row.availability_status === "AVAILABLE" ? "available" : "offline", fulfilledOrders: Number(row.fulfilled_orders), rating: 5, supportedRegion: row.supported_region ?? row.country_code ?? "", verified: row.verification_status === "VERIFIED" })),
-    coinPurchaseRequests: orderRows[0].map((row) => ({ id: String(row.public_id), userId: identity.publicId, packageId: String(row.package_public_id), sellerId: String(row.seller_public_id), coins: Number(row.coin_amount), pricePaise: Math.round(Number(row.display_price ?? 0) * 100), status: String(row.status).toLowerCase(), createdAt: row.created_at })),
-    payoutMethods: payoutRows[0].map((row) => ({ id: String(row.id), type: row.method_type === "UPI" ? "upi" : "bankTransfer", displayName: String(row.display_name), maskedDestination: String(row.masked_destination), verified: Boolean(row.verified) })),
-    withdrawalRequests: withdrawalRows[0].map((row) => ({ id: String(row.withdrawal_code), userId: identity.publicId, payoutMethodId: String(row.payout_method_id ?? ""), amount: Number(row.amount), status: String(row.status).toLowerCase(), createdAt: row.requested_at, reviewNote: row.review_reason })),
-    minimumWithdrawal: Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000),
-    withdrawalSlab: Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000),
+    coinPackages: packageRows[0].map((row) => ({ id: String(row.public_id), playProductId: row.play_product_id, name: String(row.name), badge: row.badge_label, coins: Number(row.coin_amount), bonusCoins: 0, pricePaise: Math.round(Number(row.display_price ?? 0) * 100), popular: row.badge_label === "Popular" })),
+    // Agency sellers and historic external orders remain in Control, but are
+    // never advertised by the Play-distributed mobile product.
+    coinSellers: [],
+    coinPurchaseRequests: [],
+    payoutMethods: creatorCashWithdrawals ? payoutRows[0].map((row) => ({ id: String(row.id), type: row.method_type === "UPI" ? "upi" : "bankTransfer", displayName: String(row.display_name), maskedDestination: String(row.masked_destination), verified: Boolean(row.verified) })) : [],
+    withdrawalRequests: creatorCashWithdrawals ? withdrawalRows[0].map((row) => ({ id: String(row.withdrawal_code), userId: identity.publicId, payoutMethodId: String(row.payout_method_id ?? ""), amount: Number(row.amount), status: String(row.status).toLowerCase(), createdAt: row.requested_at, reviewNote: row.review_reason })) : [],
+    minimumWithdrawal: creatorCashWithdrawals ? Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000) : 0,
+    withdrawalSlab: creatorCashWithdrawals ? Number(commerce.withdrawalSlab ?? commerce.minimumWithdrawal ?? 100000) : 0,
     followedUserIds: followUserRows[0].map((row) => String(row.public_id)),
     followedAgencyIds: followAgencyRows[0].map((row) => String(row.public_id)),
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
     agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
-    hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: levelProgress(Number(currentHost.anchor_income_points), "anchorIncome", maximumActorLevel).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
+    hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: anchorProgress(Number(currentHost.anchor_income_points), Number(currentHost.anchor_level_number)).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
     hostRewardRules: [...new Map(hostRewardRuleRows[0].map((row) => [String(row.room_type), {
       roomType: String(row.room_type).toLowerCase(),
       coinsPerHour: Number(row.coins_per_hour),
       minimumEligibleSeconds: Number(row.minimum_eligible_seconds),
     }])).values()],
-    consumptionLevel: levelProgress(Number(profile.consumption_points), "consumption", maximumConsumptionLevel),
-    anchorIncomeLevel: levelProgress(Number(profile.anchor_income_points), "anchorIncome", maximumActorLevel),
+    consumptionLevel: consumptionProgress(Number(profile.consumption_points), Number(profile.level_number)),
+    anchorIncomeLevel: anchorProgress(Number(profile.anchor_income_points), Number(profile.anchor_level_number)),
     rankings: rankingRows[0].map((row, index) => ({ rank: index + 1, user: { id: String(row.public_id), name: String(row.full_name), level: Number(row.level_number), vip: Number(row.vip_tier), role: "user" }, score: Number(row.consumption_points), label: "Consumption" })),
     agencyRankings: agencyRankingRows[0].map((row, index) => ({ rank: index + 1, agency: { id: String(row.public_id), code: String(row.public_id), name: String(row.full_name), country: "", ownerUserId: "0", status: "ACTIVE", hosts: [], targetProgress: 0, estimatedEarnings: Number(row.score), totalLiveMinutes: 0 }, score: Number(row.score), label: "Agency" })),
     posts: completion.posts,
@@ -521,6 +664,7 @@ export async function createCoinPurchaseRequest(identity: MobileIdentity, packag
 export async function createWithdrawalRequest(identity: MobileIdentity, amount: number, payout: {
   type: "UPI"; accountHolderName: string; upiId: string;
 } | { type: "BANK"; accountHolderName: string; accountNumber: string; ifsc: string; bankName: string } | { payoutMethodId: string }) {
+  await assertCreatorCashWithdrawalsEnabled();
   if (!Number.isSafeInteger(amount) || amount < 1) throw new Error("Choose a valid whole-diamond amount.");
   return withTransaction(async (connection) => {
     const economy = await loadWithdrawalEconomy(connection);
@@ -589,6 +733,7 @@ export async function createWithdrawalRequest(identity: MobileIdentity, amount: 
 }
 
 export async function createPayoutMethod(identity: MobileIdentity, input: { type: "UPI" | "BANK"; displayName: string; destination: string }) {
+  await assertCreatorCashWithdrawalsEnabled();
   const destination = input.destination.trim();
   if (destination.length < 4 || destination.length > 190) throw new Error("Enter a valid payout destination.");
   if (input.type === "UPI" && !/^[a-zA-Z0-9._-]{2,}@[a-zA-Z0-9.-]{2,}$/.test(destination)) throw new Error("Enter a valid UPI ID.");
@@ -611,6 +756,15 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
   if (type === "user") {
     const [targets] = await db().query<(RowDataPacket & { id: string })[]>("SELECT id FROM application_users WHERE public_id = ? AND account_status = 'ACTIVE' LIMIT 1", [publicId]);
     if (!targets[0] || targets[0].id === identity.userId) throw new Error("The user cannot be followed.");
+    if (followed) {
+      const [blocks] = await db().query<RowDataPacket[]>(
+        `SELECT 1 FROM private_message_blocks
+         WHERE (blocker_application_user_id = ? AND blocked_application_user_id = ?)
+            OR (blocker_application_user_id = ? AND blocked_application_user_id = ?) LIMIT 1`,
+        [identity.userId, targets[0].id, targets[0].id, identity.userId],
+      );
+      if (blocks[0]) throw new Error("This account cannot be followed because one of you has blocked the other.");
+    }
     if (followed) await db().execute("INSERT IGNORE INTO user_follows (follower_application_user_id, followed_application_user_id) VALUES (?, ?)", [identity.userId, targets[0].id]);
     else await db().execute("DELETE FROM user_follows WHERE follower_application_user_id = ? AND followed_application_user_id = ?", [identity.userId, targets[0].id]);
   } else {
@@ -627,6 +781,12 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   const policy = LiveAccessPolicyService.for(identity);
   const access = roomType === "PARTY" ? policy.party : policy.face;
   if (!access.allowed) throw new Error(access.reason);
+  // Check the server clock before decoding uploads or initializing any room
+  // media. Party Audio intentionally remains outside this Face Live window.
+  if (roomType === "FACE" && !identity.playReviewerAccessOverride) {
+    const schedule = evaluateFaceLiveSchedule(await loadFaceLiveRules());
+    if (!schedule.allowed) throw new Error(schedule.unavailableMessage);
+  }
   const roomId = randomUUID();
   const photo = input.photoDataUrl
     ? await publicImageFromDataUrl(input.photoDataUrl, 1536 * 1024, "Room photo", { maxWidth: 1440, maxHeight: 1920 })
@@ -640,15 +800,57 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     throw new Error("Locked rooms require a 4, 6, or 10 digit password.");
   }
   const passwordHash = input.privacy === "locked" ? await bcrypt.hash(input.password!, 10) : null;
-  await withTransaction(async (connection) => {
-    const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null; account_status: string })[]>("SELECT agency_account_id, account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+  const createdRoom = await withTransaction(async (connection) => {
+    if (roomType === "FACE" && !identity.playReviewerAccessOverride) {
+      const schedule = evaluateFaceLiveSchedule(await loadFaceLiveRules(connection));
+      if (!schedule.allowed) throw new Error(schedule.unavailableMessage);
+    } else if (roomType === "FACE" && identity.playReviewerAccessOverride) {
+      const schedule = evaluateFaceLiveSchedule(await loadFaceLiveRules(connection));
+      if (!schedule.allowed) {
+        await connection.execute(
+          `INSERT INTO audit_logs
+            (id, action, module, target_type, target_id, new_data, reason)
+           VALUES (?, 'play_reviewer.live_hours_override', 'live', 'application_user', ?, ?, 'Google Play review account used its server-authoritative Live-hours override')`,
+          [randomUUID(), identity.userId, JSON.stringify({ roomCode: input.roomCode, timezone: schedule.timezone })],
+        );
+      }
+    }
+    const [existingRoomRows] = await connection.query<(RowDataPacket & {
+      id: string;
+      host_application_user_id: string;
+      status: string;
+    })[]>(
+      "SELECT id, host_application_user_id, status FROM live_rooms WHERE room_code = ? LIMIT 1 FOR UPDATE",
+      [input.roomCode],
+    );
+    const existingRoom = existingRoomRows[0];
+    if (existingRoom) {
+      if (existingRoom.host_application_user_id === identity.userId && existingRoom.status === "ACTIVE") {
+        return { id: existingRoom.id, roomCode: input.roomCode, status: "ACTIVE", alreadyExisted: true };
+      }
+      throw new Error("A room could not be opened with this code. Please tap Start Live again.");
+    }
+    const [userRows] = await connection.query<(RowDataPacket & { agency_account_id: string | null; effective_agency_account_id: string | null; account_status: string })[]>(
+      `SELECT user.agency_account_id, user.account_status,
+              COALESCE(user.agency_account_id, (
+                SELECT agency.id FROM platform_accounts agency
+                WHERE agency.role = 'AGENCY' AND agency.status = 'ACTIVE'
+                  AND (agency.application_user_id = user.id
+                    OR agency.application_user_id = user.external_user_id
+                    OR agency.application_user_id = CAST(user.public_id AS CHAR))
+                ORDER BY agency.created_at LIMIT 1
+              )) effective_agency_account_id
+       FROM application_users user WHERE user.id = ? LIMIT 1 FOR UPDATE`,
+      [identity.userId],
+    );
     if (!userRows[0] || userRows[0].account_status !== "ACTIVE") throw new Error("This account cannot create a room.");
     const [hostRows] = await connection.query<(RowDataPacket & { status: string })[]>("SELECT status FROM host_profiles WHERE application_user_id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!identity.hostAccessOverride && hostRows[0] && ["SUSPENDED", "INACTIVE"].includes(hostRows[0].status)) throw new Error("Hosting is suspended or inactive. Contact your Agency or support to restore access.");
+    const applicableRestrictionTypes = roomType === "PARTY" ? "('SUSPENSION')" : "('TEMP_LIVE_BAN','SUSPENSION')";
     const [restrictionRows] = await connection.query<RowDataPacket[]>(
       `SELECT id FROM moderation_restrictions
        WHERE application_user_id = ? AND status = 'ACTIVE'
-         AND restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+         AND restriction_type IN ${applicableRestrictionTypes}
          AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3))
        LIMIT 1 FOR UPDATE`,
       [identity.userId],
@@ -669,7 +871,7 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     }
     await connection.execute(
       "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, password_hash, password_length, seat_count, theme_index, theme_enabled, room_photo_asset_id, face_background_asset_id, country_code, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [roomId, input.roomCode, identity.userId, userRows[0]?.agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, roomType === "FACE" ? faceBackgroundAssetId : null, input.countryCode ?? null, "ACTIVE"],
+      [roomId, input.roomCode, identity.userId, userRows[0]?.effective_agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, roomType === "FACE" ? faceBackgroundAssetId : null, input.countryCode ?? null, "ACTIVE"],
     );
     await connection.execute(
       "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?)",
@@ -679,8 +881,9 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', ?, FALSE)",
       [roomId, identity.userId, roomType === "PARTY" ? "PARTY_OWNER" : "HOST"],
     );
+    return { id: roomId, roomCode: input.roomCode, status: "ACTIVE", alreadyExisted: false };
   });
-  return { id: roomId, roomCode: input.roomCode, status: "ACTIVE" };
+  return createdRoom;
 }
 
 export async function sendGift(identity: MobileIdentity, input: { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
@@ -717,7 +920,7 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       );
       return { success: true, remainingCoins: Number(balanceRows[0]?.available_balance ?? 0), message: "Gift already sent", rocket: null, event: null };
     }
-    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; coin_price: number })[]>("SELECT id, name, emoji, visual_url, coin_price FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
+    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; animation_key: string | null; asset_config: unknown; coin_price: number })[]>("SELECT id, name, emoji, visual_url, animation_key, asset_config, coin_price FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
     const [roomRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT room.id FROM live_rooms room
        INNER JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL
@@ -745,6 +948,13 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
     );
     const gift = giftRows[0]; const recipient = recipientRows[0]; const sender = senderProfileRows[0];
     if (!gift || !recipient || !sender) throw new Error("The gift or active room recipient is unavailable.");
+    const [blocks] = await connection.query<RowDataPacket[]>(
+      `SELECT 1 FROM private_message_blocks
+       WHERE (blocker_application_user_id = ? AND blocked_application_user_id = ?)
+          OR (blocker_application_user_id = ? AND blocked_application_user_id = ?) LIMIT 1`,
+      [identity.userId, recipient.id, recipient.id, identity.userId],
+    );
+    if (blocks[0]) throw new Error("Gifts are unavailable because one of you has blocked the other account.");
     const total = Number(gift.coin_price) * input.quantity;
     if (!Number.isSafeInteger(total) || total < 1) throw new Error("This gift price is outside the supported wallet range.");
     const [economyRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
@@ -772,13 +982,29 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       [randomUUID(), `${transferCode}-R`, identity.userId, recipient.id, diamondValue, `${gift.name} ×${input.quantity}`],
     );
     await connection.execute(
-      `UPDATE application_users
-       SET level_number = LEAST(120, FLOOR(SQRT(GREATEST(0, consumption_points + ?) / 5000)) + 1),
-           consumption_points = consumption_points + ?
-       WHERE id = ?`,
+      `UPDATE application_users user
+       SET consumption_points = user.consumption_points + ?,
+           level_number = GREATEST(user.level_number, COALESCE((
+             SELECT MAX(definition.level_number)
+             FROM level_definitions definition
+             WHERE definition.track = 'CONSUMPTION' AND definition.enabled = TRUE
+               AND definition.points_required <= user.consumption_points + ?
+           ), 1))
+       WHERE user.id = ?`,
       [total, total, identity.userId],
     );
-    await connection.execute("UPDATE application_users SET anchor_income_points = anchor_income_points + ? WHERE id = ?", [diamondValue, recipient.id]);
+    await connection.execute(
+      `UPDATE application_users user
+       SET anchor_income_points = user.anchor_income_points + ?,
+           anchor_level_number = GREATEST(user.anchor_level_number, COALESCE((
+             SELECT MAX(definition.level_number)
+             FROM level_definitions definition
+             WHERE definition.track = 'ANCHOR_INCOME' AND definition.enabled = TRUE
+               AND definition.points_required <= user.anchor_income_points + ?
+           ), 1))
+       WHERE user.id = ?`,
+      [diamondValue, diamondValue, recipient.id],
+    );
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     const eventId = randomUUID();
     await connection.execute(
@@ -804,7 +1030,7 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       rocket,
       event: {
         id: eventId, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
-        gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url },
+        gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
@@ -1497,18 +1723,28 @@ function sharedPhase(round: SharedRoundRow, now: Date) {
   return { phase: "RESULT", phaseEndsAt: new Date(round.result_ends_at) };
 }
 
-async function settleMaturedSharedRounds(connection: PoolConnection, game: SharedRoundGame) {
-  const settings = await gameSettings(connection);
+async function settleMaturedSharedRounds(
+  connection: PoolConnection,
+  game: SharedRoundGame,
+  priorityUserId: string,
+  settings: MobileGamesConfig,
+) {
   const gameConfig = settings.games[game];
   const [pairs] = await connection.query<(RowDataPacket & { round_id: string; application_user_id: string })[]>(
-    `SELECT DISTINCT bet.round_id, bet.application_user_id
+    `SELECT bet.round_id, bet.application_user_id
      FROM game_shared_bets bet
      INNER JOIN game_shared_rounds round ON round.id = bet.round_id
      LEFT JOIN game_shared_settlements settlement
        ON settlement.round_id = bet.round_id AND settlement.application_user_id = bet.application_user_id
      WHERE round.game_name = ? AND round.drawing_ends_at <= UTC_TIMESTAMP(3) AND settlement.id IS NULL
-     ORDER BY bet.round_id LIMIT 200`,
-    [game],
+     GROUP BY bet.round_id, bet.application_user_id
+     ORDER BY
+       CASE WHEN bet.application_user_id = ? THEN 0 ELSE 1 END,
+       CASE WHEN bet.application_user_id = ? THEN MAX(round.drawing_ends_at) END DESC,
+       MAX(round.drawing_ends_at) ASC,
+       bet.round_id
+     LIMIT 24`,
+    [game, priorityUserId, priorityUserId],
   );
   for (const pair of pairs) {
     await connection.query(
@@ -1613,7 +1849,7 @@ async function sharedRoundStatePayload(
     : game === "bounty_football"
       ? footballMultipliers.map((_, index) => String(index))
       : Array.from({ length: game === "greedy_lion" ? 8 : 10 }, (_, index) => String(index));
-  const [totalRows, myRows, walletRows, playerRows, settlementRows, recentRows] = await Promise.all([
+  const [totalRows, myRows, walletRows, playerRows, settlementRows, recentRows, latestSettlementRows] = await Promise.all([
     connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
       "SELECT target_id, SUM(amount) amount FROM game_shared_bets WHERE round_id = ? GROUP BY target_id", [round.id]),
     connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
@@ -1627,12 +1863,23 @@ async function sharedRoundStatePayload(
     connection.query<SharedRoundRow[]>(
       `SELECT * FROM game_shared_rounds WHERE game_name = ? AND drawing_ends_at <= UTC_TIMESTAMP(3)
        ORDER BY round_number DESC LIMIT ?`, [game, config.historyLength]),
+    connection.query<RowDataPacket[]>(
+      `SELECT round.id round_id, round.round_number, round.outcome_json,
+              settlement.wager_total, settlement.gross_payout,
+              settlement.deduction_total, settlement.payout_total,
+              settlement.balance_after, settlement.settled_at
+       FROM game_shared_settlements settlement
+       INNER JOIN game_shared_rounds round ON round.id = settlement.round_id
+       WHERE settlement.application_user_id = ? AND round.game_name = ?
+       ORDER BY settlement.settled_at DESC, settlement.id DESC LIMIT 1`,
+      [identity.userId, game],
+    ),
   ]);
   const [bigWinnerRows, playerListRows, poolRows] = await Promise.all([
     connection.query<RowDataPacket[]>(
       `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
               user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-              LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level
+              user.level_number consumption_level
        FROM game_big_winner_events event
        INNER JOIN application_users user ON user.id = event.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
@@ -1663,6 +1910,7 @@ async function sharedRoundStatePayload(
   const phase = sharedPhase(round, now);
   const reveal = now >= new Date(round.drawing_ends_at);
   const settlement = settlementRows[0][0];
+  const latestSettlement = latestSettlementRows[0][0];
   const playersById = new Map<string, { publicId: string; name: string; avatarUrl: string | null; bets: Record<string, number>; totalWager: number; lastBetAt: string }>();
   for (const item of playerListRows[0]) {
     const publicId = String(item.public_id);
@@ -1701,6 +1949,17 @@ async function sharedRoundStatePayload(
       deduction: Number(settlement.deduction_total), payout: Number(settlement.payout_total),
       balance: Number(settlement.balance_after), settledAt: new Date(settlement.settled_at as Date).toISOString(),
     } : null,
+    latestSettlement: latestSettlement ? {
+      roundId: String(latestSettlement.round_id),
+      roundNumber: Number(latestSettlement.round_number),
+      outcome: asObject(latestSettlement.outcome_json),
+      wager: Number(latestSettlement.wager_total),
+      grossPayout: Number(latestSettlement.gross_payout),
+      deduction: Number(latestSettlement.deduction_total),
+      payout: Number(latestSettlement.payout_total),
+      balance: Number(latestSettlement.balance_after),
+      settledAt: new Date(latestSettlement.settled_at as Date).toISOString(),
+    } : null,
     recentResults: recentRows[0].map((item) => ({
       roundId: item.id, roundNumber: Number(item.round_number), outcome: asObject(item.outcome_json),
     })),
@@ -1716,9 +1975,10 @@ async function sharedRoundStatePayload(
 export async function gameSharedRoundState(identity: MobileIdentity, gameValue: string) {
   const game = sharedGame(gameValue);
   return withTransaction(async (connection) => {
-    await settleMaturedSharedRounds(connection, game);
+    const settings = await gameSettings(connection);
+    await settleMaturedSharedRounds(connection, game, identity.userId, settings);
     const now = new Date();
-    const config = (await gameSettings(connection)).games[game];
+    const config = settings.games[game];
     const round = await ensureSharedRound(connection, game, config, now);
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
@@ -1730,21 +1990,22 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
   const game = sharedGame(input.game);
   const bets = canonicalBets(input.bets);
   return withTransaction(async (connection) => {
-    await settleMaturedSharedRounds(connection, game);
+    const settings = await gameSettings(connection);
+    await settleMaturedSharedRounds(connection, game, identity.userId, settings);
     const now = new Date();
-    const config = (await gameSettings(connection)).games[game];
+    const config = settings.games[game];
     const round = await ensureSharedRound(connection, game, config, now);
-    if (round.id !== input.roundId || now >= new Date(round.betting_ends_at)) throw new Error("Betting has closed for this round.");
     const [existingRows] = await connection.query<(RowDataPacket & { round_id: string; bets_json: unknown })[]>(
       "SELECT round_id, bets_json FROM game_shared_bet_requests WHERE application_user_id = ? AND request_id = ? LIMIT 1 FOR UPDATE",
       [identity.userId, input.requestId],
     );
     if (existingRows[0]) {
-      if (String(existingRows[0].round_id) !== round.id || JSON.stringify(canonicalBets(asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
+      if (String(existingRows[0].round_id) !== input.roundId || JSON.stringify(canonicalBets(asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
         throw new Error("This bet request ID was already used.");
       }
       return sharedRoundStatePayload(connection, identity, round, config, now);
     }
+    if (round.id !== input.roundId || now >= new Date(round.betting_ends_at)) throw new Error("Betting has closed for this round.");
     const checked = validateSharedBets(game, bets, config);
     if (checked.total <= 0) throw new Error("Choose a positive game bet.");
     const [roundWagerRows] = await connection.query<(RowDataPacket & { total: number })[]>(
@@ -1952,7 +2213,7 @@ export async function gameSocialState(game: string) {
       connection.query<RowDataPacket[]>(
         `SELECT event.id, event.payout_total, event.outcome_json, event.created_at,
                 user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-                LEAST(120, FLOOR(SQRT(GREATEST(0, user.consumption_points) / 5000)) + 1) consumption_level
+                user.level_number consumption_level
          FROM game_big_winner_events event
          INNER JOIN application_users user ON user.id = event.application_user_id
          LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id

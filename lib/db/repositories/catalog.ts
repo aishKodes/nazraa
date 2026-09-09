@@ -5,9 +5,31 @@ import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
-import type { PreparedPublicImage } from "@/lib/security/public-images";
+import type { PreparedPublicEffect, PreparedPublicImage, PreparedPublicSound } from "@/lib/security/public-images";
 import { can } from "@/lib/auth/permissions";
 import { mobileGamesConfig, type ConfigurableGameId } from "@/lib/games/game-config";
+
+export type MallCatalogType = "VIRTUAL_GIFT" | "ENTRY_FRAME" | "ENTRY_EFFECT" | "AVATAR_FRAME" | "PROFILE_EFFECT" | "CHAT_FRAME" | "MEDAL" | "BADGE";
+
+export type EffectAssetConfigInput = {
+  width?: number;
+  height?: number;
+  durationMs: number;
+  loop: boolean;
+  position: "TOP" | "CENTER" | "BOTTOM" | "RECIPIENT" | "FULL_SCREEN";
+  zIndex: number;
+  soundVolume: number;
+  priority: number;
+  displayMode: "AUTO" | "FULL" | "COMPACT" | "SILENT" | "SUPPRESSED";
+  presentationTier: "SMALL" | "MEDIUM" | "PREMIUM" | "ULTRA";
+  gameBehavior: "COMPACT" | "SILENT" | "SUPPRESSED";
+  modalBehavior: "COMPACT" | "SILENT" | "SUPPRESSED";
+};
+
+function accentValue(value: string | undefined) {
+  const clean = (value ?? "#8A5CFF").replace(/^#/, "");
+  return Number.parseInt(`ff${clean}`, 16);
+}
 
 async function auditedMutation(input: { scope: Scope; action: string; module: string; targetType: string; targetId: string; reason: string; run: Parameters<typeof withTransaction>[0] }) {
   await withTransaction(async (connection) => {
@@ -21,38 +43,88 @@ async function auditedMutation(input: { scope: Scope; action: string; module: st
 }
 
 export async function listGifts() {
-  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; catalog_type: string; emoji: string | null; coin_price: number; visual_url: string | null; animation_key: string | null; active: number; updated_at: string })[]>(
-    "SELECT id, gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key, active, updated_at FROM gift_catalog ORDER BY active DESC, catalog_type, coin_price, name",
+  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; catalog_type: string; emoji: string | null; coin_price: number; currency: string; validity_days: number; vip_tier_eligibility: number | null; sort_order: number; visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null; active: number; updated_at: string })[]>(
+    "SELECT id, gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, active, updated_at FROM gift_catalog ORDER BY active DESC, catalog_type, sort_order, coin_price, name",
   );
-  return rows.map((row) => ({ id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type, emoji: row.emoji, coinPrice: Number(row.coin_price), visualUrl: row.visual_url, animationKey: row.animation_key, active: Boolean(row.active), updatedAt: row.updated_at }));
+  return rows.map((row) => {
+    let config: Record<string, unknown> = {};
+    try { config = typeof row.asset_config === "string" ? JSON.parse(row.asset_config) as Record<string, unknown> : row.asset_config ?? {}; } catch { config = {}; }
+    return { id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type, emoji: row.emoji, coinPrice: Number(row.coin_price), currency: row.currency, validityDays: Number(row.validity_days), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), sortOrder: Number(row.sort_order), accentHex: `#${Number(config.accent ?? 0xff8a5cff).toString(16).slice(-6).padStart(6, "0")}`, visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: config, active: Boolean(row.active), updatedAt: row.updated_at };
+  });
 }
 
-export async function createGift(input: { scope: Scope; key: string; name: string; category: string; catalogType: "VIRTUAL_GIFT" | "ENTRY_FRAME" | "PROFILE_EFFECT" | "MEDAL" | "BADGE"; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string }) {
+export async function createGift(input: { scope: Scope; key: string; name: string; category: string; catalogType: MallCatalogType; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; effectConfig: EffectAssetConfigInput }) {
   const id = randomUUID();
   const assetId = input.image ? randomUUID() : null;
+  const animationAssetId = input.animation ? randomUUID() : null;
+  const soundAssetId = input.sound ? randomUUID() : null;
   const visualUrl = assetId ? `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}` : null;
+  const animationKey = animationAssetId && input.animation ? `https://nazraa.vercel.app/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}` : null;
+  const soundUrl = soundAssetId && input.sound ? `https://nazraa.vercel.app/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}` : null;
+  const config = {
+    accent: accentValue(input.accentHex),
+    ...input.effectConfig,
+    assetType: input.animation?.assetType ?? (visualUrl ? "STATIC_IMAGE" : "NONE"),
+    assetUrl: animationKey ?? visualUrl,
+    previewUrl: visualUrl,
+    fallbackVisualUrl: visualUrl,
+    soundUrl,
+  };
   await auditedMutation({ scope: input.scope, action: "gift.create", module: "gifts", targetType: "gift", targetId: id, reason: "Created gift catalogue entry", run: async (connection) => {
     if (input.image && assetId) {
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     }
-    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, catalog_type, emoji, coin_price, visual_url, animation_key, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.catalogType, input.emoji || null, input.coinPrice, visualUrl, input.animationKey || null, input.scope.account.id]);
+    if (input.animation && animationAssetId) {
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id]);
+    }
+    if (input.sound && soundAssetId) {
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id]);
+    }
+    await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.catalogType, input.emoji || null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.scope.account.id]);
   } });
 }
 
-export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; catalogType: "VIRTUAL_GIFT" | "ENTRY_FRAME" | "PROFILE_EFFECT" | "MEDAL" | "BADGE"; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; image?: PreparedPublicImage; animationKey?: string; reason: string }) {
+export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; catalogType: MallCatalogType; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; removeAnimation?: boolean; removeSound?: boolean; effectConfig: EffectAssetConfigInput; reason: string }) {
   await auditedMutation({ scope: input.scope, action: "gift.update", module: "gifts", targetType: "gift", targetId: input.id, reason: input.reason, run: async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null })[]>("SELECT visual_url FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
+    const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null })[]>("SELECT visual_url, animation_key, asset_config FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
     if (!rows[0]) throw new Error("Gift was not found.");
+    let previousConfig: Record<string, unknown> = {};
+    try { previousConfig = typeof rows[0].asset_config === "string" ? JSON.parse(rows[0].asset_config) as Record<string, unknown> : rows[0].asset_config ?? {}; } catch { previousConfig = {}; }
     let visualUrl = input.artworkMode === "IMAGE" ? rows[0].visual_url : null;
+    let animationKey = input.removeAnimation ? null : rows[0].animation_key;
+    let soundUrl = input.removeSound ? null : typeof previousConfig.soundUrl === "string" ? previousConfig.soundUrl : null;
+    let assetType = input.removeAnimation ? (visualUrl ? "STATIC_IMAGE" : "NONE") : String(previousConfig.assetType ?? (animationKey ? "LOTTIE" : visualUrl ? "STATIC_IMAGE" : "NONE"));
     if (input.artworkMode === "IMAGE" && input.image) {
       const assetId = randomUUID();
       visualUrl = `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}`;
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     }
+    if (input.animation) {
+      const animationAssetId = randomUUID();
+      animationKey = `https://nazraa.vercel.app/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}`;
+      assetType = input.animation.assetType;
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id]);
+    }
+    if (input.sound) {
+      const soundAssetId = randomUUID();
+      soundUrl = `https://nazraa.vercel.app/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}`;
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id]);
+    }
     if (input.artworkMode === "IMAGE" && !visualUrl) throw new Error("Upload a gift picture.");
+    if (!animationKey) assetType = visualUrl ? "STATIC_IMAGE" : "NONE";
+    const config = {
+      ...previousConfig,
+      accent: accentValue(input.accentHex),
+      ...input.effectConfig,
+      assetType,
+      assetUrl: animationKey ?? visualUrl,
+      previewUrl: visualUrl,
+      fallbackVisualUrl: visualUrl,
+      soundUrl,
+    };
     await connection.execute(
-      "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, visual_url = ?, animation_key = ? WHERE id = ?",
-      [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, visualUrl, input.animationKey || null, input.id],
+      "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, validity_days = ?, vip_tier_eligibility = ?, sort_order = ?, visual_url = ?, animation_key = ?, asset_config = ? WHERE id = ?",
+      [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.id],
     );
   } });
 }
@@ -175,6 +247,34 @@ export async function saveMobileAppSettings(input: { scope: Scope; minimumVersio
   } });
 }
 
+export async function savePolicySettings(input: {
+  scope: Scope;
+  termsVersion: string;
+  communityGuidelinesVersion: string;
+  requiresReacceptance: boolean;
+  privacyUrl: string;
+  termsUrl: string;
+  communityGuidelinesUrl: string;
+  childSafetyUrl: string;
+  accountDeletionUrl: string;
+  supportUrl: string;
+  refundsUrl: string;
+  copyrightUrl: string;
+  reason: string;
+}) {
+  const { scope, reason, ...setting } = input;
+  await auditedMutation({ scope, action: "settings.policy_update", module: "settings", targetType: "system_setting", targetId: "mobile.policy_config", reason, run: async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.policy_config' LIMIT 1 FOR UPDATE");
+    const previous = rows[0]?.setting_value && typeof rows[0].setting_value === "object" ? rows[0].setting_value as Record<string, unknown> : {};
+    const next = { ...previous, ...setting };
+    await connection.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.policy_config', ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+      [JSON.stringify(next), scope.account.id],
+    );
+  } });
+}
+
 export async function saveMobileSocialSettings(input: { scope: Scope; privateMessageCoinCost: number }) {
   await auditedMutation({ scope: input.scope, action: "settings.mobile_social_update", module: "settings", targetType: "system_setting", targetId: "mobile.social", reason: "Updated mobile social pricing", run: async (connection) => {
     await connection.execute(
@@ -283,6 +383,8 @@ export async function saveRoomFeatureSettings(input: {
   passivePlaybackResourceMode: "cdn" | "interactive_l3";
   passiveEventDelaySeconds: number;
   partyStreamingThreshold: number;
+  faceCdnKeepWarmWhileHostLive: boolean;
+  facePassivePlaybackProtocol: "hls" | "flv";
   paidMediaRoutingEnabled: boolean;
   streamMixingEnabled: boolean;
   pkCompositeStreamingEnabled: boolean;
@@ -341,6 +443,8 @@ export async function saveRoomFeatureSettings(input: {
           passivePlaybackResourceMode: input.passivePlaybackResourceMode,
           passiveEventDelaySeconds: input.passiveEventDelaySeconds,
           partyStreamingThreshold: input.partyStreamingThreshold,
+          faceCdnKeepWarmWhileHostLive: input.faceCdnKeepWarmWhileHostLive,
+          facePassivePlaybackProtocol: input.facePassivePlaybackProtocol,
           paidMediaRoutingEnabled: input.paidMediaRoutingEnabled,
           streamMixingEnabled: input.streamMixingEnabled,
           pkCompositeStreamingEnabled: input.pkCompositeStreamingEnabled,

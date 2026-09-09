@@ -1,20 +1,44 @@
 import "server-only";
 import type { PoolConnection } from "mysql2/promise";
 import { getDatabaseConnection } from "@/lib/db/pool";
+import { recordDatabaseAcquire, recordDatabaseQuery, recordDatabaseTransaction } from "@/lib/observability/mobile-latency-context";
+
+function tracedConnection(connection: PoolConnection): PoolConnection {
+  return new Proxy(connection, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property === "query" || property === "execute") {
+        return async (...argumentsList: unknown[]) => {
+          const startedAt = performance.now();
+          try {
+            return await (value as (...args: unknown[]) => unknown).apply(target, argumentsList);
+          } finally {
+            recordDatabaseQuery(performance.now() - startedAt);
+          }
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as PoolConnection;
+}
 
 export async function withTransaction<T>(operation: (connection: PoolConnection) => Promise<T>) {
   // Retrying acquisition is safe because the transaction has not started.
   // The operation itself is deliberately never replayed.
+  const acquisitionStartedAt = performance.now();
   const connection = await getDatabaseConnection();
+  recordDatabaseAcquire(performance.now() - acquisitionStartedAt);
+  const transactionStartedAt = performance.now();
   try {
     await connection.beginTransaction();
-    const result = await operation(connection);
+    const result = await operation(tracedConnection(connection));
     await connection.commit();
     return result;
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
+    recordDatabaseTransaction(performance.now() - transactionStartedAt);
     connection.release();
   }
 }

@@ -16,12 +16,12 @@ import {
   updatePlatformAccount,
 } from "@/lib/db/repositories/administration";
 import { createHostApplication, reviewHostApplication, updateHostGender, updateHostStatus, uploadHostDocument } from "@/lib/db/repositories/hosts";
-import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket } from "@/lib/db/repositories/catalog";
+import { createBanner, createGift, createNotification, saveEconomySettings, saveGameSettings, saveMobileAppSettings, saveMobileSocialSettings, savePolicySettings, saveRoomFeatureSettings, setBannerActive, setGiftActive, updateGift, updateSupportTicket, type EffectAssetConfigInput } from "@/lib/db/repositories/catalog";
 import { restoreLiveAccess, updateRiskFlag, updateRoomStatus } from "@/lib/db/repositories/operations";
 import { createCoinPackage, reviewFaceVerification, reviewPayoutMethod, saveCommerceSettings, saveWithdrawalEconomy, setCoinPackageActive, transitionCoinOrder, updateCoinPackage, updateSellerProfile } from "@/lib/db/repositories/mobile-administration";
-import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveRocketSettings, saveVipValidity } from "@/lib/db/repositories/completion-administration";
+import { saveDailyRewardRules, saveDiamondConversionRule, saveHostRewardRules, saveLiveBusinessRules, saveRocketSettings, saveVipValidity } from "@/lib/db/repositories/completion-administration";
 import { preparePrivateDocument } from "@/lib/security/documents";
-import { preparePublicImage } from "@/lib/security/public-images";
+import { preparePublicEffect, preparePublicImage, preparePublicSound } from "@/lib/security/public-images";
 import { reviewAgencyCreation, reviewAgencyJoin } from "@/lib/db/repositories/agency-applications";
 import { roles } from "@/types/platform";
 import { deleteBanner } from "@/lib/db/repositories/catalog";
@@ -29,9 +29,41 @@ import { parseRoleChange } from "@/lib/auth/role-change-validation";
 import { roleLabel } from "@/lib/auth/role-hierarchy";
 import { isPanelCountry } from "@/lib/countries";
 import { configurableGameIds } from "@/lib/games/game-config";
+import { updateSafetyReport } from "@/lib/db/repositories/safety-moderation";
+import { saveManagedLevelDefinitions, type ManagedLevelDefinition, type ManagedLevelTrack } from "@/lib/db/repositories/level-administration";
 
 function destination(path: string, kind: "error" | "success", message: string) {
   return `${path}?${kind}=${encodeURIComponent(message)}`;
+}
+
+export async function submitLevelDefinitions(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const track = formData.get("track")?.toString() as ManagedLevelTrack;
+  const reason = formData.get("reason")?.toString() ?? "";
+  const levels = [...new Set(
+    [...formData.keys()]
+      .map((key) => /^threshold-(\d+)$/.exec(key)?.[1])
+      .filter((value): value is string => value != null),
+  )].map(Number).sort((left, right) => left - right);
+  if (track !== "CONSUMPTION" && track !== "ANCHOR_INCOME") {
+    redirect(destination("/dashboard/levels", "error", "Choose a valid level track."));
+  }
+  const definitions: ManagedLevelDefinition[] = levels.map((level) => ({
+    track,
+    level,
+    threshold: Number(formData.get(`threshold-${level}`)),
+    badgeKey: formData.get(`badge-${level}`)?.toString().trim() ?? "",
+    label: formData.get(`label-${level}`)?.toString().trim() ?? "",
+    enabled: formData.get(`enabled-${level}`)?.toString() === "true",
+  }));
+  try {
+    await saveManagedLevelDefinitions({ scope, track, definitions, reason });
+  } catch (error) {
+    redirect(destination(`/dashboard/levels?track=${track}`, "error", error instanceof Error ? error.message : "Level definitions could not be saved."));
+  }
+  revalidatePath("/dashboard/levels");
+  revalidatePath("/dashboard/settings");
+  redirect(destination(`/dashboard/levels?track=${track}`, "success", "Level definitions saved and audited. Existing displayed status remains grandfathered."));
 }
 
 export async function submitCreateAccount(formData: FormData) {
@@ -197,29 +229,79 @@ export async function submitHostStatus(formData: FormData) {
   redirect(destination(`/dashboard/hosts/${parsed.data.hostId}`, "success", parsed.data.status === "ACTIVE" ? "Hosting restored. Verification and moderation requirements still apply." : "Hosting blocked and current rooms ended. New Face Live and Party Audio rooms cannot be created."));
 }
 
+function catalogArtworkOptions(catalogType: string) {
+  if (["ENTRY_FRAME", "ENTRY_EFFECT", "CHAT_FRAME"].includes(catalogType)) {
+    return { maxWidth: 1200, maxHeight: 400, animated: true };
+  }
+  if (catalogType === "PROFILE_EFFECT") return { maxWidth: 1080, maxHeight: 1350, animated: true };
+  if (catalogType === "AVATAR_FRAME") return { maxWidth: 1024, maxHeight: 1024, animated: true };
+  if (catalogType === "BADGE") return { maxWidth: 640, maxHeight: 192, animated: true };
+  return { maxWidth: 512, maxHeight: 512, animated: true };
+}
+
+const effectFields = {
+  effectWidth: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(1).max(1920).optional()),
+  effectHeight: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(1).max(1920).optional()),
+  durationMs: z.coerce.number().int().min(250).max(8000).default(1800),
+  loop: z.enum(["true", "false"]).default("false"),
+  position: z.enum(["TOP", "CENTER", "BOTTOM", "RECIPIENT", "FULL_SCREEN"]).default("CENTER"),
+  zIndex: z.coerce.number().int().min(-100).max(100).default(0),
+  soundVolume: z.coerce.number().min(0).max(1).default(.8),
+  effectPriority: z.coerce.number().int().min(0).max(1000).default(200),
+  displayMode: z.enum(["AUTO", "FULL", "COMPACT", "SILENT", "SUPPRESSED"]).default("AUTO"),
+  presentationTier: z.enum(["SMALL", "MEDIUM", "PREMIUM", "ULTRA"]).default("MEDIUM"),
+  gameBehavior: z.enum(["COMPACT", "SILENT", "SUPPRESSED"]).default("COMPACT"),
+  modalBehavior: z.enum(["COMPACT", "SILENT", "SUPPRESSED"]).default("COMPACT"),
+};
+
+function effectConfigFrom(input: z.infer<z.ZodObject<typeof effectFields>>): EffectAssetConfigInput {
+  return {
+    width: input.effectWidth,
+    height: input.effectHeight,
+    durationMs: input.durationMs,
+    loop: input.loop === "true",
+    position: input.position,
+    zIndex: input.zIndex,
+    soundVolume: input.soundVolume,
+    priority: input.effectPriority,
+    displayMode: input.displayMode,
+    presentationTier: input.presentationTier,
+    gameBehavior: input.gameBehavior,
+    modalBehavior: input.modalBehavior,
+  };
+}
+
 export async function submitCreateGift(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "PROFILE_EFFECT", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional() }).safeParse(Object.fromEntries(formData));
-  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the catalogue key, type, name, category, price, and animation key."));
+  const parsed = z.object({ key: z.string().trim().regex(/^[a-z0-9_]+$/).max(80), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "ENTRY_EFFECT", "AVATAR_FRAME", "PROFILE_EFFECT", "CHAT_FRAME", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), validityDays: z.coerce.number().int().min(1).max(3650).default(30), vipTierEligibility: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(1).max(5).optional()), sortOrder: z.coerce.number().int().min(-9999).max(9999).default(0), accentHex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).default("#8A5CFF"), ...effectFields }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the catalogue key, type, name, category, and price."));
   try {
     const imageFile = formData.get("image");
-    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork", { maxWidth: 512, maxHeight: 512, animated: true }) : undefined;
+    const animationFile = formData.get("animation");
+    const soundFile = formData.get("effectSound");
+    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Item artwork", catalogArtworkOptions(parsed.data.catalogType)) : undefined;
+    const animation = animationFile instanceof File && animationFile.size ? await preparePublicEffect(animationFile) : undefined;
+    const sound = soundFile instanceof File && soundFile.size ? await preparePublicSound(soundFile) : undefined;
     if (parsed.data.artworkMode === "IMAGE" && !image) throw new Error("Choose a gift picture.");
     if (parsed.data.artworkMode === "EMOJI" && !parsed.data.emoji) throw new Error("Choose a gift emoji.");
-    await createGift({ scope, ...parsed.data, emoji: parsed.data.artworkMode === "EMOJI" ? parsed.data.emoji : undefined, image: parsed.data.artworkMode === "IMAGE" ? image : undefined });
+    await createGift({ scope, ...parsed.data, emoji: parsed.data.artworkMode === "EMOJI" ? parsed.data.emoji : undefined, image: parsed.data.artworkMode === "IMAGE" ? image : undefined, animation, sound, effectConfig: effectConfigFrom(parsed.data) });
   } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be created.")); }
   revalidatePath("/dashboard/gifts"); redirect(destination("/dashboard/gifts", "success", "Gift created."));
 }
 
 export async function submitGiftUpdate(formData: FormData) {
   const scope = await requirePermission("gifts.manage");
-  const parsed = z.object({ id: z.string().uuid(), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "PROFILE_EFFECT", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), animationKey: z.string().trim().max(120).optional(), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ id: z.string().uuid(), name: z.string().trim().min(2).max(100), category: z.string().trim().min(2).max(60), catalogType: z.enum(["VIRTUAL_GIFT", "ENTRY_FRAME", "ENTRY_EFFECT", "AVATAR_FRAME", "PROFILE_EFFECT", "CHAT_FRAME", "MEDAL", "BADGE"]), artworkMode: z.enum(["EMOJI", "IMAGE"]), emoji: z.string().trim().max(16).optional(), coinPrice: z.coerce.number().int().positive(), validityDays: z.coerce.number().int().min(1).max(3650), vipTierEligibility: z.preprocess((value) => value === "" ? undefined : value, z.coerce.number().int().min(1).max(5).optional()), sortOrder: z.coerce.number().int().min(-9999).max(9999), accentHex: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/), reason: z.string().trim().min(5).max(500), ...effectFields }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/gifts", "error", "Check the gift details and change reason."));
   try {
     const imageFile = formData.get("image");
-    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Gift artwork", { maxWidth: 512, maxHeight: 512, animated: true }) : undefined;
+    const animationFile = formData.get("animation");
+    const soundFile = formData.get("effectSound");
+    const image = imageFile instanceof File && imageFile.size ? await preparePublicImage(imageFile, 1024 * 1024, "Item artwork", catalogArtworkOptions(parsed.data.catalogType)) : undefined;
+    const animation = animationFile instanceof File && animationFile.size ? await preparePublicEffect(animationFile) : undefined;
+    const sound = soundFile instanceof File && soundFile.size ? await preparePublicSound(soundFile) : undefined;
     if (parsed.data.artworkMode === "EMOJI" && !parsed.data.emoji) throw new Error("Choose a gift emoji.");
-    await updateGift({ scope, ...parsed.data, image });
+    await updateGift({ scope, ...parsed.data, image, animation, sound, removeAnimation: formData.get("removeAnimation") === "true", removeSound: formData.get("removeSound") === "true", effectConfig: effectConfigFrom(parsed.data) });
   } catch (error) { redirect(destination("/dashboard/gifts", "error", error instanceof Error ? error.message : "Gift could not be updated.")); }
   revalidatePath("/dashboard/gifts");
   redirect(destination("/dashboard/gifts", "success", "Gift details and mobile price updated."));
@@ -309,6 +391,23 @@ export async function submitMobileAppSettings(formData: FormData) {
   revalidatePath("/dashboard/settings"); redirect(destination("/dashboard/settings", "success", "Mobile app configuration saved."));
 }
 
+export async function submitPolicySettings(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const httpsUrl = z.string().trim().url().refine((value) => value.startsWith("https://"), "HTTPS is required");
+  const parsed = z.object({
+    termsVersion: z.string().trim().min(1).max(32),
+    communityGuidelinesVersion: z.string().trim().min(1).max(32),
+    privacyUrl: httpsUrl, termsUrl: httpsUrl, communityGuidelinesUrl: httpsUrl,
+    childSafetyUrl: httpsUrl, accountDeletionUrl: httpsUrl, supportUrl: httpsUrl,
+    refundsUrl: httpsUrl, copyrightUrl: httpsUrl,
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check every HTTPS policy URL, version, and change reason."));
+  await savePolicySettings({ scope, ...parsed.data, requiresReacceptance: formData.get("requiresReacceptance") === "true" });
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Policy metadata and mobile links were saved and audited."));
+}
+
 export async function submitMobileSocialSettings(formData: FormData) {
   const scope = await requirePermission("settings.manage");
   const parsed = z.object({ privateMessageCoinCost: z.coerce.number().int().min(0).max(100000) }).safeParse(Object.fromEntries(formData));
@@ -372,7 +471,9 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     partyPassivePlaybackMode: z.enum(["dynamic_rtc_fallback", "live_streaming"]),
     passivePlaybackResourceMode: z.enum(["cdn", "interactive_l3"]),
     passiveEventDelaySeconds: z.coerce.number().int().min(0).max(15),
-    partyStreamingThreshold: z.coerce.number().int().min(2).max(200),
+    partyStreamingThreshold: z.coerce.number().int().min(1).max(200),
+    faceCdnKeepWarmWhileHostLive: z.enum(["true", "false"]),
+    facePassivePlaybackProtocol: z.enum(["hls", "flv"]),
     paidMediaRoutingEnabled: z.enum(["true", "false"]),
     streamMixingEnabled: z.enum(["true", "false"]),
     pkCompositeStreamingEnabled: z.enum(["true", "false"]),
@@ -434,6 +535,8 @@ export async function submitRoomFeatureSettings(formData: FormData) {
     passivePlaybackResourceMode: parsed.data.passivePlaybackResourceMode,
     passiveEventDelaySeconds: parsed.data.passiveEventDelaySeconds,
     partyStreamingThreshold: parsed.data.partyStreamingThreshold,
+    faceCdnKeepWarmWhileHostLive: parsed.data.faceCdnKeepWarmWhileHostLive === "true",
+    facePassivePlaybackProtocol: parsed.data.facePassivePlaybackProtocol,
     paidMediaRoutingEnabled: parsed.data.paidMediaRoutingEnabled === "true",
     streamMixingEnabled: parsed.data.streamMixingEnabled === "true",
     pkCompositeStreamingEnabled: parsed.data.pkCompositeStreamingEnabled === "true",
@@ -507,6 +610,25 @@ export async function submitRiskStatus(formData: FormData) {
   await updateRiskFlag({ scope, ...parsed.data }); revalidatePath("/dashboard/risk"); redirect(destination("/dashboard/risk", "success", "Risk flag updated."));
 }
 
+export async function submitSafetyReportStatus(formData: FormData) {
+  const scope = await requirePermission("risk.manage");
+  const parsed = z.object({
+    reportId: z.string().uuid(),
+    status: z.enum(["NEW", "UNDER_REVIEW", "ACTIONED", "DISMISSED"]),
+    returnStatus: z.enum(["NEW", "UNDER_REVIEW", "ACTIONED", "DISMISSED"]),
+    note: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  const returnStatus = parsed.success ? parsed.data.returnStatus : "NEW";
+  if (!parsed.success) redirect(destination(`/dashboard/moderation?status=${returnStatus}`, "error", "Choose a status and provide a clear review note."));
+  try {
+    await updateSafetyReport({ scope, reportId: parsed.data.reportId, status: parsed.data.status, note: parsed.data.note });
+  } catch (error) {
+    redirect(destination(`/dashboard/moderation?status=${returnStatus}`, "error", error instanceof Error ? error.message : "The report could not be updated."));
+  }
+  revalidatePath("/dashboard/moderation");
+  redirect(destination(`/dashboard/moderation?status=${returnStatus}`, "success", "Safety report updated and audited."));
+}
+
 export async function submitRoomStatus(formData: FormData) {
   const scope = await requirePermission("rooms.manage"); const parsed = z.object({ roomId: z.string().uuid(), status: z.enum(["ACTIVE", "LOCKED", "ENDED"]), reason: z.string().trim().min(5).max(500), confirmed: z.literal("yes") }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/rooms", "error", "Choose a room action and provide a reason."));
@@ -545,7 +667,7 @@ export async function submitDocumentReview(formData: FormData) {
 
 export async function submitCreateCoinPackage(formData: FormData) {
   const scope = await requirePermission("coin_packages.manage");
-  const parsed = z.object({ name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()).optional().or(z.literal("")), playProductId: z.string().trim().regex(/^[a-z0-9._-]+$/).max(150).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Check the package name, coins, price, currency, and order."));
   try { await createCoinPackage({ scope, ...parsed.data }); } catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be created.")); }
   revalidatePath("/dashboard/commerce"); redirect(destination("/dashboard/commerce", "success", "Coin package created."));
@@ -553,7 +675,7 @@ export async function submitCreateCoinPackage(formData: FormData) {
 
 export async function submitCoinPackageUpdate(formData: FormData) {
   const scope = await requirePermission("coin_packages.manage");
-  const parsed = z.object({ packageId: z.string().uuid(), name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()), sortOrder: z.coerce.number().int().min(0).max(999), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
+  const parsed = z.object({ packageId: z.string().uuid(), name: z.string().trim().min(2).max(100), badge: z.string().trim().max(40).optional(), coins: z.coerce.number().int().positive(), price: z.coerce.number().nonnegative().optional(), currency: z.string().trim().length(3).transform((value) => value.toUpperCase()), playProductId: z.string().trim().regex(/^[a-z0-9._-]+$/).max(150).optional().or(z.literal("")), sortOrder: z.coerce.number().int().min(0).max(999), reason: z.string().trim().min(5).max(500) }).safeParse(Object.fromEntries(formData));
   if (!parsed.success) redirect(destination("/dashboard/commerce", "error", "Check the package details and change reason."));
   try { await updateCoinPackage({ scope, ...parsed.data }); }
   catch (error) { redirect(destination("/dashboard/commerce", "error", error instanceof Error ? error.message : "Package could not be updated.")); }
@@ -681,4 +803,22 @@ export async function submitHostRewardRules(formData: FormData) {
   await saveHostRewardRules({ scope, ...parsed.data, live: parsed.data.face });
   revalidatePath("/dashboard/settings");
   redirect(destination("/dashboard/settings", "success", "Host reward rules saved and audited."));
+}
+
+export async function submitLiveBusinessRules(formData: FormData) {
+  const scope = await requirePermission("settings.manage");
+  const parsed = z.object({
+    timezone: z.string().trim().min(3).max(80),
+    startTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    endTime: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+    closingNoticeMinutes: z.coerce.number().int().min(1).max(120),
+    rewardEnabled: z.enum(["true", "false"]).transform((value) => value === "true"),
+    hourlyRewardDiamonds: z.coerce.number().int().nonnegative(),
+    reason: z.string().trim().min(5).max(500),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect(destination("/dashboard/settings", "error", "Check the Live window, timezone, reward values, and reason."));
+  try { await saveLiveBusinessRules({ scope, ...parsed.data }); }
+  catch (error) { redirect(destination("/dashboard/settings", "error", error instanceof Error ? error.message : "Live rules could not be saved.")); }
+  revalidatePath("/dashboard/settings");
+  redirect(destination("/dashboard/settings", "success", "Live rules saved and audited."));
 }

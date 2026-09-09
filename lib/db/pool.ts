@@ -1,8 +1,10 @@
 import "server-only";
 import mysql, { type PoolOptions } from "mysql2/promise";
+import { recordDatabaseQuery } from "@/lib/observability/mobile-latency-context";
 
 declare global {
   var nazraaPool: mysql.Pool | undefined;
+  var nazraaInstrumentedPool: mysql.Pool | undefined;
 }
 
 function databaseConfig(): PoolOptions {
@@ -29,10 +31,12 @@ function databaseConfig(): PoolOptions {
     // bootstrap. Keep a small warm pool and queue the short queries instead.
     connectionLimit: Math.min(2, Math.max(1, Number(process.env.DB_CONNECTION_LIMIT ?? 1))),
     maxIdle: 1,
-    // Keep the single socket across warm Fluid-compute invocations. Hostinger
-    // limits new connections per hour, so rapidly discarding healthy sockets
-    // makes an otherwise healthy database appear offline.
-    idleTimeout: 10 * 60_000,
+    // Hostinger's shared MariaDB can retire an inactive remote socket far
+    // sooner than a warm Vercel function is recycled. Reusing that half-closed
+    // socket left public config and sign-in requests waiting forever. Retire
+    // the pool's idle connection before the provider can do so; active work is
+    // still queued on the small pool rather than creating a connection burst.
+    idleTimeout: 5_000,
     queueLimit: 100,
     connectTimeout: 12_000,
     enableKeepAlive: true,
@@ -46,8 +50,26 @@ function databaseConfig(): PoolOptions {
 export function db() {
   if (!global.nazraaPool) {
     global.nazraaPool = mysql.createPool(databaseConfig());
+    global.nazraaInstrumentedPool = new Proxy(global.nazraaPool, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property === "query" || property === "execute") {
+          return async (...argumentsList: unknown[]) => {
+            const startedAt = performance.now();
+            try {
+              return await (value as (...args: unknown[]) => unknown).apply(target, argumentsList);
+            } finally {
+              // This records duration only inside an active mobile request.
+              // It deliberately never retries or changes SQL/write semantics.
+              recordDatabaseQuery(performance.now() - startedAt);
+            }
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as mysql.Pool;
   }
-  return global.nazraaPool;
+  return global.nazraaInstrumentedPool!;
 }
 
 const transientCodes = new Set([
@@ -82,6 +104,7 @@ export function isDatabaseAvailabilityError(error: unknown) {
 function discardPool() {
   const pool = global.nazraaPool;
   global.nazraaPool = undefined;
+  global.nazraaInstrumentedPool = undefined;
   if (!pool) return;
 
   // A warm Vercel instance can serve concurrent requests. Ending the shared

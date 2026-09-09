@@ -10,7 +10,7 @@ import { clearSession, createSession } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/auth/guard";
 import { accountByManagementId, createInitialMaster } from "@/lib/db/repositories/accounts";
 import { blockUserDevice, unblockUserDevice } from "@/lib/db/repositories/monitoring";
-import { adjustPlatformCoinInventory, allocatePlatformCoins, createTemporaryLiveRestriction, permanentlyBanUser, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
+import { adjustPlatformCoinInventory, allocatePlatformCoins, createTemporaryLiveRestriction, permanentlyBanUser, permanentlyUnbanUser, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
 import { withTransaction } from "@/lib/db/transaction";
 
 const loginInput = z.object({ managementId: z.string().trim().regex(/^\d{6}$/), password: z.string().min(1).max(200) });
@@ -139,7 +139,7 @@ export async function submitTemporaryRestriction(formData: FormData) {
   const scope = await requirePermission("rooms.restrict");
   const applicationUserId = z.string().uuid().safeParse(formData.get("applicationUserId"));
   const reason = z.string().trim().min(5).max(500).safeParse(formData.get("reason"));
-  const durationMinutes = z.coerce.number().pipe(z.union([z.literal(30), z.literal(60), z.literal(120)])).safeParse(formData.get("durationMinutes"));
+  const durationMinutes = z.coerce.number().pipe(z.union([z.literal(30), z.literal(60), z.literal(120), z.literal(1440)])).safeParse(formData.get("durationMinutes"));
   const confirmed = formData.get("confirmed") === "yes";
   const returnTo = z.enum(["rooms", "monitoring"]).catch("rooms").parse(formData.get("returnTo"));
   const path = `/dashboard/${returnTo}`;
@@ -150,7 +150,8 @@ export async function submitTemporaryRestriction(formData: FormData) {
   }
   revalidatePath("/dashboard/rooms");
   revalidatePath("/dashboard/monitoring");
-  redirect(`${path}?success=${encodeURIComponent(`${result.userName} has a ${durationMinutes.data}-minute Live restriction.`)}`);
+  const durationLabel = durationMinutes.data === 1440 ? "24-hour" : `${durationMinutes.data}-minute`;
+  redirect(`${path}?success=${encodeURIComponent(`${result.userName} has a ${durationLabel} Face/Video Live restriction ending ${new Date(result.endsAt).toISOString()}.`)}`);
 }
 
 export async function submitPermanentUserBan(formData: FormData) {
@@ -164,6 +165,20 @@ export async function submitPermanentUserBan(formData: FormData) {
   }
   revalidatePath("/dashboard/monitoring"); revalidatePath("/dashboard/users"); revalidatePath("/dashboard/rooms");
   redirect("/dashboard/monitoring?success=User+permanently+banned+and+all+sessions+were+revoked.");
+}
+
+export async function submitPermanentUserUnban(formData: FormData) {
+  const scope = await requirePermission("users.permanent");
+  const parsed = z.object({
+    applicationUserId: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmation: z.literal("UNBAN"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect("/dashboard/monitoring?error=Type+UNBAN+and+provide+a+clear+reason.");
+  let result: Awaited<ReturnType<typeof permanentlyUnbanUser>>;
+  try { result = await permanentlyUnbanUser({ scope, applicationUserId: parsed.data.applicationUserId, reason: parsed.data.reason, confirmed: true }); } catch (error) {
+    redirect(`/dashboard/monitoring?error=${encodeURIComponent(error instanceof Error ? error.message : "Unban failed.")}`);
+  }
+  revalidatePath("/dashboard/monitoring"); revalidatePath("/dashboard/users"); revalidatePath("/dashboard/rooms");
+  redirect(`/dashboard/monitoring?success=${encodeURIComponent(`${result.userName} was unbanned. ${result.restoredSessions} still-valid session(s) were restored; device and Live restrictions remain independently enforced.`)}`);
 }
 
 export async function submitDeviceBlock(formData: FormData) {

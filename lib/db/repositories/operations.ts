@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "crypto";
-import type { RowDataPacket } from "mysql2";
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
@@ -269,14 +269,16 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
   });
 }
 
-export async function createTemporaryLiveRestriction(input: { scope: Scope; applicationUserId: string; reason: string; durationMinutes: 30 | 60 | 120 }) {
+export type TemporaryLiveRestrictionMinutes = 30 | 60 | 120 | 1440;
+
+export async function createTemporaryLiveRestriction(input: { scope: Scope; applicationUserId: string; reason: string; durationMinutes: TemporaryLiveRestrictionMinutes }) {
   if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restrict Live access.");
   if (input.reason.trim().length < 5) throw new Error("Provide a specific moderation reason.");
-  if (![30, 60, 120].includes(input.durationMinutes)) throw new Error("Choose a 30 minute, 1 hour, or 2 hour restriction.");
+  if (![30, 60, 120, 1440].includes(input.durationMinutes)) throw new Error("Choose a 30 minute, 1 hour, 2 hour, or 24 hour restriction.");
   const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
-      `SELECT id, full_name FROM application_users WHERE id = ? AND ${permitted.clause} LIMIT 1 FOR UPDATE`,
+      `SELECT id, full_name FROM application_users WHERE id = ? AND account_status = 'ACTIVE' AND ${permitted.clause} LIMIT 1 FOR UPDATE`,
       [input.applicationUserId, ...permitted.values],
     );
     if (!users[0]) throw new Error("User was not found in your permitted scope.");
@@ -299,12 +301,27 @@ export async function createTemporaryLiveRestriction(input: { scope: Scope; appl
        VALUES (?, ?, 'TEMP_LIVE_BAN', DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ${input.durationMinutes} MINUTE), ?, ?)`,
       [restrictionId, input.applicationUserId, input.reason.trim(), input.scope.account.id],
     );
-    await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE host_application_user_id = ? AND status IN ('ACTIVE','LOCKED')", [input.applicationUserId]);
+    const [restrictionRows] = await connection.query<(RowDataPacket & { starts_at: Date | string; ends_at: Date | string })[]>(
+      "SELECT starts_at, ends_at FROM moderation_restrictions WHERE id = ? LIMIT 1",
+      [restrictionId],
+    );
+    const restriction = restrictionRows[0];
+    await connection.execute(
+      `UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3))
+       WHERE host_application_user_id = ? AND room_type IN ('LIVE','FACE') AND status IN ('ACTIVE','LOCKED')`,
+      [input.applicationUserId],
+    );
+    await connection.execute(
+      `INSERT INTO mobile_notifications
+        (id, application_user_id, notification_type, title, message, action_target)
+       VALUES (?, ?, 'MODERATION', 'Live access temporarily blocked', ?, 'profile/live-access')`,
+      [randomUUID(), input.applicationUserId, `Face/Video Live is blocked until ${new Date(restriction.ends_at).toISOString()}. ${input.reason.trim()}`],
+    );
     await audit(connection, {
       actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "moderation.temp_live_ban", module: "moderation", targetType: "application_user", targetId: input.applicationUserId,
-      next: { durationMinutes: input.durationMinutes }, reason: input.reason.trim(),
+      next: { restrictionId, durationMinutes: input.durationMinutes, startsAt: restriction.starts_at, endsAt: restriction.ends_at }, reason: input.reason.trim(),
     });
-    return { restrictionId, userName: users[0].full_name };
+    return { restrictionId, userName: users[0].full_name, startsAt: restriction.starts_at, endsAt: restriction.ends_at };
   });
 }
 
@@ -319,19 +336,87 @@ export async function permanentlyBanUser(input: { scope: Scope; applicationUserI
     const user = rows[0];
     if (!user) throw new Error("User was not found.");
     if (user.account_status === "BANNED") throw new Error("This user is already permanently banned.");
+    const restrictionId = randomUUID();
     await connection.execute("UPDATE application_users SET account_status = 'BANNED' WHERE id = ?", [user.id]);
-    await connection.execute("UPDATE mobile_sessions SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?", [user.id]);
+    await connection.execute(
+      `UPDATE mobile_sessions
+       SET revoked_at = CURRENT_TIMESTAMP(3), revoked_reason = 'ACCOUNT_BAN', revoked_reference_id = ?
+       WHERE application_user_id = ? AND revoked_at IS NULL`,
+      [restrictionId, user.id],
+    );
     await connection.execute("UPDATE live_rooms SET status = 'ENDED', ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE host_application_user_id = ? AND status IN ('ACTIVE','LOCKED')", [user.id]);
     await connection.execute(
-      "INSERT INTO moderation_restrictions (id, application_user_id, restriction_type, ends_at, reason, actor_account_id) VALUES (?, ?, 'SUSPENSION', NULL, ?, ?)",
-      [randomUUID(), user.id, input.reason.trim(), input.scope.account.id],
+      "INSERT INTO moderation_restrictions (id, application_user_id, restriction_type, ends_at, reason, actor_account_id) VALUES (?, ?, 'ACCOUNT_BAN', NULL, ?, ?)",
+      [restrictionId, user.id, input.reason.trim(), input.scope.account.id],
     );
     await audit(connection, {
       actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "user.permanent_ban",
       module: "moderation", targetType: "application_user", targetId: user.id,
-      previous: { status: user.account_status }, next: { status: "BANNED", sessionsRevoked: true }, reason: input.reason.trim(),
+      previous: { status: user.account_status }, next: { status: "BANNED", restrictionId, sessionsRevoked: true }, reason: input.reason.trim(),
     });
     return { userName: user.full_name };
+  });
+}
+
+export async function permanentlyUnbanUser(input: { scope: Scope; applicationUserId: string; reason: string; confirmed: boolean }) {
+  if (input.scope.account.role !== "MASTER" || !input.scope.isGlobal || !input.confirmed) throw new Error("Master confirmation is required to unban an account.");
+  if (input.reason.trim().length < 5) throw new Error("Provide a clear unban reason.");
+  return withTransaction(async (connection) => {
+    const [rows] = await connection.query<(RowDataPacket & { id: string; full_name: string; account_status: string })[]>(
+      "SELECT id, full_name, account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE",
+      [input.applicationUserId],
+    );
+    const user = rows[0];
+    if (!user) throw new Error("User was not found.");
+    if (user.account_status !== "BANNED") throw new Error("This account is no longer banned. Refresh before applying another action.");
+
+    const [restrictionRows] = await connection.query<(RowDataPacket & { id: string })[]>(
+      `SELECT id FROM moderation_restrictions
+       WHERE application_user_id = ? AND restriction_type = 'ACCOUNT_BAN' AND status = 'ACTIVE'
+       FOR UPDATE`,
+      [user.id],
+    );
+    await connection.execute("UPDATE application_users SET account_status = 'ACTIVE' WHERE id = ?", [user.id]);
+    if (restrictionRows.length) {
+      await connection.execute(
+        `UPDATE moderation_restrictions SET status = 'REVOKED', ends_at = CURRENT_TIMESTAMP(3)
+         WHERE application_user_id = ? AND restriction_type = 'ACCOUNT_BAN' AND status = 'ACTIVE'`,
+        [user.id],
+      );
+    }
+    const [sessionResult] = await connection.execute<ResultSetHeader>(
+      `UPDATE mobile_sessions session_row
+       SET session_row.revoked_at = NULL, session_row.revoked_reason = NULL, session_row.revoked_reference_id = NULL
+       WHERE session_row.application_user_id = ?
+         AND session_row.revoked_reason = 'ACCOUNT_BAN'
+         AND session_row.expires_at > CURRENT_TIMESTAMP(3)
+         AND NOT EXISTS (
+           SELECT 1 FROM mobile_device_blocks device_block
+           WHERE device_block.application_user_id = session_row.application_user_id
+             AND device_block.status = 'ACTIVE'
+             AND (device_block.mobile_session_id = session_row.id
+               OR (session_row.device_id_hash IS NOT NULL AND device_block.device_id_hash = session_row.device_id_hash))
+         )`,
+      [user.id],
+    );
+    await connection.execute(
+      `INSERT INTO mobile_notifications
+        (id, application_user_id, notification_type, title, message, action_target)
+       VALUES (?, ?, 'MODERATION', 'Account access restored', ?, 'profile')`,
+      [randomUUID(), user.id, input.reason.trim()],
+    );
+    await audit(connection, {
+      actorId: input.scope.account.id,
+      actorRole: input.scope.account.role,
+      action: "user.permanent_unban",
+      module: "moderation",
+      targetType: "application_user",
+      targetId: user.id,
+      previous: { status: "BANNED", activeAccountBanIds: restrictionRows.map((restriction) => restriction.id) },
+      next: { status: "ACTIVE", restoredSessions: sessionResult.affectedRows },
+      reason: input.reason.trim(),
+    });
+    return { userName: user.full_name, restoredSessions: sessionResult.affectedRows };
   });
 }
 
@@ -503,7 +588,7 @@ export async function listMediaCostTelemetry(days = 14) {
 export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
   const { page, pageSize, offset } = pageInput(input);
   const filter = scopeWhere(scope, "r.agency_account_id");
-  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number; mixer_status: string | null; rtc_publishers: number; passive_streaming: number; passive_rtc_fallback: number; mixer_seconds: number })[]>(
+  const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number; mixer_status: string | null; rtc_publishers: number; passive_streaming: number; passive_rtc_fallback: number; mixer_seconds: number; reconnect_count: number; connection_phase: string | null; last_terminal_error_category: string | null; active_speakers: number; passive_viewers: number; animation_queue_length: number; message_delivery_latency_ms: number | null })[]>(
     `SELECT r.id, r.room_code, r.room_type, r.status, r.audience_count, r.started_at,
             r.theme_index, r.theme_enabled, r.pk_requests_enabled, (r.password_hash IS NOT NULL) password_protected, r.chat_locked,
             COALESCE(pk.pk_count, 0) pk_count, COALESCE(incidents.presence_incidents, 0) presence_incidents,
@@ -511,6 +596,12 @@ export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
             COALESCE(media.rtc_publishers, 0) rtc_publishers,
             COALESCE(media.passive_streaming, 0) passive_streaming,
             COALESCE(media.passive_rtc_fallback, 0) passive_rtc_fallback,
+            COALESCE(media.reconnect_count, 0) reconnect_count,
+            media.connection_phase, media.last_terminal_error_category,
+            COALESCE(media.active_speakers, 0) active_speakers,
+            COALESCE(media.passive_viewers, 0) passive_viewers,
+            COALESCE(media.animation_queue_length, 0) animation_queue_length,
+            media.message_delivery_latency_ms,
             COALESCE(mixer.active_duration_seconds, 0) + IF(mixer.active_started_at IS NULL, 0,
               GREATEST(0, TIMESTAMPDIFF(SECOND, mixer.active_started_at, CURRENT_TIMESTAMP(3)))) mixer_seconds,
             u.full_name, u.external_user_id, u.id application_user_id
@@ -530,12 +621,19 @@ export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
        SELECT room_id,
          SUM(usage_type IN ('FACE_HOST_RTC','FACE_AUDIO_GUEST_RTC','PARTY_SPEAKER_RTC') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) rtc_publishers,
          SUM(usage_type IN ('FACE_PASSIVE_STREAM','PARTY_PASSIVE_STREAM') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) passive_streaming,
-         SUM(usage_type IN ('FACE_PASSIVE_RTC_FALLBACK','PARTY_PASSIVE_RTC_FALLBACK') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) passive_rtc_fallback
+         SUM(usage_type IN ('FACE_PASSIVE_RTC_FALLBACK','PARTY_PASSIVE_RTC_FALLBACK') AND ended_at IS NULL AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND) passive_rtc_fallback,
+         MAX(CASE WHEN diagnostics_updated_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND THEN reconnect_count ELSE 0 END) reconnect_count,
+         SUBSTRING_INDEX(GROUP_CONCAT(connection_phase ORDER BY diagnostics_updated_at DESC), ',', 1) connection_phase,
+         SUBSTRING_INDEX(GROUP_CONCAT(last_terminal_error_category ORDER BY diagnostics_updated_at DESC), ',', 1) last_terminal_error_category,
+         MAX(CASE WHEN diagnostics_updated_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND THEN active_speakers ELSE 0 END) active_speakers,
+         MAX(CASE WHEN diagnostics_updated_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND THEN passive_viewers ELSE 0 END) passive_viewers,
+         MAX(CASE WHEN diagnostics_updated_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND THEN animation_queue_length ELSE 0 END) animation_queue_length,
+         MAX(CASE WHEN diagnostics_updated_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND THEN message_delivery_latency_ms ELSE NULL END) message_delivery_latency_ms
        FROM live_media_usage GROUP BY room_id
      ) media ON media.room_id = r.id
      WHERE ${filter.clause} ORDER BY r.started_at DESC LIMIT ? OFFSET ?`, [...filter.values, pageSize + 1, offset],
   );
-  return { items: rows.slice(0, pageSize).map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id, themeIndex: Number(row.theme_index), themeEnabled: Boolean(row.theme_enabled), pkRequestsEnabled: Boolean(row.pk_requests_enabled), passwordProtected: Boolean(row.password_protected), chatLocked: Boolean(row.chat_locked), pkCount: Number(row.pk_count), presenceIncidents: Number(row.presence_incidents), mixerStatus: row.mixer_status ?? "INACTIVE", rtcPublishers: Number(row.rtc_publishers), passiveStreaming: Number(row.passive_streaming), passiveRtcFallback: Number(row.passive_rtc_fallback), mixerSeconds: Number(row.mixer_seconds) })), page, pageSize, hasNext: rows.length > pageSize };
+  return { items: rows.slice(0, pageSize).map((row) => ({ id: row.id, roomCode: row.room_code, roomType: row.room_type, status: row.status, audience: Number(row.audience_count), startedAt: row.started_at, hostName: row.full_name, hostExternalId: row.external_user_id, applicationUserId: row.application_user_id, themeIndex: Number(row.theme_index), themeEnabled: Boolean(row.theme_enabled), pkRequestsEnabled: Boolean(row.pk_requests_enabled), passwordProtected: Boolean(row.password_protected), chatLocked: Boolean(row.chat_locked), pkCount: Number(row.pk_count), presenceIncidents: Number(row.presence_incidents), mixerStatus: row.mixer_status ?? "INACTIVE", rtcPublishers: Number(row.rtc_publishers), passiveStreaming: Number(row.passive_streaming), passiveRtcFallback: Number(row.passive_rtc_fallback), mixerSeconds: Number(row.mixer_seconds), reconnectCount: Number(row.reconnect_count), connectionPhase: row.connection_phase ?? "unknown", lastTerminalErrorCategory: row.last_terminal_error_category, activeSpeakers: Number(row.active_speakers), passiveViewers: Number(row.passive_viewers), animationQueueLength: Number(row.animation_queue_length), messageDeliveryLatencyMs: row.message_delivery_latency_ms == null ? null : Number(row.message_delivery_latency_ms) })), page, pageSize, hasNext: rows.length > pageSize };
 }
 
 export async function listPresenceIncidents(scope: Scope) {
@@ -581,12 +679,12 @@ export async function restoreLiveAccess(input: { scope: Scope; restrictionId: st
   const filter = monitoringScopeWhere(input.scope, "user.agency_account_id");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
-      id: string; application_user_id: string; full_name: string;
+      id: string; application_user_id: string; full_name: string; restriction_type: string;
     })[]>(
-      `SELECT restriction.id, restriction.application_user_id, user.full_name
+      `SELECT restriction.id, restriction.application_user_id, restriction.restriction_type, user.full_name
        FROM moderation_restrictions restriction
        INNER JOIN application_users user ON user.id = restriction.application_user_id
-       WHERE restriction.id = ? AND restriction.restriction_type = 'TEMP_LIVE_BAN'
+       WHERE restriction.id = ? AND restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
          AND restriction.status = 'ACTIVE' AND ${filter.clause}
        LIMIT 1 FOR UPDATE`,
       [input.restrictionId, ...filter.values],
@@ -610,7 +708,7 @@ export async function restoreLiveAccess(input: { scope: Scope; restrictionId: st
       module: "moderation",
       targetType: "application_user",
       targetId: restriction.application_user_id,
-      previous: { restrictionId: restriction.id, status: "ACTIVE" },
+      previous: { restrictionId: restriction.id, restrictionType: restriction.restriction_type, status: "ACTIVE" },
       next: { status: "REVOKED" },
       reason: input.reason.trim(),
     });
@@ -664,5 +762,55 @@ export async function updateRoomStatus(input: { scope: Scope; roomId: string; st
     if (rows[0].status === input.status || (rows[0].status === "LOCKED" && input.status === "LOCKED")) throw new Error("Choose a valid new room status.");
     await connection.execute("UPDATE live_rooms SET status = ?, ended_at = IF(?, CURRENT_TIMESTAMP(3), ended_at) WHERE id = ?", [input.status, input.status === "ENDED" ? 1 : 0, input.roomId]);
     await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "room.status_change", module: "rooms", targetType: "live_room", targetId: input.roomId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
+  });
+}
+
+/** Aggregate server-side mobile timing, shown only to settings operators. */
+export async function listMobileLatencyDiagnostics() {
+  type Counter = RowDataPacket & { operation_key: string; stage: string; sample_count: number; total_ms: number; max_ms: number };
+  type Bucket = RowDataPacket & { operation_key: string; stage: string; upper_bound_ms: number; sample_count: number };
+  const [counters] = await db().query<Counter[]>(
+    `SELECT operation_key, stage, SUM(sample_count) sample_count,
+            SUM(total_ms) total_ms, MAX(max_ms) max_ms
+     FROM mobile_latency_counters
+     WHERE metric_date >= UTC_DATE() - INTERVAL 7 DAY
+     GROUP BY operation_key, stage
+     ORDER BY SUM(sample_count) DESC, operation_key, stage
+     LIMIT 120`,
+  );
+  const [buckets] = await db().query<Bucket[]>(
+    `SELECT operation_key, stage, upper_bound_ms, SUM(sample_count) sample_count
+     FROM mobile_latency_buckets
+     WHERE metric_date >= UTC_DATE() - INTERVAL 7 DAY
+     GROUP BY operation_key, stage, upper_bound_ms
+     ORDER BY operation_key, stage, upper_bound_ms`,
+  );
+  const bucketMap = new Map<string, Bucket[]>();
+  for (const bucket of buckets) {
+    const key = `${bucket.operation_key}:${bucket.stage}`;
+    bucketMap.set(key, [...(bucketMap.get(key) ?? []), bucket]);
+  }
+  const percentile = (rows: Bucket[], total: number, percentileValue: number) => {
+    const target = Math.max(1, Math.ceil(total * percentileValue));
+    let seen = 0;
+    for (const row of rows) {
+      seen += Number(row.sample_count);
+      if (seen >= target) return Number(row.upper_bound_ms);
+    }
+    return rows.at(-1)?.upper_bound_ms ?? 0;
+  };
+  return counters.map((counter) => {
+    const total = Number(counter.sample_count);
+    const rows = bucketMap.get(`${counter.operation_key}:${counter.stage}`) ?? [];
+    return {
+      operation: counter.operation_key,
+      stage: counter.stage,
+      samples: total,
+      averageMs: total === 0 ? 0 : Math.round(Number(counter.total_ms) / total),
+      p50Ms: percentile(rows, total, .5),
+      p95Ms: percentile(rows, total, .95),
+      p99Ms: percentile(rows, total, .99),
+      maxMs: Number(counter.max_ms),
+    };
   });
 }

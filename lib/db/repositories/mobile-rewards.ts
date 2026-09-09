@@ -5,6 +5,7 @@ import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/prom
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
+import { grantVipCosmetics } from "@/lib/db/repositories/mobile-cosmetics";
 
 function transactionCode(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -111,6 +112,7 @@ export async function purchaseVipTier(identity: MobileIdentity, targetTier: numb
     );
     const expiresAt = expiryRows[0].expires_at;
     await connection.execute("UPDATE application_users SET vip_tier = ?, vip_expires_at = ? WHERE id = ?", [targetTier, expiresAt, identity.userId]);
+    await grantVipCosmetics(connection, identity.userId, targetTier, expiresAt);
     await connection.execute(
       "INSERT INTO vip_purchases (id, application_user_id, from_tier, to_tier, price_coins, ledger_transaction_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [randomUUID(), identity.userId, currentTier, targetTier, price, ledgerId, expiresAt],
@@ -352,12 +354,12 @@ export async function rocketSnapshot(identity: MobileIdentity, roomCode: string)
       connection.query<RocketTierRow[]>("SELECT * FROM rocket_tiers WHERE active = TRUE ORDER BY level"),
       connection.query<RowDataPacket[]>(
         `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
-                user.country_code, user.level_number, user.anchor_income_points, user.vip_tier, SUM(item.coin_value) total
+                user.country_code, user.level_number, user.anchor_level_number, user.vip_tier, SUM(item.coin_value) total
          FROM rocket_contributions item INNER JOIN application_users user ON user.id = item.application_user_id
          LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
          WHERE item.rocket_cycle_id = ?
          GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at,
-                  user.country_code, user.level_number, user.anchor_income_points, user.vip_tier
+                  user.country_code, user.level_number, user.anchor_level_number, user.vip_tier
          ORDER BY total DESC, MIN(item.created_at), user.public_id LIMIT 20`,
         [cycle.id],
       ),
@@ -392,7 +394,7 @@ export async function rocketSnapshot(identity: MobileIdentity, roomCode: string)
         rank: index + 1,
         user: {
           id: String(row.public_id), name: String(row.full_name), avatarUrl: avatarUrl(row), country: row.country_code ?? "",
-          level: Number(row.level_number), anchorLevel: Math.max(1, Math.min(200, Math.floor(Math.sqrt(Number(row.anchor_income_points ?? 0) / 10000)) + 1)),
+          level: Number(row.level_number), anchorLevel: Number(row.anchor_level_number ?? 1),
           vip: Number(row.vip_tier), role: "user",
         },
         score: Number(row.total), label: "Rocket",

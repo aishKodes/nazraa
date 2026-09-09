@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "vercel-build": "npm run migrate && next build",
+    "vercel-build": "npm run migrate && PLAY_REVIEW_PROVISION_OPTIONAL=true npm run provision:play-reviewers && next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -15,6 +15,7 @@
     "test:game-rtp": "tsx scripts/verify-game-rtp.ts",
     "bootstrap:master": "tsx scripts/bootstrap-master.ts",
     "provision:master": "tsx scripts/provision-master.ts",
+    "provision:play-reviewers": "tsx scripts/provision-play-reviewers.ts",
     "migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {

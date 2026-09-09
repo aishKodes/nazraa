@@ -4,10 +4,11 @@ import {
   submitDailyRewardRules,
   submitDiamondConversionRule,
   submitEconomySettings,
-  submitHostRewardRules,
+  submitLiveBusinessRules,
   submitGameSettings,
   submitMobileAppSettings,
   submitMobileSocialSettings,
+  submitPolicySettings,
   submitRoomFeatureSettings,
   submitRocketSettings,
   submitVipValidity,
@@ -30,6 +31,11 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
   const withdrawal = parseWithdrawalEconomy(settings.find((item) => item.key === "withdrawal.economy")?.value);
   const social = settings.find((item) => item.key === "mobile.social")?.value as { private_message_coin_cost?: number } | undefined;
+  const policy = settings.find((item) => item.key === "mobile.policy_config")?.value as {
+    termsVersion?: string; communityGuidelinesVersion?: string; requiresReacceptance?: boolean;
+    privacyUrl?: string; termsUrl?: string; communityGuidelinesUrl?: string; childSafetyUrl?: string;
+    accountDeletionUrl?: string; supportUrl?: string; refundsUrl?: string; copyrightUrl?: string;
+  } | undefined;
   const gameSettings = mobileGamesConfig(settings.find((item) => item.key === "mobile.games")?.value);
   const roomFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as {
     interactions?: { key: string; label: string; emoji: string; enabled?: boolean; visualUrl?: string }[];
@@ -41,6 +47,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     passivePlaybackResourceMode?: "cdn" | "interactive_l3";
     passiveEventDelaySeconds?: number;
     partyStreamingThreshold?: number;
+    faceCdnKeepWarmWhileHostLive?: boolean;
+    facePassivePlaybackProtocol?: "hls" | "flv";
     paidMediaRoutingEnabled?: boolean;
     streamMixingEnabled?: boolean;
     pkCompositeStreamingEnabled?: boolean;
@@ -59,8 +67,6 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     { key: "hug", label: "Hug", emoji: "🤗", enabled: true },
   ];
   const reward = (day: number, fallback: number) => completion.dailyRewards.find((item) => item.dayNumber === day)?.coins ?? fallback;
-  const host = (roomType: string, fallback: number) => completion.hostRules.find((item) => item.roomType === roomType)?.coinsPerHour ?? fallback;
-  const minimumEligible = completion.hostRules[0]?.minimumEligibleSeconds ?? 60;
 
   return <>
     <SectionHeading title="Platform settings" description="Global product and commercial rules are server-owned; every change is audited." />
@@ -82,7 +88,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <Card>
         <LockKeyhole className="report-icon" size={24} />
         <h2>Security baseline</h2>
-        <p>Google ID tokens are verified server-side. The current private-beta Face Verification stores one encrypted selfie and approves it automatically; no external biometric provider is called.</p>
+        <p>Google ID tokens are verified server-side. Face Verification stores one encrypted, metadata-stripped selfie for an authorized human review; no external biometric provider is called.</p>
         <span className="scope-lock">Server controlled</span>
       </Card>
     </div>
@@ -102,6 +108,25 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>USD → INR rate<input name="usdInrRate" type="number" min="0.01" max="1000" step="0.000001" required defaultValue={withdrawal.usdInrRate} /></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the withdrawal configuration changing?" /></label>
         <label>Confirm<button className="primary-button" type="submit">Save withdrawal economics</button></label>
+      </form>
+    </Card>
+
+    <Card className="settings-card">
+      <div className="card-title"><div><h2>Policy &amp; Legal links</h2><p>Versioned HTTPS links are delivered remotely. Enabling reacceptance blocks new UGC until the current Terms and Community Guidelines are accepted.</p></div></div>
+      <form action={submitPolicySettings} className="form-grid">
+        <label>Terms version<input name="termsVersion" required maxLength={32} defaultValue={policy?.termsVersion ?? "2026-09-06"} /></label>
+        <label>Guidelines version<input name="communityGuidelinesVersion" required maxLength={32} defaultValue={policy?.communityGuidelinesVersion ?? "2026-09-06"} /></label>
+        <label>Require current acceptance<select name="requiresReacceptance" defaultValue={String(policy?.requiresReacceptance !== false)}><option value="true">Required</option><option value="false">Not required</option></select></label>
+        <label>Privacy URL<input name="privacyUrl" type="url" required defaultValue={policy?.privacyUrl ?? "https://nazraa.vercel.app/privacy"} /></label>
+        <label>Terms URL<input name="termsUrl" type="url" required defaultValue={policy?.termsUrl ?? "https://nazraa.vercel.app/terms"} /></label>
+        <label>Community Guidelines URL<input name="communityGuidelinesUrl" type="url" required defaultValue={policy?.communityGuidelinesUrl ?? "https://nazraa.vercel.app/community-guidelines"} /></label>
+        <label>Child Safety URL<input name="childSafetyUrl" type="url" required defaultValue={policy?.childSafetyUrl ?? "https://nazraa.vercel.app/child-safety"} /></label>
+        <label>Account deletion URL<input name="accountDeletionUrl" type="url" required defaultValue={policy?.accountDeletionUrl ?? "https://nazraa.vercel.app/account-deletion"} /></label>
+        <label>Support URL<input name="supportUrl" type="url" required defaultValue={policy?.supportUrl ?? "https://nazraa.vercel.app/support"} /></label>
+        <label>Refunds URL<input name="refundsUrl" type="url" required defaultValue={policy?.refundsUrl ?? "https://nazraa.vercel.app/refunds"} /></label>
+        <label>Copyright URL<input name="copyrightUrl" type="url" required defaultValue={policy?.copyrightUrl ?? "https://nazraa.vercel.app/copyright"} /></label>
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why are policy metadata or links changing?" /></label>
+        <label>Confirm<button className="primary-button" type="submit">Publish policy config</button></label>
       </form>
     </Card>
 
@@ -127,13 +152,17 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </Card>
 
     <Card className="settings-card">
-      <div className="card-title"><div><h2>Server-timed host rewards</h2><p>Face Live and Party Audio use server-timed rules. The phone clock is never trusted.</p></div></div>
-      <form action={submitHostRewardRules} className="form-grid">
-        <label>Face Live diamonds/hour<input name="face" type="number" min="0" required defaultValue={host("FACE", 3500)} /></label>
-        <label>Party diamonds/hour<input name="party" type="number" value="0" readOnly aria-readonly="true" /><span>Audio Party hourly reward remains disabled.</span></label>
-        <label>Minimum eligible seconds<input name="minimumEligibleSeconds" type="number" min="1" max="3600" required defaultValue={minimumEligible} /></label>
-        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} /></label>
-        <label>Confirm<button className="primary-button" type="submit">Save host rewards</button></label>
+      <div className="card-title"><div><h2>Face Live rules</h2><p>Server-authoritative opening hours and the once-daily reward after the first eligible 60 minutes. Party Audio keeps its independent rules.</p></div></div>
+      <form action={submitLiveBusinessRules} className="form-grid">
+        <label>Business timezone<input name="timezone" required defaultValue={completion.liveRules.timezone} placeholder="Asia/Kolkata" /></label>
+        <label>Live start time<input name="startTime" type="time" required defaultValue={completion.liveRules.startTime} /></label>
+        <label>Live end time<input name="endTime" type="time" required defaultValue={completion.liveRules.endTime} /></label>
+        <label>Closing notice (minutes)<input name="closingNoticeMinutes" type="number" min="1" max="120" required defaultValue={completion.liveRules.closingNoticeMinutes} /></label>
+        <label>Hourly reward<select name="rewardEnabled" defaultValue={String(completion.liveRules.rewardEnabled)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+        <label>Eligible Host daily first-hour Diamonds<input name="hourlyRewardDiamonds" type="number" min="0" required defaultValue={completion.liveRules.hourlyRewardDiamonds} /><span>Applies equally to every eligible Host, including male and female Hosts.</span></label>
+        <label>Eligible block<input value="Continuous 60 minutes" readOnly aria-readonly="true" /><span>The backend evaluates Host status, Agency authorization, restrictions, session validity, and idempotency. Gender is recorded for audit only.</span></label>
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why are the Live business rules changing?" /></label>
+        <label>Confirm<button className="primary-button" type="submit">Save Live rules</button></label>
       </form>
     </Card>
 
@@ -216,13 +245,15 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Party passive listeners<select name="partyPassivePlaybackMode" defaultValue={roomFeatures?.partyPassivePlaybackMode ?? "dynamic_rtc_fallback"}><option value="dynamic_rtc_fallback">RTC fallback</option><option value="live_streaming">Dynamic mixed streaming</option></select></label>
         <label>Passive stream network<select name="passivePlaybackResourceMode" defaultValue={roomFeatures?.passivePlaybackResourceMode ?? "cdn"}><option value="cdn">Standard Live Streaming / CDN</option><option value="interactive_l3">Interactive Live Streaming / L3</option></select><span>Use CDN for the lower-cost Live Streaming Starter plan.</span></label>
         <label>CDN effect delay (seconds)<input name="passiveEventDelaySeconds" type="number" min="0" max="15" required defaultValue={roomFeatures?.passiveEventDelaySeconds ?? 5} /><span>Delays Gift, Rocket and game effects to align with standard CDN playback; chat remains realtime.</span></label>
-        <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="2" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 8} /><span>Below this passive-listener count, Party remains RTC. Recommended start: 8.</span></label>
+        <label>Party streaming threshold<input name="partyStreamingThreshold" type="number" min="1" max="200" required defaultValue={roomFeatures?.partyStreamingThreshold ?? 8} /><span>Below this passive-listener count, Party remains RTC. Recommended production start: 8; 1 is reserved for controlled QA.</span></label>
+        <label>Face CDN warm output<select name="faceCdnKeepWarmWhileHostLive" defaultValue={String(roomFeatures?.faceCdnKeepWarmWhileHostLive !== false)}><option value="true">Keep warm while Host is live</option><option value="false">Start when first viewer joins</option></select><span>Keeping Face output warm removes mixer-start delay for the first viewer. It is separate from Party’s threshold and can be changed without an APK.</span></label>
+        <label>Face playback protocol<select name="facePassivePlaybackProtocol" defaultValue={roomFeatures?.facePassivePlaybackProtocol ?? "hls"}><option value="hls">HLS (default)</option><option value="flv">FLV (lower-latency Android)</option></select><span>Uses a backend-signed ZEGO URL. Keep HLS unless controlled Android playback verification confirms FLV is faster and stable.</span></label>
         <label>Paid media routing<select name="paidMediaRoutingEnabled" defaultValue={String(roomFeatures?.paidMediaRoutingEnabled === true)}><option value="false">Staged / current fallback</option><option value="true">Strict streaming routing</option></select><span>Activate only after ZEGO Live Streaming, mixing, domains, and deployment environment are verified.</span></label>
         <label>ZEGO stream mixing<select name="streamMixingEnabled" defaultValue={String(roomFeatures?.streamMixingEnabled === true)}><option value="false">Inactive / fallback</option><option value="true">Ready when deployment is activated</option></select><span>The app stays on RTC fallback until the deployment activation gate and signed playback URL are both present.</span></label>
-        <label>PK composite stream<select name="pkCompositeStreamingEnabled" defaultValue={String(roomFeatures?.pkCompositeStreamingEnabled !== false)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+        <label>PK composite stream<select name="pkCompositeStreamingEnabled" defaultValue={String(roomFeatures?.pkCompositeStreamingEnabled === true)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
         <label>Emergency passive RTC<select name="emergencyRtcFallbackEnabled" defaultValue={String(roomFeatures?.emergencyRtcFallbackEnabled === true)}><option value="false">Off (normal production)</option><option value="true">Temporarily enabled</option></select><span>Normal Face production stays at zero passive RTC viewers. This is an emergency switch only.</span></label>
         <label>Media reconnect grace (seconds)<input name="mediaReconnectGraceSeconds" type="number" min="5" max="300" required defaultValue={roomFeatures?.mediaReconnectGraceSeconds ?? 180} /></label>
-        <label>Passive background grace (seconds)<input name="passiveBackgroundGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.passiveBackgroundGraceSeconds ?? 15} /></label>
+        <label>Passive background grace (seconds)<input name="passiveBackgroundGraceSeconds" type="number" min="5" max="60" required defaultValue={roomFeatures?.passiveBackgroundGraceSeconds ?? 25} /></label>
         <label>Maximum Face audio guests<input name="maxFaceAudioGuests" type="number" min="1" max="12" required defaultValue={roomFeatures?.maxFaceAudioGuests ?? 4} /></label>
         <label>Emergency RTC ceiling<input name="rtcPassiveFallbackCeiling" type="number" min="1" max="20" required defaultValue={roomFeatures?.rtcPassiveFallbackCeiling ?? 3} /><span>Maximum short-lived passive RTC users when the emergency switch is explicitly enabled.</span></label>
         <label>Temporary RTC cost guard<select name="temporaryRtcCostGuardEnabled" defaultValue={String(roomFeatures?.temporaryRtcCostGuardEnabled !== false)}><option value="true">Active while CDN is pending</option><option value="false">Off after verified CDN cutover</option></select><span>This hard cap works even while paid routing is disabled.</span></label>

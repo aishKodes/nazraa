@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createDevelopmentMobileSession, createGoogleMobileSession, revokeMobileSession } from "@/lib/auth/mobile-session";
+import { createDevelopmentMobileSession, createGoogleMobileSession, createPlayReviewerMobileSession, MobileAccessDeniedError, revokeMobileSession } from "@/lib/auth/mobile-session";
 import { mobileCountryCodeSchema } from "@/lib/mobile-countries";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +8,16 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const reviewer = z.object({
+      reviewerAccess: z.literal(true),
+      username: z.string().trim().min(3).max(80),
+      password: z.string().min(12).max(200),
+      deviceLabel: z.string().trim().max(120).optional(),
+      deviceId: z.string().trim().min(8).max(200).optional(),
+    }).safeParse(body);
+    if (reviewer.success) {
+      return NextResponse.json(await createPlayReviewerMobileSession(reviewer.data), { status: 201, headers: { "Cache-Control": "no-store" } });
+    }
     const google = z.object({
       idToken: z.string().min(100).max(10_000),
       deviceLabel: z.string().trim().max(120).optional(),
@@ -39,6 +49,12 @@ export async function POST(request: Request) {
     if (!development.success) return NextResponse.json({ message: "Google Sign-In is required." }, { status: 400 });
     return NextResponse.json(await createDevelopmentMobileSession(development.data), { status: 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
+    if (error instanceof MobileAccessDeniedError) {
+      return NextResponse.json(
+        { message: error.message, code: error.accessCode },
+        { status: 403, headers: { "Cache-Control": "no-store" } },
+      );
+    }
     console.error("Mobile session creation failed", error);
     return NextResponse.json({ message: "Nazraa could not complete sign-in. Please try again." }, { status: 500 });
   }

@@ -90,6 +90,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--violet); box-sha
 .section-heading h1 { margin-bottom: 5px; font-size: 24px; letter-spacing: -.7px; }
 .section-heading p { margin: 0; color: var(--muted); max-width: 720px; }
 .range-chip { display: inline-flex; border-radius: 999px; padding: 7px 10px; background: #f0edf6; color: #625a71; font-size: 11px; font-weight: 750; white-space: nowrap; }
+.filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }.filter-chip { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; background: #fff; color: var(--muted); font-size: 11px; font-weight: 750; }.filter-chip.active { border-color: var(--violet); background: var(--violet-pale); color: var(--violet); }
 .metric-grid { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap: 13px; margin-bottom: 20px; }
 .metric-card { position: relative; min-width: 0; min-height: 146px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
 .metric-card p { margin: 13px 0 4px; color: var(--muted); font-size: 11px; font-weight: 700; }

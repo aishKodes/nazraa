@@ -5,6 +5,7 @@ import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
+import { faceLiveRulesFromSetting } from "@/lib/services/live-business-policy";
 
 async function audit(connection: PoolConnection, scope: Scope, input: { action: string; targetType: string; targetId: string; reason: string; previous?: object; next?: object }) {
   await connection.execute(
@@ -17,13 +18,14 @@ async function audit(connection: PoolConnection, scope: Scope, input: { action: 
 }
 
 export async function getCompletionAdminSettings() {
-  const [daily, conversion, hostRules, rocketTiers, rocketSetting, vipTiers] = await Promise.all([
+  const [daily, conversion, hostRules, rocketTiers, rocketSetting, vipTiers, liveRulesSetting] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT day_number, reward_coins, label, enabled FROM daily_reward_rules ORDER BY day_number"),
     db().query<RowDataPacket[]>("SELECT diamonds, coins, minimum_diamonds, maximum_diamonds, enabled, effective_from FROM diamond_conversion_rules ORDER BY effective_from DESC LIMIT 1"),
     db().query<RowDataPacket[]>("SELECT room_type, coins_per_hour, minimum_eligible_seconds, enabled FROM host_reward_rules WHERE enabled = TRUE ORDER BY FIELD(room_type, 'LIVE','FACE','PARTY'), effective_from DESC"),
     db().query<RowDataPacket[]>("SELECT level, name, target_coins, top1_reward_coins, top2_reward_coins, top3_reward_coins, room_reward_coins, active FROM rocket_tiers ORDER BY level"),
     db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features' LIMIT 1"),
     db().query<RowDataPacket[]>("SELECT tier, name, price_coins, daily_reward_coins, validity_days FROM vip_tiers WHERE active = TRUE ORDER BY tier"),
+    db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.live_rules' LIMIT 1"),
   ]);
   const rawRocket = rocketSetting[0][0]?.setting_value;
   const rocketPolicy = (typeof rawRocket === "string" ? JSON.parse(rawRocket) : rawRocket ?? {}) as Record<string, unknown>;
@@ -31,6 +33,7 @@ export async function getCompletionAdminSettings() {
     dailyRewards: daily[0].map((row) => ({ dayNumber: Number(row.day_number), coins: Number(row.reward_coins), label: String(row.label), enabled: Boolean(row.enabled) })),
     conversion: conversion[0][0] ? { diamonds: Number(conversion[0][0].diamonds), coins: Number(conversion[0][0].coins), minimum: Number(conversion[0][0].minimum_diamonds), maximum: Number(conversion[0][0].maximum_diamonds), enabled: Boolean(conversion[0][0].enabled) } : null,
     hostRules: hostRules[0].map((row) => ({ roomType: String(row.room_type), coinsPerHour: Number(row.coins_per_hour), minimumEligibleSeconds: Number(row.minimum_eligible_seconds), enabled: Boolean(row.enabled) })),
+    liveRules: faceLiveRulesFromSetting(liveRulesSetting[0][0]?.setting_value),
     rocket: {
       enabled: rocketPolicy.rocketEnabled !== false,
       energyPerCoin: Number(rocketPolicy.rocketEnergyPerCoin ?? 1),
@@ -48,6 +51,79 @@ export async function getCompletionAdminSettings() {
       dailyRewardCoins: Number(row.daily_reward_coins), validityDays: Number(row.validity_days ?? 30),
     })),
   };
+}
+
+export async function saveLiveBusinessRules(input: {
+  scope: Scope;
+  timezone: string;
+  startTime: string;
+  endTime: string;
+  closingNoticeMinutes: number;
+  rewardEnabled: boolean;
+  hourlyRewardDiamonds: number;
+  reason: string;
+}) {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: input.timezone }).format(new Date());
+  } catch {
+    throw new Error("Choose a valid IANA timezone such as Asia/Kolkata.");
+  }
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.startTime) || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(input.endTime) || input.startTime === input.endTime) {
+    throw new Error("Choose different valid Live start and end times.");
+  }
+  if (!Number.isSafeInteger(input.closingNoticeMinutes) || input.closingNoticeMinutes < 1 || input.closingNoticeMinutes > 120) {
+    throw new Error("The closing notice must be between 1 and 120 minutes.");
+  }
+  if (!Number.isSafeInteger(input.hourlyRewardDiamonds) || input.hourlyRewardDiamonds < 0) {
+    throw new Error("The daily first-hour reward must be a non-negative whole Diamond amount.");
+  }
+  const next = {
+    timezone: input.timezone,
+    startTime: input.startTime,
+    endTime: input.endTime,
+    closingNoticeMinutes: input.closingNoticeMinutes,
+    rewardEnabled: input.rewardEnabled,
+    hourlyRewardDiamonds: input.hourlyRewardDiamonds,
+    // Legacy readers continue to receive a consistent value, not a
+    // gender-specific payout rule.
+    femaleHourlyRewardDiamonds: input.hourlyRewardDiamonds,
+    maleHourlyRewardDiamonds: input.hourlyRewardDiamonds,
+    rewardFrequency: "DAILY_FIRST_ELIGIBLE_HOUR",
+    maximumRewardsPerBusinessDay: 1,
+    agencyAuthorizationRequired: true,
+  };
+  await withTransaction(async (connection) => {
+    const [settingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.live_rules' LIMIT 1 FOR UPDATE",
+    );
+    const previousRules = faceLiveRulesFromSetting(settingRows[0]?.setting_value);
+    const [previousHostRules] = await connection.query<RowDataPacket[]>(
+      "SELECT room_type, coins_per_hour, minimum_eligible_seconds FROM host_reward_rules WHERE enabled = TRUE AND room_type IN ('LIVE','FACE') FOR UPDATE",
+    );
+    await connection.execute(
+      `INSERT INTO system_settings (setting_key, setting_value, updated_by)
+       VALUES ('mobile.live_rules', ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
+      [JSON.stringify(next), input.scope.account.id],
+    );
+    for (const roomType of ["LIVE", "FACE"] as const) {
+      await connection.execute("UPDATE host_reward_rules SET enabled = FALSE WHERE room_type = ? AND enabled = TRUE", [roomType]);
+      await connection.execute(
+        `INSERT INTO host_reward_rules
+          (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by)
+         VALUES (?, ?, ?, 3600, TRUE, CURRENT_TIMESTAMP(3), ?)`,
+        [randomUUID(), roomType, input.rewardEnabled ? input.hourlyRewardDiamonds : 0, input.scope.account.id],
+      );
+    }
+    await audit(connection, input.scope, {
+      action: "live.business_rules_update",
+      targetType: "LIVE_CONFIGURATION",
+      targetId: "face-live",
+      reason: input.reason,
+      previous: { liveRules: previousRules, hostRules: previousHostRules },
+      next,
+    });
+  });
 }
 
 export async function saveVipValidity(input: { scope: Scope; validityDays: number[]; reason: string }) {
@@ -142,7 +218,7 @@ export async function saveDiamondConversionRule(input: { scope: Scope; diamonds:
 export async function saveHostRewardRules(input: { scope: Scope; live: number; face: number; party: number; minimumEligibleSeconds: number; reason: string }) {
   if (![input.live, input.face, input.party].every((value) => Number.isSafeInteger(value) && value >= 0)) throw new Error("Host reward rates must be non-negative whole Diamonds.");
   if (input.party !== 0) throw new Error("Party Audio hourly reward must remain zero.");
-  if (!Number.isSafeInteger(input.minimumEligibleSeconds) || input.minimumEligibleSeconds < 1) throw new Error("Minimum eligible time must be at least one second.");
+  if (input.minimumEligibleSeconds !== 3600) throw new Error("Face Live rewards require a continuous 60-minute block.");
   await withTransaction(async (connection) => {
     const [previous] = await connection.query<RowDataPacket[]>("SELECT room_type, coins_per_hour, minimum_eligible_seconds FROM host_reward_rules WHERE enabled = TRUE FOR UPDATE");
     for (const [roomType, rate] of [["LIVE", input.live], ["FACE", input.face], ["PARTY", input.party]] as const) {

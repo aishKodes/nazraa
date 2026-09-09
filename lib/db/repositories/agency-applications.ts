@@ -138,8 +138,19 @@ export async function reviewAgencyCreation(input: { scope: Scope; applicationId:
          VALUES (?, ?, 'AGENCY', ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
         [agencyAccountId, publicId, roleCode, application.agency_name, application.application_user_id, application.business_whatsapp_e164, passwordHash, parentId, application.country_code, input.scope.account.id],
       );
-      await connection.execute("UPDATE application_users SET agency_account_id = ? WHERE id = ?", [agencyAccountId, application.application_user_id]);
-      await connection.execute("UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?", [agencyAccountId, application.application_user_id]);
+      // Agency ownership is a management relationship and a Host
+      // relationship. New owners must remain ordinary streaming users without
+      // applying to join a second Agency.
+      await connection.execute("UPDATE application_users SET agency_account_id = ?, is_host = TRUE WHERE id = ?", [agencyAccountId, application.application_user_id]);
+      await connection.execute(
+        `INSERT INTO host_profiles
+          (id, application_user_id, agency_account_id, status, verification_status)
+         SELECT UUID(), user.id, ?, 'ACTIVE',
+                CASE WHEN user.face_verification_status = 'VERIFIED' THEN 'VERIFIED' ELSE 'UNVERIFIED' END
+         FROM application_users user WHERE user.id = ?
+         ON DUPLICATE KEY UPDATE agency_account_id = VALUES(agency_account_id)`,
+        [agencyAccountId, application.application_user_id],
+      );
       const [extraDocuments] = await connection.query<RowDataPacket[]>("SELECT * FROM agency_application_documents WHERE application_id = ? AND slot > 1 ORDER BY slot", [application.id]);
       for (const document of extraDocuments) {
         const documentType = Number(document.slot) === 2 ? "AADHAAR_BACK" : "AADHAAR_SELFIE";

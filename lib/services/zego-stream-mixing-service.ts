@@ -5,6 +5,7 @@ import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { recordMixerUsageHeartbeat } from "@/lib/services/media-cost-telemetry";
+import { signedZegoCdnPlaybackUrl } from "@/lib/services/zego-cdn-playback-auth";
 
 type RoomType = "FACE" | "LIVE" | "PARTY";
 
@@ -43,10 +44,6 @@ function enabled(value: unknown) {
   return value === true || value === 1 || value === "1" || value === "true";
 }
 
-function disabled(value: unknown) {
-  return value === false || value === 0 || value === "0" || value === "false";
-}
-
 /**
  * Server-only ZEGO StartMix/StopMix adapter.
  *
@@ -59,7 +56,23 @@ class ZegoStreamMixingApi {
   private readonly ready = process.env.ZEGO_STREAM_MIXING_READY === "true";
 
   get isConfigured() {
-    return this.ready && Number.isSafeInteger(this.appId) && this.appId > 0 && Buffer.byteLength(this.secret) === 32;
+    return this.configurationIssue === null;
+  }
+
+  /**
+   * Deliberately exposes only a configuration category. This is written to
+   * protected operational diagnostics when a mixer cannot start; values such
+   * as the server secret or CDN URLs are never returned or logged.
+   */
+  get configurationIssue(): string | null {
+    if (!this.ready) return "ZEGO stream-mixing activation gate is disabled.";
+    if (!Number.isSafeInteger(this.appId) || this.appId <= 0) {
+      return "ZEGO App ID is missing or invalid in the production runtime.";
+    }
+    if (Buffer.byteLength(this.secret) !== 32) {
+      return "ZEGO server secret is unavailable or has an invalid length in the production runtime.";
+    }
+    return null;
   }
 
   private endpoint(action: "StartMix" | "StopMix") {
@@ -104,10 +117,10 @@ class ZegoStreamMixingApi {
     const video = plan.roomType !== "PARTY";
     const output: Record<string, unknown> = {
       StreamId: plan.outputStreamId,
-      Width: video ? 720 : 1,
-      Height: video ? 1280 : 1,
-      VideoBitrate: video ? 1_500_000 : 1,
-      Fps: video ? 20 : 1,
+      Width: video ? 720 : 360,
+      Height: video ? 1280 : 360,
+      VideoBitrate: video ? 1_500_000 : 300_000,
+      Fps: video ? 20 : 15,
       AudioCodec: 1,
       AudioBitrate: 128_000,
       SoundChannel: 1,
@@ -160,12 +173,25 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   const room = rooms[0];
   if (!room) return null;
   const features = jsonObject(room.room_features_json);
-  const threshold = Math.max(2, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
+  // One is a valid controlled-QA/cost-protection threshold. Production keeps
+  // its normal higher threshold in remote configuration, but allowing one
+  // lets Master validate the exact Party CDN path without inventing members.
+  const threshold = Math.max(1, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
   const featureEnabled = enabled(features.streamMixingEnabled);
   const playbackRequested = room.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming"
     : features.facePassivePlaybackMode === "live_streaming";
-  const pkCompositeEnabled = !disabled(features.pkCompositeStreamingEnabled);
+  // Standard HLS needs an output to exist before its first segment can be
+  // decoded. Starting that output only after a viewer taps a Face room added a
+  // visible mixer-start delay to every cold viewer join. Keep a Face output
+  // warm while its Host is actively publishing instead. This is deliberately
+  // separate from Party's listener threshold, and is remotely reversible by
+  // Master if operating-cost requirements change.
+  const keepFaceCdnWarmWhileHostLive = room.room_type !== "PARTY"
+    && features.faceCdnKeepWarmWhileHostLive !== false;
+  // Composite PK is opt-in. A missing/old setting must keep the protected
+  // non-mixed fallback rather than silently enabling another paid output.
+  const pkCompositeEnabled = enabled(features.pkCompositeStreamingEnabled);
   const [members] = await db().query<(RowDataPacket & {
     public_id: number;
     room_role: string;
@@ -175,7 +201,7 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     publisher_room_code: string;
   })[]>(
     `SELECT user.public_id, member.room_role, member.media_role, member.muted, ? publisher_room_code,
-            CASE WHEN member.media_role IN ('HOST','PARTY_OWNER') THEN ?
+            CASE WHEN member.media_role = 'HOST' AND ? <> 'PARTY' THEN ?
               ELSE (member.media_publishing
                 AND member.last_media_heartbeat_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)
             END media_publishing
@@ -184,7 +210,10 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
      WHERE member.room_id = ? AND member.left_at IS NULL
        AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
      ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
-    [room.room_code, room.host_media_publishing, room.id],
+    // Face broadcast publishing is confirmed by its dedicated session
+    // accounting record. Party has no Face accounting session, so its owner
+    // and speakers must use their own authoritative media heartbeat instead.
+    [room.room_code, room.room_type, room.host_media_publishing, room.id],
   );
   const passiveCount = members.filter((member) =>
     ["PASSIVE_VIEWER", "AUDIO_REQUESTED", "PASSIVE_LISTENER", "MIC_REQUESTED"].includes(member.media_role),
@@ -231,8 +260,10 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     all.findIndex((candidate) => candidate.public_id === member.public_id && candidate.publisher_room_code === member.publisher_room_code) === index,
   ).slice(0, 9);
   const hasHost = localPublishers.some((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role));
-  const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost && passiveCount > 0 &&
-    (room.room_type !== "PARTY" || passiveCount >= threshold);
+  const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost &&
+    (room.room_type === "PARTY"
+      ? passiveCount >= threshold
+      : keepFaceCdnWarmWhileHostLive || passiveCount > 0);
   const hostCount = orderedPublishers.filter((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role)).length;
   let hostIndex = 0;
   const inputs: MixInput[] = orderedPublishers.map((member) => {
@@ -240,10 +271,16 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     const currentHostIndex = hostVideo ? hostIndex++ : -1;
     const left = hostCount > 1 ? currentHostIndex * 360 : 0;
     const right = hostCount > 1 ? Math.min(720, left + 360) : 720;
+    // The server API validates every MixInput against a canvas, including
+    // audio-only inputs. Party uses a small valid canvas so its output stays
+    // a standard HLS asset even though listeners play only the audio track.
+    const partyCanvas = room.room_type === "PARTY";
     return {
       StreamId: `${member.publisher_room_code}_${member.public_id}_main`,
       ContentControl: hostVideo ? 0 : 1,
-      ...(hostVideo ? { RectInfo: { Top: 0, Left: left, Bottom: 1280, Right: right, Layer: currentHostIndex } } : {}),
+      RectInfo: partyCanvas
+        ? { Top: 0, Left: 0, Bottom: 360, Right: 360, Layer: 0 }
+        : { Top: 0, Left: left, Bottom: 1280, Right: right, Layer: currentHostIndex },
     };
   });
   const desiredHash = createHash("sha256").update(JSON.stringify({ shouldRun, inputs })).digest("hex");
@@ -266,8 +303,13 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
     })[]>("SELECT * FROM live_media_mix_tasks WHERE room_id = ? LIMIT 1 FOR UPDATE", [room.id]);
     const state = states[0];
     if (!state) return null;
-    const syncingRecently = state.status === "SYNCING" && Date.now() - new Date(state.updated_at).getTime() < 15_000;
-    if (syncingRecently || (state.applied_hash === desiredHash && state.status === (shouldRun ? "ACTIVE" : "INACTIVE"))) return null;
+    const stateAgeMs = Date.now() - new Date(state.updated_at).getTime();
+    const syncingRecently = state.status === "SYNCING" && stateAgeMs < 15_000;
+    // Presence refreshes every two seconds. An unchanged rejected plan must
+    // cool down instead of issuing an expensive StartMix on every heartbeat.
+    // A changed member/layout has a new desired hash and retries at once.
+    const failedRecently = state.status === "ERROR" && state.desired_hash === desiredHash && stateAgeMs < 30_000;
+    if (syncingRecently || failedRecently || (state.applied_hash === desiredHash && state.status === (shouldRun ? "ACTIVE" : "INACTIVE"))) return null;
     const sequence = Number(state.sequence_number) + 1;
     const shouldStop = !shouldRun && ["ACTIVE", "ERROR", "SYNCING"].includes(state.status);
     if (!shouldRun && !shouldStop) {
@@ -299,14 +341,26 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
 /** Best-effort sync: media-control outages must never fail chat, presence or room exit. */
 export async function syncZegoRoomMixer(roomCode: string) {
   const api = new ZegoStreamMixingApi();
-  if (!api.isConfigured) return { status: "disabled" as const };
-  await recordMixerUsageHeartbeat(roomCode);
   const plan = await preparePlan(roomCode);
+  if (!api.isConfigured) {
+    if (plan) {
+      await db().execute(
+        `UPDATE live_media_mix_tasks
+         SET status = 'ERROR', last_error = ?, last_synced_at = CURRENT_TIMESTAMP(3)
+         WHERE room_id = ? AND sequence_number = ?`,
+        [api.configurationIssue ?? "ZEGO mixer configuration is unavailable.", plan.roomId, plan.sequence],
+      );
+    }
+    return { status: "disabled" as const };
+  }
+  await recordMixerUsageHeartbeat(roomCode);
   if (!plan) return { status: "unchanged" as const };
   try {
     const result = plan.shouldRun ? await api.start(plan) : await api.stop(plan);
     const playInfo = result.Data?.PlayInfo?.[0];
-    const playbackUrl = playInfo?.HLS ?? playInfo?.FLV ?? null;
+    const playbackUrl = plan.shouldRun
+      ? signedZegoCdnPlaybackUrl(plan.outputStreamId, playInfo?.HLS ?? playInfo?.FLV)
+      : null;
     await db().execute(
       plan.shouldRun
         ? `UPDATE live_media_mix_tasks

@@ -1,4 +1,5 @@
 import { Download, FileSpreadsheet, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { Card, MetricCard, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
 import { getEconomyMetrics } from "@/lib/db/repositories/dashboard";
@@ -26,6 +27,6 @@ export default async function ReportsPage() {
         <MetricCard label="Completed withdrawals" value={`${formatNumber(economy.completedWithdrawals)} Diamonds`} icon={<FileSpreadsheet size={20} />} />
       </div>
     </Card> : null}
-    <div className="report-grid"><Card><FileSpreadsheet className="report-icon" size={24} /><h2>Ledger transactions</h2><p>Completed financial records with codes, sources, destinations, amounts, and timestamps.</p><a className="primary-button" href="/api/reports/transactions"><Download size={16} />Download CSV</a></Card><Card><ShieldCheck className="report-icon" size={24} /><h2>Safe by design</h2><p>Cells that could be interpreted as spreadsheet formulas are escaped before download. Payout destinations remain masked.</p><span className="scope-lock">Scope applied automatically</span></Card></div>
+    <div className="report-grid"><Card><FileSpreadsheet className="report-icon" size={24} /><h2>Ledger transactions</h2><p>Completed financial records with codes, sources, destinations, amounts, and timestamps.</p><Link className="primary-button" href="/api/reports/transactions"><Download size={16} />Download CSV</Link></Card><Card><ShieldCheck className="report-icon" size={24} /><h2>Safe by design</h2><p>Cells that could be interpreted as spreadsheet formulas are escaped before download. Payout destinations remain masked.</p><span className="scope-lock">Scope applied automatically</span></Card></div>
   </>;
 }
