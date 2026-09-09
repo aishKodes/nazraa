@@ -23,17 +23,19 @@ import { getCompletionAdminSettings } from "@/lib/db/repositories/completion-adm
 import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config";
 import { parseWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { getLiveRewardDiagnostics } from "@/lib/db/repositories/live-accounting-diagnostics";
+import { getFaceLiveStartOutcomeDiagnostics } from "@/lib/observability/face-live-start-outcomes";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
   const scope = await requirePermission("settings.manage");
   const isMaster = scope.account.role === "MASTER";
-  const [{ error, success }, settings, completion, liveRewardDiagnostics] = await Promise.all([
+  const [{ error, success }, settings, completion, liveRewardDiagnostics, faceStartDiagnostics] = await Promise.all([
     searchParams,
     getSystemSettings(),
     getCompletionAdminSettings(),
     isMaster ? getLiveRewardDiagnostics(30) : Promise.resolve(null),
+    isMaster ? getFaceLiveStartOutcomeDiagnostics(30) : Promise.resolve(null),
   ]);
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
@@ -202,6 +204,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <button className="danger-button" type="submit">Repair missing entitlements</button>
         </form>
       </div>
+    </Card> : null}
+    {isMaster && faceStartDiagnostics ? <Card className="settings-card">
+      <div className="card-title"><div><h2>Face Live start reliability · 30 days</h2><p>Aggregate server-side attempts only. Camera, ZEGO publish, and client network outcomes are added when the client can report them; this view never stores user or room identifiers.</p></div></div>
+      <div className="report-grid">
+        <div><b>{faceStartDiagnostics.attempts.toLocaleString("en-IN")}</b><span className="block">authenticated Face start attempts</span></div>
+        <div><b>{faceStartDiagnostics.successes.toLocaleString("en-IN")}</b><span className="block">rooms created</span></div>
+        <div><b>{faceStartDiagnostics.failures.toLocaleString("en-IN")}</b><span className="block">server-side failures</span></div>
+        <div><b>{faceStartDiagnostics.successRate == null ? "Collecting" : `${(faceStartDiagnostics.successRate * 100).toFixed(1)}%`}</b><span className="block">room-create success rate</span></div>
+      </div>
+      <p className="scope-lock">{faceStartDiagnostics.failuresByCategory.length ? faceStartDiagnostics.failuresByCategory.map((item) => `${item.category.toLowerCase()}: ${item.attempts}`).join(" · ") : "No server-side Face start failures recorded in this period."}</p>
     </Card> : null}
 
     <Card className="settings-card">

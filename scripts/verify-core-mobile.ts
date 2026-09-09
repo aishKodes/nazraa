@@ -2869,8 +2869,27 @@ async function main() {
     assert.ok(diagnostic.expectedRewardUnits >= 1, "diagnostic must count immutable eligible reward decisions");
     assert.equal(diagnostic.missingRewardUnits, 0, "fresh eligible decisions must have matching claimable entitlements");
     assert.equal(diagnostic.qaNonFinancialRuns, 1, "diagnostic must count the isolated QA crossing without exposing a user");
+    const faceStartOutcomes = await import("@/lib/observability/face-live-start-outcomes");
+    await Promise.all([
+      faceStartOutcomes.recordFaceLiveStartOutcome("SUCCESS"),
+      faceStartOutcomes.recordFaceLiveStartOutcome("FAILURE", "VERIFICATION"),
+      faceStartOutcomes.recordFaceLiveStartOutcome("FAILURE", "DATABASE"),
+    ]);
+    const startDiagnostics = await faceStartOutcomes.getFaceLiveStartOutcomeDiagnostics(1);
+    assert.equal(startDiagnostics.attempts, 3, "Face start diagnostics must retain aggregate attempts only");
+    assert.equal(startDiagnostics.successes, 1);
+    assert.equal(startDiagnostics.failures, 2);
+    assert.deepEqual(
+      startDiagnostics.failuresByCategory,
+      [
+        { category: "DATABASE", attempts: 1 },
+        { category: "VERIFICATION", attempts: 1 },
+      ],
+      "Face start diagnostics must expose only sanitized categories",
+    );
     console.log("PASS accelerated Live reward QA: 60-second dedicated reviewer threshold, duplicate heartbeat dedupe, no entitlement and no wallet credit");
     console.log("PASS Live reward diagnostics: aggregate expected/generated/missing counts and non-financial QA history");
+    console.log("PASS Face start telemetry: aggregate success/failure categories only, no account or room identifiers");
     const rewardId = String(rewardBootstrap.liveRewards[0].id);
     const duplicateClaims = await Promise.all([
       rooms.claimLiveReward(rewardHost, rewardId),

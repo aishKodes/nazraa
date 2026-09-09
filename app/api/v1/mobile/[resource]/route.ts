@@ -96,6 +96,10 @@ import { verifyGooglePlayCoinPurchase } from "@/lib/db/repositories/mobile-play-
 import { traceMobileRequest } from "@/lib/observability/mobile-latency-context";
 import { persistMobileLatency } from "@/lib/observability/mobile-latency-store";
 import {
+  classifyFaceLiveStartFailure,
+  recordFaceLiveStartOutcome,
+} from "@/lib/observability/face-live-start-outcomes";
+import {
   acceptCurrentPolicies,
   assertCurrentPoliciesAccepted,
   deleteAuthenticatedAccount,
@@ -882,7 +886,6 @@ export async function POST(
         return NextResponse.json(await reportPrivateMessage(identity, parsed));
       }
       if (resource === "rooms") {
-        await assertCurrentPoliciesAccepted(identity);
         const parsed = z
           .object({
             roomCode: z.string().trim().min(3).max(80),
@@ -912,27 +915,43 @@ export async function POST(
             "Add a room photo before starting a Party.",
           )
           .parse(body);
-        const permission =
-          parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
-        if (!mobileCan(identity, permission))
-          return errorResponse(
-            new Error("Your role cannot start this room type."),
-            403,
-          );
-        if (
-          parsed.kind === "face" &&
-          identity.faceVerificationStatus !== "VERIFIED"
-        )
-          return errorResponse(
-            new Error("Verified Face Live access is required."),
-            403,
-          );
-        const result = await createRoom(identity, parsed);
-        // The Host will confirm publishing in its first presence heartbeat. A
-        // best-effort sync here is still useful for room types whose publisher
-        // signal is already present, and never delays room creation.
-        scheduleMixerSync(parsed.roomCode);
-        return NextResponse.json(result, { status: 201 });
+        const faceStart = parsed.kind === "face";
+        try {
+          await assertCurrentPoliciesAccepted(identity);
+          const permission =
+            parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
+          if (!mobileCan(identity, permission)) {
+            if (faceStart)
+              after(() => recordFaceLiveStartOutcome("FAILURE", "ELIGIBILITY"));
+            return errorResponse(
+              new Error("Your role cannot start this room type."),
+              403,
+            );
+          }
+          if (
+            parsed.kind === "face" &&
+            identity.faceVerificationStatus !== "VERIFIED"
+          ) {
+            after(() => recordFaceLiveStartOutcome("FAILURE", "VERIFICATION"));
+            return errorResponse(
+              new Error("Verified Face Live access is required."),
+              403,
+            );
+          }
+          const result = await createRoom(identity, parsed);
+          // The Host will confirm publishing in its first presence heartbeat. A
+          // best-effort sync here is still useful for room types whose publisher
+          // signal is already present, and never delays room creation.
+          scheduleMixerSync(parsed.roomCode);
+          if (faceStart) after(() => recordFaceLiveStartOutcome("SUCCESS"));
+          return NextResponse.json(result, { status: 201 });
+        } catch (error) {
+          if (faceStart) {
+            const category = classifyFaceLiveStartFailure(error);
+            after(() => recordFaceLiveStartOutcome("FAILURE", category));
+          }
+          throw error;
+        }
       }
       if (resource === "room-join") {
         const parsed = z
