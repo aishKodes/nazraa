@@ -11,7 +11,9 @@ function databaseConfig(): PoolOptions {
   const required = ["DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"] as const;
   const missing = required.filter((key) => !process.env[key]);
   if (missing.length) {
-    throw new Error(`Database is not configured. Missing ${missing.join(", ")}.`);
+    throw new Error(
+      `Database is not configured. Missing ${missing.join(", ")}.`,
+    );
   }
 
   return {
@@ -29,21 +31,36 @@ function databaseConfig(): PoolOptions {
     // Hostinger is a remote shared MySQL service. A Vercel cold start opening
     // eight sockets at once was intermittently timing out login and mobile
     // bootstrap. Keep a small warm pool and queue the short queries instead.
-    connectionLimit: Math.min(2, Math.max(1, Number(process.env.DB_CONNECTION_LIMIT ?? 1))),
-    maxIdle: 1,
+    // Two short-lived connections per warm function let a room heartbeat
+    // complete while an unrelated bootstrap/read is waiting on Hostinger. It
+    // is still deliberately capped at two: Vercel can scale horizontally and
+    // the shared production database has a finite per-user connection limit.
+    connectionLimit: Math.min(
+      2,
+      Math.max(1, Number(process.env.DB_CONNECTION_LIMIT ?? 2)),
+    ),
+    maxIdle: 2,
     // Hostinger's shared MariaDB can retire an inactive remote socket far
     // sooner than a warm Vercel function is recycled. Reusing that half-closed
     // socket left public config and sign-in requests waiting forever. Retire
     // the pool's idle connection before the provider can do so; active work is
     // still queued on the small pool rather than creating a connection burst.
     idleTimeout: 5_000,
-    queueLimit: 100,
+    // Presence is retryable and should wait briefly behind a slow database
+    // read instead of failing a healthy room with mysql2's "Queue limit
+    // reached" error.  The bounded value prevents unbounded memory growth;
+    // the platform timeout remains the final back-pressure guard.
+    queueLimit: Math.min(
+      500,
+      Math.max(100, Number(process.env.DB_QUEUE_LIMIT ?? 250)),
+    ),
     connectTimeout: 12_000,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
     decimalNumbers: true,
     timezone: "Z",
-    ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
+    ssl:
+      process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : undefined,
   };
 }
 
@@ -57,7 +74,10 @@ export function db() {
           return async (...argumentsList: unknown[]) => {
             const startedAt = performance.now();
             try {
-              return await (value as (...args: unknown[]) => unknown).apply(target, argumentsList);
+              return await (value as (...args: unknown[]) => unknown).apply(
+                target,
+                argumentsList,
+              );
             } finally {
               // This records duration only inside an active mobile request.
               // It deliberately never retries or changes SQL/write semantics.
@@ -119,7 +139,10 @@ function discardPool() {
 }
 
 /** Retry connection/read failures only. Never wrap a non-idempotent mutation. */
-export async function withDatabaseReadRetry<T>(operation: () => Promise<T>, attempts = 3): Promise<T> {
+export async function withDatabaseReadRetry<T>(
+  operation: () => Promise<T>,
+  attempts = 3,
+): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {

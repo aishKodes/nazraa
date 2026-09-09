@@ -1691,6 +1691,22 @@ export async function refreshRoomPresence(
             rewardSegmentSeconds = 0;
             segmentBroken = true;
           }
+        } else if (!publishingNow && wasPublishing) {
+          // A publish-state transition is itself media evidence.  Commit the
+          // final bounded interval before marking the Host reconnecting so a
+          // normal Wi-Fi/mobile handoff cannot discard the last heartbeat
+          // window.  The cap deliberately prevents grace/offline time from
+          // being counted as publishing.
+          acceptedDelta =
+            secondsSinceEvidence <= evidenceWindowSeconds
+              ? secondsSinceEvidence
+              : 0;
+          if (secondsSinceEvidence > evidenceWindowSeconds) {
+            rewardEligibleSeconds +=
+              Math.floor(rewardSegmentSeconds / 3600) * 3600;
+            rewardSegmentSeconds = 0;
+            segmentBroken = true;
+          }
         } else if (publishingNow && !wasPublishing) {
           // The Host may reconnect to the same room/session.  A short grace
           // keeps already-earned progress intact, while actual offline time
@@ -1719,10 +1735,10 @@ export async function refreshRoomPresence(
 
         await connection.execute(
           `UPDATE live_session_accounting
-           SET media_publishing = ?, current_publish_started_at = CASE
+               SET media_publishing = ?, current_publish_started_at = CASE
                  WHEN ? = TRUE AND (current_publish_started_at IS NULL OR ? = TRUE)
                    THEN CURRENT_TIMESTAMP(3)
-                 WHEN ? = FALSE THEN current_publish_started_at
+                 WHEN ? = FALSE THEN NULL
                  ELSE current_publish_started_at END,
                last_media_heartbeat_at = CURRENT_TIMESTAMP(3),
                last_heartbeat_at = CURRENT_TIMESTAMP(3),
@@ -1759,7 +1775,9 @@ export async function refreshRoomPresence(
       // Flutter.  The display can interpolate only the small uncommitted
       // positive-evidence interval; it never reads the device wall clock.
       const eligibleLiveSeconds =
-        rewardEligibleSeconds + rewardSegmentSeconds + visibleUncommittedSeconds;
+        rewardEligibleSeconds +
+        rewardSegmentSeconds +
+        visibleUncommittedSeconds;
       const minimumEligibleSeconds = Math.max(
         3600,
         Number(rows[0].reward_minimum_eligible_seconds ?? 3600),
@@ -2115,11 +2133,11 @@ export async function refreshRoomPresence(
                 : Math.max(
                     0,
                     3600 -
-                        (Number(
-                          rows[0].reward_eligible_live_seconds ??
-                            rewardEligibleSeconds + rewardSegmentSeconds,
-                        ) %
-                            3600),
+                      (Number(
+                        rows[0].reward_eligible_live_seconds ??
+                          rewardEligibleSeconds + rewardSegmentSeconds,
+                      ) %
+                        3600),
                   ),
               newlyClaimableDiamonds:
                 settledLiveHours?.newlyClaimableDiamonds ?? 0,
@@ -3638,16 +3656,18 @@ export async function finalizeLiveSession(
     // but an outage must never be represented as paid time merely because the
     // room end happened during the reconnect grace.
     const finalDelta =
-      Boolean(session.media_publishing) && heartbeatGap <= Math.min(30, reconnectGrace)
+      Boolean(session.media_publishing) &&
+      heartbeatGap <= Math.min(30, reconnectGrace)
         ? heartbeatGap
         : 0;
     const finalSegmentSeconds =
       Number(session.media_segment_seconds ?? 0) + finalDelta;
     const validSeconds = Number(session.valid_media_seconds ?? 0) + finalDelta;
-    const committedSeconds = Math.max(
-      Number(session.eligible_seconds_committed ?? 0),
-      Number(session.valid_media_seconds ?? 0),
-    ) + finalDelta;
+    const committedSeconds =
+      Math.max(
+        Number(session.eligible_seconds_committed ?? 0),
+        Number(session.valid_media_seconds ?? 0),
+      ) + finalDelta;
     const bankedEligibleSeconds = Number(
       session.eligible_duration_seconds ?? 0,
     );
