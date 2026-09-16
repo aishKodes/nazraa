@@ -23,12 +23,14 @@ Keep only these public media/maintenance ports open at OCI and UFW:
 | TCP | 443 | HTTPS/WSS signalling and TURN/TLS SNI ingress |
 | TCP | 7881 | LiveKit ICE/TCP fallback |
 | TCP/UDP | 3478 | TURN/STUN |
+| TCP | 5349 | Existing TURN/TLS fallback listener |
 | UDP | 50000-60000 | WebRTC media |
 
 `turn.rtc.pixtra.site:443` is the public TURN/TLS endpoint. Caddy terminates
 the external TLS/SNI route and proxies it to LiveKit's private listener. Do
-not expose Redis. Do not assume a direct public TLS handshake on port 5349 is
-required by this deployment.
+not expose Redis. The 5349 listener is retained as a configured TURN fallback;
+do not remove it until a real mobile ICE candidate inspection confirms that no
+client receives or needs it.
 
 ## Runtime and restart safety
 
