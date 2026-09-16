@@ -15,19 +15,19 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // in-app update check. Hosting can move from GitHub Releases to a branded CDN
 // by changing only NAZRAA_LATEST_APK_URL, not any component or mobile build.
 export const latestPublicRelease: PublicRelease = {
-  version: "2.4.45",
-  build: 7357,
+  version: "2.4.51",
+  build: 7363,
   apkUrl:
     configuredApkUrl && /^https:\/\//.test(configuredApkUrl)
       ? configuredApkUrl
       : null,
-  apkSizeBytes: 226_576_178,
-  sha256: "5e5d444d771d424014fd83178f7940c46a55854c62dac2af243ddaf0928ab2af",
-  releaseDate: "2026-09-08",
+  apkSizeBytes: 300_505_577,
+  sha256: "272d6bb8e81b8bd2534fd855f414e33883f5d51e24108115462e2eeb3b4207f7",
+  releaseDate: "2026-09-16",
   releaseNotes: [
-    "CDN-first Face and Party playback with protected RTC ceilings.",
-    "Smoother room activity, gifts, games, and reconnect handling.",
-    "Improved room-chat reliability and room safety controls.",
+    "Moves new Face and Party rooms to Nazraa's self-hosted LiveKit media service.",
+    "Keeps passive viewers subscribe-only and grants microphone publishing only after server approval.",
+    "Adds authenticated provider media evidence to the existing Live-session reward ledger.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };

@@ -5,6 +5,18 @@ import { recordDatabaseQuery } from "@/lib/observability/mobile-latency-context"
 declare global {
   var nazraaPool: mysql.Pool | undefined;
   var nazraaInstrumentedPool: mysql.Pool | undefined;
+  var nazraaPoolResetInProgress: boolean | undefined;
+}
+
+function boundedNumber(
+  rawValue: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+) {
+  const value = Number(rawValue);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(value)));
 }
 
 function databaseConfig(): PoolOptions {
@@ -28,24 +40,23 @@ function databaseConfig(): PoolOptions {
     // `? = 'PARTY'` fail with ER_CANT_AGGREGATE_2COLLATIONS.
     charset: "utf8mb4_general_ci",
     waitForConnections: true,
-    // Hostinger is a remote shared MySQL service. A Vercel cold start opening
-    // eight sockets at once was intermittently timing out login and mobile
-    // bootstrap. Keep a small warm pool and queue the short queries instead.
-    // Two short-lived connections per warm function let a room heartbeat
-    // complete while an unrelated bootstrap/read is waiting on Hostinger. It
-    // is still deliberately capped at two: Vercel can scale horizontally and
-    // the shared production database has a finite per-user connection limit.
-    connectionLimit: Math.min(
-      2,
-      Math.max(1, Number(process.env.DB_CONNECTION_LIMIT ?? 2)),
+    // Each Vercel isolate has its own pool while Hostinger has one shared
+    // database connection budget. Keeping one live, keep-alive connection per
+    // warm isolate avoids a TCP/MySQL login burst for every mobile request;
+    // allowing two connections per isolate did not improve these short
+    // queries, but did multiply connection attempts during a scale-out.
+    connectionLimit: 1,
+    maxIdle: 1,
+    // Five seconds was short enough to turn ordinary navigation into a fresh
+    // remote MySQL connection. Keep the single socket warm for a bounded
+    // period instead. TCP keep-alive still lets mysql2 detect a provider-side
+    // close before it is reused.
+    idleTimeout: boundedNumber(
+      process.env.DB_IDLE_TIMEOUT_MS,
+      60_000,
+      15_000,
+      120_000,
     ),
-    maxIdle: 2,
-    // Hostinger's shared MariaDB can retire an inactive remote socket far
-    // sooner than a warm Vercel function is recycled. Reusing that half-closed
-    // socket left public config and sign-in requests waiting forever. Retire
-    // the pool's idle connection before the provider can do so; active work is
-    // still queued on the small pool rather than creating a connection burst.
-    idleTimeout: 5_000,
     // Presence is retryable and should wait briefly behind a slow database
     // read instead of failing a healthy room with mysql2's "Queue limit
     // reached" error.  The bounded value prevents unbounded memory growth;
@@ -54,7 +65,15 @@ function databaseConfig(): PoolOptions {
       500,
       Math.max(100, Number(process.env.DB_QUEUE_LIMIT ?? 250)),
     ),
-    connectTimeout: 12_000,
+    // A healthy Mumbai-to-Hostinger connection completes well below this.
+    // Fail a genuinely unavailable connection promptly so the retry can use a
+    // fresh pool instead of holding a room/bootstrap request for 36 seconds.
+    connectTimeout: boundedNumber(
+      process.env.DB_CONNECT_TIMEOUT_MS,
+      4_000,
+      3_000,
+      10_000,
+    ),
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
     decimalNumbers: true,
@@ -122,10 +141,16 @@ export function isDatabaseAvailabilityError(error: unknown) {
 }
 
 function discardPool() {
+  // A single transient failure can be observed by several concurrent Vercel
+  // requests. Only the first one gets to rotate the shared pool; otherwise
+  // every retry would create another pool while the old pools lingered for a
+  // minute, exactly the connection storm this recovery path is meant to stop.
+  if (global.nazraaPoolResetInProgress) return;
   const pool = global.nazraaPool;
   global.nazraaPool = undefined;
   global.nazraaInstrumentedPool = undefined;
   if (!pool) return;
+  global.nazraaPoolResetInProgress = true;
 
   // A warm Vercel instance can serve concurrent requests. Ending the shared
   // pool immediately here interrupts requests that already borrowed it and
@@ -133,15 +158,20 @@ function discardPool() {
   // Detach it now so retries receive a fresh pool, then close it only after
   // in-flight work has had time to finish.
   const closeTimer = setTimeout(() => {
-    void pool.end().catch(() => undefined);
-  }, 60_000);
+    void pool
+      .end()
+      .catch(() => undefined)
+      .finally(() => {
+        global.nazraaPoolResetInProgress = false;
+      });
+  }, 15_000);
   closeTimer.unref();
 }
 
 /** Retry connection/read failures only. Never wrap a non-idempotent mutation. */
 export async function withDatabaseReadRetry<T>(
   operation: () => Promise<T>,
-  attempts = 3,
+  attempts = 2,
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -151,7 +181,7 @@ export async function withDatabaseReadRetry<T>(
       lastError = error;
       if (!isTransientDatabaseError(error) || attempt === attempts) throw error;
       discardPool();
-      await new Promise((resolve) => setTimeout(resolve, 120 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
     }
   }
   throw lastError;

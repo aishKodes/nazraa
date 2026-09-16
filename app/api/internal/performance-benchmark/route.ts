@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { isPerformanceCanaryOperation, runPerformanceCanary } from "@/lib/observability/performance-canary";
+import { roomMediaDeliveryDiagnostics } from "@/lib/db/repositories/mobile-completion";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +17,21 @@ function authorized(request: Request) {
 export async function POST(request: Request) {
   if (!authorized(request)) return NextResponse.json({ message: "Not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
   try {
-    const body = await request.json() as { operation?: unknown };
+    const body = await request.json() as { operation?: unknown; roomCode?: unknown };
     const operation = typeof body.operation === "string" ? body.operation : "";
+    // This protected probe is deliberately restricted to the existing
+    // secret-free diagnostic. It makes a pending CDN route observable during
+    // controlled QA without expanding the public/mobile API surface.
+    if (operation === "media-delivery-diagnostic") {
+      const roomCode = typeof body.roomCode === "string" ? body.roomCode.trim() : "";
+      if (!/^[A-Z0-9_-]{3,80}$/i.test(roomCode)) {
+        return NextResponse.json({ message: "Invalid operation." }, { status: 400, headers: { "Cache-Control": "no-store" } });
+      }
+      const diagnostic = await roomMediaDeliveryDiagnostics(roomCode);
+      return diagnostic
+        ? NextResponse.json(diagnostic, { headers: { "Cache-Control": "no-store" } })
+        : NextResponse.json({ message: "Not found." }, { status: 404, headers: { "Cache-Control": "no-store" } });
+    }
     if (!isPerformanceCanaryOperation(operation)) {
       return NextResponse.json({ message: "Invalid operation." }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }

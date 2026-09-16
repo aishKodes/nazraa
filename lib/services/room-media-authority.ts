@@ -77,6 +77,14 @@ export async function authorizeRoomRtc(
     const temporaryCostGuardEnabled = features.temporaryRtcCostGuardEnabled !== false;
     const temporaryFaceViewerCeiling = Math.max(1, Math.min(20, Number(features.temporaryFaceRtcViewerCeiling ?? 3)));
     const temporaryPartyUserCeiling = Math.max(2, Math.min(100, Number(features.temporaryPartyRtcUserCeiling ?? 12)));
+    // This is an account-wide last-resort circuit breaker. It counts only
+    // roles that genuinely need RTC; ordinary passive audience is denied
+    // before it can consume this budget.
+    const maxGlobalRtcParticipants = Math.max(
+      1,
+      Math.min(500, Number(features.maxGlobalRtcParticipants ?? 24)),
+    );
+    const mediaPublishingEnabled = features.mediaPublishingEnabled !== false;
     const deploymentReady = process.env.ZEGO_STREAM_MIXING_READY === "true";
     const mixerConfigured = enabled(features.streamMixingEnabled) && deploymentReady;
     const [counts] = await connection.query<(RowDataPacket & { participant_count: number; passive_count: number })[]>(
@@ -88,10 +96,16 @@ export async function authorizeRoomRtc(
       [room.room_id],
     );
     const passiveCount = Number(counts[0]?.passive_count ?? 0);
+    // Passive RTC is an explicit break-glass setting and defaults to off.
+    // A passive participant is billable in ZEGO RTC even when muted and not
+    // subscribed, so a small-room threshold is never a safe normal route.
+    const passiveRtcAllowed = enabled(features.passiveRtcAllowed);
+    const partyCdnRequested = features.partyPassivePlaybackMode === "live_streaming"
+      && (passiveRtcAllowed ? passiveCount >= threshold : passiveCount > 0);
     const streamingRequested = room.room_type !== "PARTY"
       ? features.facePassivePlaybackMode === "live_streaming"
       : room.room_type === "PARTY"
-        ? features.partyPassivePlaybackMode === "live_streaming" && passiveCount >= threshold
+        ? partyCdnRequested
         : false;
     const hasInteractiveOutput = Boolean(room.mixer_output_stream_id?.trim());
     const outputStreamId = room.mixer_output_stream_id?.trim() ?? "";
@@ -117,16 +131,57 @@ export async function authorizeRoomRtc(
         : "An active speaker role is required before RTC publishing.");
     }
     if (input.canPublish) {
+      if (!mediaPublishingEnabled) {
+        throw new Error("Live media is temporarily unavailable while service protection is active.");
+      }
       const policy = LiveAccessPolicyService.for(identity);
-      const access = isHost
-        ? room.room_type === "PARTY" ? policy.chat : policy.face
-        : policy.chat;
+      // A Party owner/speaker is governed by the Party-hosting decision, not
+      // Face verification used for Face/Video Live. Otherwise a Party can be
+      // created successfully but its owner receives an RTC publishing denial.
+      const access = room.room_type === "PARTY"
+        ? policy.party
+        : isHost ? policy.face : policy.chat;
       if (!access.allowed) throw new Error(access.reason);
     }
 
     const passiveRole = ["PASSIVE_VIEWER", "AUDIO_REQUESTED", "PASSIVE_LISTENER", "MIC_REQUESTED"].includes(role);
+    // This is the final credential boundary for every installed APK. A
+    // legacy client may still try to create a UIKit RTC audience layer, but it
+    // cannot obtain a room token while it remains a passive role. Promotion
+    // to AUDIO_GUEST/RTC_SPEAKER is the only path that can cross this guard.
+    if (!input.canPublish && passiveRole && !passiveRtcAllowed) {
+      throw new Error("Passive room media is connecting through the public Live stream. Please wait a moment.");
+    }
     if (!input.canPublish && passiveRole && publicStreamActive) {
       throw new Error("Passive audience media is delivered by the public Live stream; RTC access is not issued.");
+    }
+
+    if (input.canPublish) {
+      // A grant is live only while its issuance or media heartbeat is fresh.
+      // This prevents an old token TTL after a crash from occupying the
+      // emergency budget.
+      const [globalRtcRows] = await connection.query<(RowDataPacket & {
+        active_other_rtc_participants: number;
+      })[]>(
+        `SELECT COUNT(DISTINCT CONCAT(grant_row.room_id, ':', grant_row.application_user_id))
+           active_other_rtc_participants
+         FROM live_media_access_grants grant_row
+         LEFT JOIN live_media_usage media_usage
+           ON media_usage.room_id = grant_row.room_id
+          AND media_usage.application_user_id = grant_row.application_user_id
+          AND media_usage.ended_at IS NULL
+          AND media_usage.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND
+         WHERE grant_row.can_publish = TRUE
+           AND grant_row.revoked_at IS NULL
+           AND grant_row.expires_at > CURRENT_TIMESTAMP(3)
+           AND grant_row.application_user_id <> ?
+           AND (grant_row.issued_at >= CURRENT_TIMESTAMP(3) - INTERVAL 45 SECOND
+             OR media_usage.application_user_id IS NOT NULL)`,
+        [identity.userId],
+      );
+      if (Number(globalRtcRows[0]?.active_other_rtc_participants ?? 0) >= maxGlobalRtcParticipants) {
+        throw new Error("Live media capacity is temporarily full. Please retry shortly.");
+      }
     }
 
     // Refuse a second fresh RTC room for the same signed-in user or physical

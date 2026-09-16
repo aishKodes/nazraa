@@ -37,6 +37,33 @@ type EquippedCosmeticRow = EntitlementRow & {
 
 export type CosmeticLoadoutPayload = Record<string, ReturnType<typeof presentationPayload>>;
 
+type CachedCosmeticLoadout = {
+  expiresAtMs: number;
+  loadout: CosmeticLoadoutPayload;
+};
+
+// A room-presence response can contain the same Host, seated speakers and
+// recent chat actors hundreds of times during one short room visit.  Cosmetic
+// equipment is durable state, not a financial balance, so a very short
+// process-local cache removes an otherwise identical entitlement query from
+// the hot path without making an equip/expiry meaningfully stale.  This cache
+// is intentionally bounded and remains only an optimisation: every miss is
+// resolved from the authoritative database.
+const equippedLoadoutCache = new Map<string, CachedCosmeticLoadout>();
+const equippedLoadoutCacheTtlMs = 15_000;
+const equippedLoadoutCacheMaximumEntries = 2_000;
+
+function cacheEquippedLoadout(publicId: string, loadout: CosmeticLoadoutPayload) {
+  if (equippedLoadoutCache.size >= equippedLoadoutCacheMaximumEntries) {
+    const oldest = equippedLoadoutCache.keys().next().value;
+    if (oldest) equippedLoadoutCache.delete(oldest);
+  }
+  equippedLoadoutCache.set(publicId, {
+    expiresAtMs: Date.now() + equippedLoadoutCacheTtlMs,
+    loadout,
+  });
+}
+
 /**
  * Expiry is enforced on every authenticated mobile request, not by cron.
  * The joined update also removes VIP presentation immediately for viewers
@@ -131,7 +158,20 @@ export async function equippedCosmeticLoadoutsByPublicId(
   const loadouts = new Map<string, CosmeticLoadoutPayload>();
   if (!ids.length) return loadouts;
 
-  const placeholders = ids.map(() => "?").join(",");
+  const now = Date.now();
+  const unresolvedIds: string[] = [];
+  for (const publicId of ids) {
+    const cached = equippedLoadoutCache.get(publicId);
+    if (cached && cached.expiresAtMs > now) {
+      loadouts.set(publicId, cached.loadout);
+    } else {
+      if (cached) equippedLoadoutCache.delete(publicId);
+      unresolvedIds.push(publicId);
+    }
+  }
+  if (!unresolvedIds.length) return loadouts;
+
+  const placeholders = unresolvedIds.map(() => "?").join(",");
   const executor = connection ?? db();
   const [rows] = await executor.query<EquippedCosmeticRow[]>(
     `SELECT user.public_id,
@@ -157,7 +197,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
          AND catalog.vip_tier_eligibility <= user.vip_tier
        ))
      ORDER BY user.public_id, entitlement.equipped_at DESC, entitlement.acquired_at DESC`,
-    ids,
+    unresolvedIds,
   );
   for (const row of rows) {
     const publicId = String(row.public_id);
@@ -165,6 +205,13 @@ export async function equippedCosmeticLoadoutsByPublicId(
     const type = presentationType(String(row.catalog_type));
     if (!loadout[type]) loadout[type] = presentationPayload(row);
     loadouts.set(publicId, loadout);
+  }
+  // Cache negative lookups as well: most room users do not have an equipped
+  // cosmetic and repeatedly proving that fact was a measurable presence cost.
+  for (const publicId of unresolvedIds) {
+    const loadout = loadouts.get(publicId) ?? {};
+    loadouts.set(publicId, loadout);
+    cacheEquippedLoadout(publicId, loadout);
   }
   return loadouts;
 }

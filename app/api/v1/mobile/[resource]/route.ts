@@ -56,6 +56,10 @@ import {
   updateMobileProfile,
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
+import { LiveKitTokenService } from "@/lib/services/livekit-token-service";
+import { authorizeLiveKitRoom } from "@/lib/services/livekit-room-authority";
+import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
+import { isLiveKitConfigured, mediaProviderFor } from "@/lib/services/media-provider";
 import {
   discoveryPosts,
   privateMessagingForUser,
@@ -120,7 +124,13 @@ const mediaCriticalResources = new Set([
   "room-media-bootstrap",
 ]);
 
-function scheduleMixerSync(roomCode: string) {
+/**
+ * LiveKit rooms do not have a ZEGO stream, relay, or mixer.  Keeping this
+ * decision at the route boundary prevents a reviewer-only LiveKit action from
+ * creating a paid ZEGO task as a side effect of a seat/presence update.
+ */
+function scheduleMixerSync(roomCode: string, useZego: boolean) {
+  if (!useZego) return;
   after(async () => {
     try {
       await syncZegoRoomMixer(roomCode);
@@ -130,12 +140,11 @@ function scheduleMixerSync(roomCode: string) {
   });
 }
 
-function scheduleRoomJoinMaintenance(roomCode: string) {
+function scheduleRoomJoinMaintenance(roomCode: string, useZego: boolean) {
   after(async () => {
-    await Promise.allSettled([
-      syncZegoRoomMixer(roomCode),
-      refreshLiveRoomAudienceCount(roomCode),
-    ]);
+    const maintenance: Array<Promise<unknown>> = [refreshLiveRoomAudienceCount(roomCode)];
+    if (useZego) maintenance.push(syncZegoRoomMixer(roomCode));
+    await Promise.allSettled(maintenance);
   });
 }
 
@@ -492,7 +501,7 @@ export async function POST(
           })
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "private-message-request") {
@@ -957,7 +966,7 @@ export async function POST(
           // The Host will confirm publishing in its first presence heartbeat. A
           // best-effort sync here is still useful for room types whose publisher
           // signal is already present, and never delays room creation.
-          scheduleMixerSync(parsed.roomCode);
+          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
           if (faceStart) after(() => recordFaceLiveStartOutcome("SUCCESS"));
           return NextResponse.json(result, { status: 201 });
         } catch (error) {
@@ -996,10 +1005,10 @@ export async function POST(
         // second cold Vercel-to-MySQL request before HLS can start. Party and
         // all existing callers retain their original response shape/cost.
         if (parsed.includeMediaBootstrap) {
-          scheduleRoomJoinMaintenance(parsed.roomCode);
+          scheduleRoomJoinMaintenance(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
           return NextResponse.json(result);
         }
-        scheduleRoomJoinMaintenance(parsed.roomCode);
+        scheduleRoomJoinMaintenance(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "room-leave") {
@@ -1007,7 +1016,7 @@ export async function POST(
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
         const result = await leaveLiveRoom(identity, parsed.roomCode);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "room-presence") {
@@ -1071,7 +1080,7 @@ export async function POST(
           parsed.mediaPublishing === true ||
           (result.active && result.mediaDelivery?.mode === "streamingPending")
         ) {
-          scheduleMixerSync(parsed.roomCode);
+          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         }
         return NextResponse.json(result);
       }
@@ -1091,7 +1100,7 @@ export async function POST(
           result.active &&
           result.mediaDelivery?.mode === "streamingPending"
         ) {
-          scheduleMixerSync(parsed.roomCode);
+          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         }
         return NextResponse.json(result);
       }
@@ -1106,7 +1115,7 @@ export async function POST(
           })
           .parse(body);
         const result = await setRoomAdmin(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "room-kick") {
@@ -1118,7 +1127,16 @@ export async function POST(
           })
           .parse(body);
         const result = await kickRoomMember(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        // The database transaction is authoritative. When this is a staged
+        // LiveKit room, immediately disconnect the still-connected peer too;
+        // a failed media RPC cannot reopen the room-block loophole.
+        if (mediaProviderFor(identity) === "LIVEKIT") {
+          await new LiveKitRoomAdmin().removeParticipant(
+            parsed.roomCode,
+            parsed.targetPublicId,
+          );
+        }
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "room-blocks") {
@@ -1139,7 +1157,14 @@ export async function POST(
           })
           .parse(body);
         const result = await setRoomMemberMuted(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        if (mediaProviderFor(identity) === "LIVEKIT") {
+          await new LiveKitRoomAdmin().setParticipantAudioMuted(
+            parsed.roomCode,
+            parsed.targetPublicId,
+            parsed.muted,
+          );
+        }
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "room-interactions") {
@@ -1173,8 +1198,8 @@ export async function POST(
       if (resource === "pk-start") {
         const parsed = z.object({ sessionId: z.string().uuid() }).parse(body);
         const result = await activatePkSession(identity, parsed.sessionId);
-        scheduleMixerSync(result.sourceRoomCode);
-        scheduleMixerSync(result.targetRoomCode);
+        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "pk-response") {
@@ -1182,8 +1207,8 @@ export async function POST(
           .object({ sessionId: z.string().uuid(), accept: z.boolean() })
           .parse(body);
         const result = await respondPkSession(identity, parsed);
-        scheduleMixerSync(result.sourceRoomCode);
-        scheduleMixerSync(result.targetRoomCode);
+        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "pk-end") {
@@ -1191,8 +1216,8 @@ export async function POST(
           .object({ sessionId: z.string().uuid(), completed: z.boolean() })
           .parse(body);
         const result = await closePkSession(identity, parsed);
-        scheduleMixerSync(result.sourceRoomCode);
-        scheduleMixerSync(result.targetRoomCode);
+        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "face-presence") {
@@ -1266,7 +1291,7 @@ export async function POST(
           })
           .parse(body);
         const result = await respondLiveCoHost(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "live-cohost-end") {
@@ -1277,7 +1302,7 @@ export async function POST(
           })
           .parse(body);
         const result = await endLiveCoHost(identity, parsed);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "live-end") {
@@ -1285,7 +1310,7 @@ export async function POST(
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
         const result = await finalizeLiveSession(identity, parsed.roomCode);
-        scheduleMixerSync(parsed.roomCode);
+        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
       if (resource === "gifts") {
@@ -1378,6 +1403,9 @@ export async function POST(
         );
       }
       if (resource === "zego-token") {
+        if (mediaProviderFor(identity) !== "ZEGO") {
+          throw new Error("Live media is connecting through the configured provider.");
+        }
         const parsed = z
           .object({
             roomId: z.string().trim().min(1).max(80),
@@ -1396,6 +1424,37 @@ export async function POST(
             ttlSeconds: authorization.ttlSeconds,
             streamId: authorization.streamId,
           }),
+          mediaRole: authorization.mediaRole,
+          publishMode: authorization.publishMode,
+        });
+      }
+      if (resource === "livekit-token") {
+        // This endpoint is intentionally unavailable until the deployment is
+        // explicitly switched for this identity. It prevents an old/reviewer
+        // build from accidentally bypassing the staged provider rollout.
+        if (mediaProviderFor(identity) !== "LIVEKIT" || !isLiveKitConfigured()) {
+          throw new Error("Live media is being prepared. Please retry shortly.");
+        }
+        const parsed = z
+          .object({
+            roomId: z.string().trim().min(1).max(80),
+            publish: z.boolean(),
+          })
+          .parse(body);
+        const authorization = await authorizeLiveKitRoom(identity, {
+          roomCode: parsed.roomId,
+          canPublish: parsed.publish,
+        });
+        const credentials = await new LiveKitTokenService().issueRoomToken({
+          roomId: parsed.roomId,
+          identity: identity.publicId,
+          participantName: identity.fullName,
+          publishMode: authorization.publishMode,
+          ttlSeconds: authorization.ttlSeconds,
+        });
+        return NextResponse.json({
+          ...credentials,
+          provider: "LIVEKIT",
           mediaRole: authorization.mediaRole,
           publishMode: authorization.publishMode,
         });

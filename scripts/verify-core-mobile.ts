@@ -1212,12 +1212,13 @@ async function main() {
       }),
       /Audio Request/,
     );
-    const fallbackViewerGrant = await mediaAuthority.authorizeRoomRtc(guest, {
-      roomCode: faceRoomCode,
-      canPublish: false,
-    });
-    assert.equal(fallbackViewerGrant.mediaRole, "PASSIVE_VIEWER");
-    assert.equal(fallbackViewerGrant.publishMode, "none");
+    await assert.rejects(
+      mediaAuthority.authorizeRoomRtc(guest, {
+        roomCode: faceRoomCode,
+        canPublish: false,
+      }),
+      /Passive room media is connecting through the public Live stream/,
+    );
     await assert.rejects(
       rooms.roomPublishingDecision(guest, faceRoomCode),
       /audio request/,
@@ -1291,7 +1292,8 @@ async function main() {
        VALUES ('mobile.room_features', JSON_OBJECT(
          'facePassivePlaybackMode', 'live_streaming',
          'partyPassivePlaybackMode', 'live_streaming',
-         'partyStreamingThreshold', 8,
+         'partyStreamingThreshold', 1,
+         'passiveRtcAllowed', FALSE,
          'paidMediaRoutingEnabled', TRUE,
          'streamMixingEnabled', TRUE,
          'emergencyRtcFallbackEnabled', FALSE,
@@ -1300,6 +1302,9 @@ async function main() {
        ON DUPLICATE KEY UPDATE setting_value = JSON_SET(
          COALESCE(setting_value, JSON_OBJECT()),
          '$.facePassivePlaybackMode', 'live_streaming',
+         '$.partyPassivePlaybackMode', 'live_streaming',
+         '$.partyStreamingThreshold', 1,
+         '$.passiveRtcAllowed', FALSE,
          '$.paidMediaRoutingEnabled', TRUE,
          '$.streamMixingEnabled', TRUE,
          '$.emergencyRtcFallbackEnabled', FALSE,
@@ -1326,7 +1331,7 @@ async function main() {
         roomCode: faceRoomCode,
         canPublish: false,
       }),
-      /Passive RTC fallback is disabled/,
+      /Passive room media is connecting through the public Live stream/,
     );
     await root.execute(
       `INSERT INTO live_media_mix_tasks
@@ -1346,7 +1351,7 @@ async function main() {
           roomCode: faceRoomCode,
           canPublish: false,
         }),
-        /delivered by the public Live stream/,
+        /Passive room media is connecting through the public Live stream/,
       );
       const acceptedGuestGrant = await mediaAuthority.authorizeRoomRtc(
         stranger,
@@ -1367,6 +1372,7 @@ async function main() {
         '$.streamMixingEnabled', FALSE,
         '$.facePassivePlaybackMode', 'rtc_fallback',
         '$.partyPassivePlaybackMode', 'dynamic_rtc_fallback',
+        '$.passiveRtcAllowed', FALSE,
         '$.temporaryRtcCostGuardEnabled', TRUE,
         '$.temporaryFaceRtcViewerCeiling', 3,
         '$.temporaryPartyRtcUserCeiling', 12)
@@ -1402,18 +1408,12 @@ async function main() {
     );
     for (const fallbackUser of faceFallbackUsers)
       await rooms.joinLiveRoom(fallbackUser, cappedFaceCode);
-    for (const fallbackUser of faceFallbackUsers.slice(0, 3)) {
-      await mediaAuthority.authorizeRoomRtc(fallbackUser, {
-        roomCode: cappedFaceCode,
-        canPublish: false,
-      });
-    }
     await assert.rejects(
-      mediaAuthority.authorizeRoomRtc(faceFallbackUsers[3], {
+      mediaAuthority.authorizeRoomRtc(faceFallbackUsers[0], {
         roomCode: cappedFaceCode,
         canPublish: false,
       }),
-      /temporarily supports 3 viewers/,
+      /Passive room media is connecting through the public Live stream/,
     );
     await root.execute(
       "UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE application_user_id = ?",
@@ -1447,21 +1447,15 @@ async function main() {
     );
     for (const fallbackUser of partyFallbackUsers)
       await rooms.joinLiveRoom(fallbackUser, cappedPartyCode);
-    for (const fallbackUser of partyFallbackUsers.slice(0, 11)) {
-      await mediaAuthority.authorizeRoomRtc(fallbackUser, {
-        roomCode: cappedPartyCode,
-        canPublish: false,
-      });
-    }
     await assert.rejects(
-      mediaAuthority.authorizeRoomRtc(partyFallbackUsers[11], {
+      mediaAuthority.authorizeRoomRtc(partyFallbackUsers[0], {
         roomCode: cappedPartyCode,
         canPublish: false,
       }),
-      /temporarily supports 12 RTC members/,
+      /Passive room media is connecting through the public Live stream/,
     );
     console.log(
-      "PASS temporary RTC cost guard: Face passive hard cap 3; Party total hard cap 12; no overflow token issued",
+      "PASS passive RTC deny: Face viewers and Party listeners cannot obtain RTC credentials; only publishers can",
     );
 
     await product.setFollow(owner, "user", guest.publicId, true);

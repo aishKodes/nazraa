@@ -495,15 +495,18 @@ export async function listMediaCostTelemetry(days = 14) {
     db().query<(RowDataPacket & {
       active_rtc_users: number;
       active_face_rtc_viewers: number;
-      active_party_rtc_users: number;
+      active_party_rtc_speakers: number;
+      active_party_rtc_listeners: number;
     })[]>(
       `SELECT
          COUNT(DISTINCT CASE WHEN usage_type IN ('FACE_HOST_RTC','FACE_AUDIO_GUEST_RTC','FACE_PASSIVE_RTC_FALLBACK','PARTY_SPEAKER_RTC','PARTY_PASSIVE_RTC_FALLBACK')
            THEN CONCAT(room_id, ':', application_user_id) END) active_rtc_users,
          COUNT(DISTINCT CASE WHEN usage_type = 'FACE_PASSIVE_RTC_FALLBACK'
            THEN CONCAT(room_id, ':', application_user_id) END) active_face_rtc_viewers,
-         COUNT(DISTINCT CASE WHEN usage_type IN ('PARTY_SPEAKER_RTC','PARTY_PASSIVE_RTC_FALLBACK')
-           THEN CONCAT(room_id, ':', application_user_id) END) active_party_rtc_users
+         COUNT(DISTINCT CASE WHEN usage_type = 'PARTY_SPEAKER_RTC'
+           THEN CONCAT(room_id, ':', application_user_id) END) active_party_rtc_speakers,
+         COUNT(DISTINCT CASE WHEN usage_type = 'PARTY_PASSIVE_RTC_FALLBACK'
+           THEN CONCAT(room_id, ':', application_user_id) END) active_party_rtc_listeners
        FROM live_media_usage
        WHERE ended_at IS NULL
          AND last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND`,
@@ -570,7 +573,8 @@ export async function listMediaCostTelemetry(days = 14) {
     current: {
       activeRtcUsers: Number(active[0]?.active_rtc_users ?? 0),
       activeFaceRtcViewers: Number(active[0]?.active_face_rtc_viewers ?? 0),
-      activePartyRtcUsers: Number(active[0]?.active_party_rtc_users ?? 0),
+      activePartyRtcSpeakers: Number(active[0]?.active_party_rtc_speakers ?? 0),
+      activePartyRtcListeners: Number(active[0]?.active_party_rtc_listeners ?? 0),
       todayEstimatedSpendUsd,
     },
     thresholds: { warningUsd, criticalUsd },

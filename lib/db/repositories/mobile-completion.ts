@@ -42,6 +42,8 @@ import {
   loadFaceLiveRules,
   type FaceLiveRules,
 } from "@/lib/services/live-business-policy";
+import type { MediaProvider } from "@/lib/services/media-provider";
+import { mediaProviderFor } from "@/lib/services/media-provider";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -76,11 +78,84 @@ function settingEnabled(value: unknown) {
   return value === true || value === 1 || value === "1" || value === "true";
 }
 
+/**
+ * Operations need to distinguish a stalled mixer from an unavailable one,
+ * without returning ZEGO responses, signed URLs, or credentials to a browser.
+ */
+function mixerFailureCategory(value: unknown): string | null {
+  const message = typeof value === "string" ? value.toLowerCase() : "";
+  if (!message) return null;
+  if (/timeout|timed out|abort/.test(message)) return "provider_timeout";
+  if (/secret|app id|activation gate|configuration/.test(message)) {
+    return "server_configuration";
+  }
+  if (/startmix|stopmix|zego/.test(message)) return "provider_request_rejected";
+  return "mixer_sync_failed";
+}
+
+type DeferredMediaUsageHeartbeat = {
+  roomId: string;
+  applicationUserId: string;
+  usageType?: LiveMediaUsageType;
+  active: boolean;
+  expectedFaceFallbackCeiling?: number;
+  expectedPassiveRtcCeiling?: number;
+  runtimeDiagnostics?: RoomRuntimeDiagnostics;
+};
+
+let lastMediaTelemetryWarningAt = 0;
+let lastMembershipTouchWarningAt = 0;
+
+async function recordDeferredMediaUsageHeartbeat(input: DeferredMediaUsageHeartbeat) {
+  // Media-cost accounting must never make an otherwise valid room response
+  // fail. It is reconciled from durable session/use rows and is deliberately
+  // isolated from the authorization, reward and room-state transaction.
+  try {
+    await withTransaction((connection) => recordMediaUsageHeartbeat(connection, input));
+  } catch (error) {
+    const now = Date.now();
+    if (now - lastMediaTelemetryWarningAt < 60_000) return;
+    lastMediaTelemetryWarningAt = now;
+    const code = error && typeof error === "object" && "code" in error
+      ? String(error.code)
+      : "unknown";
+    console.warn("Media usage telemetry deferred", {
+      category: code === "ER_LOCK_DEADLOCK" || code === "ER_LOCK_WAIT_TIMEOUT"
+        ? "database_contention"
+        : "database_unavailable",
+    });
+  }
+}
+
+function touchRoomMembership(userId: string, roomCode: string) {
+  // Presence freshness is not an authorization or financial mutation. Keep
+  // this one-row touch outside a long social/reward transaction so it cannot
+  // form a lock cycle with seat, leave, or role transitions. A failed touch
+  // simply leaves the existing two-minute server expiry as the safety net.
+  void db().execute(
+    `UPDATE live_room_members member
+     INNER JOIN live_rooms room ON room.id = member.room_id
+     SET member.last_seen_at = CURRENT_TIMESTAMP(3)
+     WHERE room.room_code = ? AND member.application_user_id = ?
+       AND member.left_at IS NULL`,
+    [roomCode, userId],
+  ).catch(() => {
+    const now = Date.now();
+    if (now - lastMembershipTouchWarningAt < 60_000) return;
+    lastMembershipTouchWarningAt = now;
+    console.warn("Room membership touch deferred", {
+      category: "database_unavailable",
+    });
+  });
+}
+
 function roomMediaDelivery(
   row: RowDataPacket,
   passiveCount: number,
   preferredFacePlaybackProtocol?: "hls" | "flv",
   allowReviewerL3 = false,
+  allowReviewerBeauty = false,
+  provider: MediaProvider = "ZEGO",
 ) {
   const features = jsonObject(row.room_features_json);
   const threshold = Math.max(
@@ -143,6 +218,43 @@ function roomMediaDelivery(
     0,
     Math.min(15, Number(features.passiveEventDelaySeconds ?? 5)),
   );
+  // LiveKit is an SFU route: every member receives a short-lived
+  // role-constrained token and there is deliberately no HLS/CDN/mixer state
+  // to wait for. It is enabled only after server configuration confirms the
+  // endpoint and (during migration) only for reviewer identities.
+  if (provider === "LIVEKIT") {
+    return {
+      provider,
+      mode: "liveKit" as const,
+      playbackUrl: null,
+      hlsFallbackPlaybackUrl: null,
+      streamId: null,
+      streamMixingEnabled: false,
+      paidMediaRoutingEnabled: false,
+      emergencyRtcFallbackEnabled: false,
+      passiveRtcAllowed: false,
+      partyStreamingThreshold: threshold,
+      reconnectGraceSeconds,
+      passiveBackgroundGraceSeconds,
+      maxFaceAudioGuests,
+      rtcPassiveFallbackCeiling,
+      temporaryRtcCostGuardEnabled,
+      temporaryFaceRtcViewerCeiling,
+      passivePlaybackResourceMode: "cdn" as const,
+      viewerTransport: "livekit" as const,
+      naturalBeauty: {
+        enabled:
+          settingEnabled(features.nazraaNaturalBeautyEnabled) ||
+          (allowReviewerBeauty &&
+            settingEnabled(features.nazraaNaturalBeautyReviewerQaEnabled)),
+        landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
+        defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
+      },
+      playbackProtocol: "livekit" as const,
+      passiveEventDelaySeconds: 0,
+      fallbackReason: null,
+    };
+  }
   // The panel flag is an operator preference. The deployment gate proves that
   // the ZEGO project, mixer output and signed playback endpoint are actually
   // ready. Never move an audience member away from the working RTC fallback
@@ -155,11 +267,15 @@ function roomMediaDelivery(
   const emergencyRtcFallbackEnabled = settingEnabled(
     features.emergencyRtcFallbackEnabled,
   );
+  // RTC participation itself is billable. Keep the explicit switch off by
+  // default and make Party request CDN as soon as its first passive listener
+  // joins rather than retaining a "small room" RTC audience.
+  const passiveRtcAllowed = settingEnabled(features.passiveRtcAllowed);
   const isAudience = row.room_role === "AUDIENCE";
   const requested =
     row.room_type === "PARTY"
       ? features.partyPassivePlaybackMode === "live_streaming" &&
-        passiveCount >= threshold
+        (passiveRtcAllowed ? passiveCount >= threshold : passiveCount > 0)
       : features.facePassivePlaybackMode === "live_streaming";
   const template = process.env.ZEGO_CDN_PLAYBACK_URL_TEMPLATE?.trim() ?? "";
   const mixerPlaybackUrl =
@@ -185,6 +301,13 @@ function roomMediaDelivery(
     unsignedPlaybackUrl,
     playbackProtocol,
   );
+  // FLV is an operator-controlled Android startup experiment. Its fallback
+  // must be signed for the same stream on the backend; Flutter must never
+  // create a URL by changing an extension or fall back to passive RTC.
+  const hlsFallbackPlaybackUrl =
+    playbackProtocol === "flv"
+      ? signedZegoCdnPlaybackUrl(streamId, unsignedPlaybackUrl, "hls")
+      : null;
   const mixerActive = row.mixer_status === "ACTIVE";
   const streamingActive =
     isAudience &&
@@ -206,12 +329,15 @@ function roomMediaDelivery(
         ? "streamingPending"
         : "rtcFallback";
   return {
+    provider,
     mode,
     playbackUrl: streamingActive ? playbackUrl : null,
+    hlsFallbackPlaybackUrl: streamingActive ? hlsFallbackPlaybackUrl : null,
     streamId: streamingActive ? streamId : null,
     streamMixingEnabled: mixingEnabled,
     paidMediaRoutingEnabled,
     emergencyRtcFallbackEnabled,
+    passiveRtcAllowed,
     partyStreamingThreshold: threshold,
     reconnectGraceSeconds,
     passiveBackgroundGraceSeconds,
@@ -224,7 +350,13 @@ function roomMediaDelivery(
       ? configuredFaceViewerTransport
       : "hls",
     naturalBeauty: {
-      enabled: settingEnabled(features.nazraaNaturalBeautyEnabled),
+      // Global beauty remains off until reviewer QA is explicitly promoted.
+      // The temporary reviewer gate is server-authoritative and never changes
+      // an ordinary Host's camera path.
+      enabled:
+        settingEnabled(features.nazraaNaturalBeautyEnabled) ||
+        (allowReviewerBeauty &&
+          settingEnabled(features.nazraaNaturalBeautyReviewerQaEnabled)),
       landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
       defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
     },
@@ -263,12 +395,13 @@ export async function roomMediaDeliveryDiagnostics(roomCode: string) {
       mixer_status: string | null;
       mixer_output_stream_id: string | null;
       mixer_playback_url: string | null;
+      mixer_last_error: string | null;
       passive_count: number;
     })[]
   >(
     `SELECT room.id, room.room_type, settings.setting_value room_features_json,
             mixer.status mixer_status, mixer.output_stream_id mixer_output_stream_id,
-            mixer.playback_url mixer_playback_url,
+            mixer.playback_url mixer_playback_url, mixer.last_error mixer_last_error,
             (
               SELECT COUNT(*) FROM live_room_members passive_member
               WHERE passive_member.room_id = room.id AND passive_member.left_at IS NULL
@@ -301,6 +434,7 @@ export async function roomMediaDeliveryDiagnostics(roomCode: string) {
     mixerConfigured: settingEnabled(features.streamMixingEnabled),
     deploymentGateReady: process.env.ZEGO_STREAM_MIXING_READY === "true",
     mixerStatus: row.mixer_status ?? "INACTIVE",
+    mixerFailureCategory: mixerFailureCategory(row.mixer_last_error),
     outputStreamPresent:
       typeof row.mixer_output_stream_id === "string" &&
       row.mixer_output_stream_id.trim().length > 0,
@@ -1308,6 +1442,10 @@ export async function leaveLiveRoom(
         [room.id, identity.userId],
       );
       await connection.execute(
+        "UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
+        [room.id, identity.userId],
+      );
+      await connection.execute(
         "UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
         [room.id, identity.userId],
       );
@@ -1340,6 +1478,10 @@ export async function leaveLiveRoom(
     );
     await connection.execute(
       "UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
+      [room.id, identity.userId],
+    );
+    await connection.execute(
+      "UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
       [room.id, identity.userId],
     );
     await connection.execute(
@@ -1497,24 +1639,20 @@ async function refreshRoomMediaBootstrapWithConnection(
   const row = rows[0];
   if (!row) return { active: false };
 
-  // Membership freshness is still authoritative, but this update is kept out
-  // of the payload query's critical read path and never grants RTC access.
-  await connection.execute(
-    `UPDATE live_room_members
-     SET last_seen_at = CURRENT_TIMESTAMP(3)
-     WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
-    [row.id, identity.userId],
+  const mediaDelivery = roomMediaDelivery(
+    row,
+    Number(row.passive_count ?? 0),
+    preferredFacePlaybackProtocol,
+    Boolean(identity.playReviewerAccessOverride),
+    Boolean(identity.playReviewerAccessOverride),
+    mediaProviderFor(identity),
   );
+
   return {
     active: true,
     roomRole: String(row.room_role).toLowerCase(),
     mediaRole: String(row.media_role).toLowerCase(),
-    mediaDelivery: roomMediaDelivery(
-      row,
-      Number(row.passive_count ?? 0),
-      preferredFacePlaybackProtocol,
-      Boolean(identity.playReviewerAccessOverride),
-    ),
+    mediaDelivery,
   };
 }
 
@@ -1523,7 +1661,7 @@ export async function refreshRoomMediaBootstrap(
   roomCode: string,
   preferredFacePlaybackProtocol?: "hls" | "flv",
 ) {
-  return withTransaction((connection) =>
+  const bootstrap = await withTransaction((connection) =>
     refreshRoomMediaBootstrapWithConnection(
       connection,
       identity,
@@ -1531,6 +1669,8 @@ export async function refreshRoomMediaBootstrap(
       preferredFacePlaybackProtocol,
     ),
   );
+  if (bootstrap.active) touchRoomMembership(identity.userId, roomCode);
+  return bootstrap;
 }
 
 export async function refreshRoomPresence(
@@ -1540,6 +1680,7 @@ export async function refreshRoomPresence(
   runtimeDiagnostics?: RoomRuntimeDiagnostics,
   preferredFacePlaybackProtocol?: "hls" | "flv",
 ) {
+  let deferredMediaUsage: DeferredMediaUsageHeartbeat | null = null;
   // A passive viewer never needs to serialize the complete social snapshot
   // behind the Face Host's accounting heartbeat.  The old implementation
   // took a `FOR UPDATE` lock before loading messages, gifts, cosmetics and
@@ -1576,7 +1717,7 @@ export async function refreshRoomPresence(
     await finalizeClosedFaceLiveSession(roomCode);
     await finalizeStaleLiveSession(roomCode);
   }
-  return withTransaction(async (connection) => {
+  const presence = await withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
@@ -2106,6 +2247,8 @@ export async function refreshRoomPresence(
       passiveCount,
       preferredFacePlaybackProtocol,
       Boolean(identity.playReviewerAccessOverride),
+      Boolean(identity.playReviewerAccessOverride),
+      mediaProviderFor(identity),
     );
     const currentMediaRole = String(rows[0].media_role);
     const publishingRole = [
@@ -2135,7 +2278,7 @@ export async function refreshRoomPresence(
     const activeMedia = publishingRole
       ? mediaPublishing === true
       : usageType !== undefined;
-    await recordMediaUsageHeartbeat(connection, {
+    deferredMediaUsage = {
       roomId: String(rows[0].id),
       applicationUserId: identity.userId,
       usageType,
@@ -2147,14 +2290,11 @@ export async function refreshRoomPresence(
             ? mediaDelivery.rtcPassiveFallbackCeiling
             : 0
           : undefined,
+      expectedPassiveRtcCeiling: mediaDelivery.passiveRtcAllowed
+        ? mediaDelivery.rtcPassiveFallbackCeiling
+        : 0,
       runtimeDiagnostics,
-    });
-    // Keep the member row lock (if any) to a single final update.  This means
-    // a concurrent join is never held while the social feed is being read.
-    await connection.execute(
-      "UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
-      [rows[0].id, identity.userId],
-    );
+    };
     const pkSession = pkSessions[0];
     return {
       active: true,
@@ -2396,6 +2536,11 @@ export async function refreshRoomPresence(
       })),
     };
   });
+  if (deferredMediaUsage) {
+    await recordDeferredMediaUsageHeartbeat(deferredMediaUsage);
+  }
+  if (presence.active) touchRoomMembership(identity.userId, roomCode);
+  return presence;
 }
 
 export async function requestLiveCoHost(
@@ -2589,6 +2734,10 @@ export async function endLiveCoHost(
       [room.id, target.id],
     );
     await connection.execute(
+      "UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
+      [room.id, target.id],
+    );
+    await connection.execute(
       "UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND usage_type = 'FACE_AUDIO_GUEST_RTC'",
       [room.id, target.id],
     );
@@ -2621,7 +2770,10 @@ export async function roomPublishingDecision(
   if (!room) throw new Error("This room is no longer active.");
   const policy = LiveAccessPolicyService.for(identity);
   if (room.room_type === "PARTY") {
-    if (!policy.chat.allowed) throw new Error(policy.chat.reason);
+    // Party Audio uses its own authorization decision. Face verification is a
+    // Face/Video Live requirement and must not leave an otherwise permitted
+    // Party owner or speaker unable to publish after the room was created.
+    if (!policy.party.allowed) throw new Error(policy.party.reason);
     const [members] = await db().query<
       (RowDataPacket & { room_role: string; muted: number })[]
     >(
@@ -2639,7 +2791,7 @@ export async function roomPublishingDecision(
     if (Boolean(members[0].muted)) {
       throw new Error("Your microphone is muted by room staff.");
     }
-    return policy.chat;
+    return policy.party;
   }
   if (room.host_application_user_id !== identity.userId) {
     const [members] = await db().query<
@@ -3515,6 +3667,10 @@ export async function kickRoomMember(
       [member.room_id, member.target_id],
     );
     await connection.execute(
+      "UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
+      [member.room_id, member.target_id],
+    );
+    await connection.execute(
       "UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
       [member.room_id, member.target_id],
     );
@@ -3829,6 +3985,10 @@ export async function finalizeLiveSession(
     );
     await connection.execute(
       "UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ?",
+      [session.room_id],
+    );
+    await connection.execute(
+      "UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ?",
       [session.room_id],
     );
     await connection.execute(

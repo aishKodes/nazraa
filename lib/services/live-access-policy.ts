@@ -38,8 +38,17 @@ export class LiveAccessPolicyService {
     }
     const faceVerified = identity.faceVerificationStatus === "VERIFIED";
     const agencyApproved = Boolean(identity.agencyAccountId);
-    const partyAllowed = faceVerified && !partyRestricted;
-    const party = decision(partyAllowed, partyRestricted ? partyRestrictionReason : faceVerified ? "Face verified." : "Complete automatic Face Verification to create a Party Live.");
+    // Party Audio is deliberately independent from Face/Video Live identity
+    // verification. A normal, active host may create or speak in a Party;
+    // only an actual hosting restriction may prevent that. Face verification
+    // and approved-Agency eligibility remain mandatory for Face/Video Live
+    // below. Keeping these two decisions separate avoids a rejected selfie
+    // accidentally disabling the entire Party product.
+    const partyAllowed = !partyRestricted;
+    const party = decision(
+      partyAllowed,
+      partyRestricted ? partyRestrictionReason : "Party hosting is available.",
+    );
     // Face verification is the single authoritative verification decision.
     // The two legacy authorization columns are retained only for older app
     // versions and must never make a verified Host repeat approval in several

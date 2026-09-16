@@ -125,20 +125,40 @@ export async function recordMediaUsageHeartbeat(
     usageType?: LiveMediaUsageType;
     active: boolean;
     expectedFaceFallbackCeiling?: number;
+    expectedPassiveRtcCeiling?: number;
     runtimeDiagnostics?: RoomRuntimeDiagnostics;
   },
 ) {
   let deltaSeconds = 0;
+  let telemetryIncrement: MetricIncrement = {};
+  let shouldCheckpointTelemetry = false;
   if (input.active && input.usageType) {
-    const [previous] = await connection.query<(RowDataPacket & { delta_seconds: number })[]>(
-      `SELECT IF(TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)) BETWEEN 0 AND 10,
-         TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)), 0) delta_seconds
+    const [usageRows] = await connection.query<(RowDataPacket & {
+      usage_type: LiveMediaUsageType;
+      delta_seconds: number;
+      duration_seconds: number;
+      telemetry_reported_duration_seconds: number;
+    })[]>(
+      // Passive CDN listeners use a lean media heartbeat between full social
+      // snapshots. Accept the bounded 10-second social cadence plus ordinary
+      // network jitter, but never turn a backgrounded or abandoned session
+      // into billable audience time.
+      `SELECT IF(TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)) BETWEEN 0 AND 15,
+         TIMESTAMPDIFF(SECOND, last_seen_at, CURRENT_TIMESTAMP(3)), 0) delta_seconds,
+         duration_seconds, telemetry_reported_duration_seconds
        FROM live_media_usage
-       WHERE room_id = ? AND application_user_id = ? AND usage_type = ?
-       LIMIT 1 FOR UPDATE`,
-      [input.roomId, input.applicationUserId, input.usageType],
+       WHERE room_id = ? AND application_user_id = ?
+       ORDER BY usage_type FOR UPDATE`,
+      [input.roomId, input.applicationUserId],
     );
-    deltaSeconds = Number(previous[0]?.delta_seconds ?? 0);
+    // A role change can briefly overlap two heartbeat sources.  Lock every
+    // usage row for this room/user in one stable order before closing the old
+    // route and opening the new one.  The prior current-row-first order let
+    // two transitions lock A then B / B then A and produced live 503s.
+    const previousUsage = usageRows.find(
+      (row) => row.usage_type === input.usageType,
+    );
+    deltaSeconds = Number(previousUsage?.delta_seconds ?? 0);
     await connection.execute(
       `UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3))
        WHERE room_id = ? AND application_user_id = ? AND usage_type <> ? AND ended_at IS NULL`,
@@ -181,16 +201,71 @@ export async function recordMediaUsageHeartbeat(
         ],
       );
     }
+
+    // Presence is intentionally frequent for resilience.  Updating the one
+    // global daily-metrics row on every presence ping made otherwise unrelated
+    // room joins contend and could deadlock.  Usage rows remain exact; the
+    // aggregate is flushed in bounded 30-second chunks instead.
+    const currentDuration =
+      Number(previousUsage?.duration_seconds ?? 0) + deltaSeconds;
+    const reportedDuration = Number(
+      previousUsage?.telemetry_reported_duration_seconds ?? 0,
+    );
+    const unreportedSeconds = Math.max(0, currentDuration - reportedDuration);
+    if (unreportedSeconds >= 30) {
+      telemetryIncrement = incrementsFor(input.usageType, unreportedSeconds);
+      shouldCheckpointTelemetry = true;
+      await connection.execute(
+        `UPDATE live_media_usage
+         SET telemetry_reported_duration_seconds = duration_seconds,
+             telemetry_reported_at = CURRENT_TIMESTAMP(3)
+         WHERE room_id = ? AND application_user_id = ? AND usage_type = ?`,
+        [input.roomId, input.applicationUserId, input.usageType],
+      );
+    }
   } else {
+    const [unreportedRows] = await connection.query<(RowDataPacket & {
+      usage_type: LiveMediaUsageType;
+      unreported_seconds: number;
+    })[]>(
+      `SELECT usage_type,
+              GREATEST(0, duration_seconds - telemetry_reported_duration_seconds) unreported_seconds
+       FROM live_media_usage
+       WHERE room_id = ? AND application_user_id = ? AND ended_at IS NULL
+       ORDER BY usage_type FOR UPDATE`,
+      [input.roomId, input.applicationUserId],
+    );
+    for (const row of unreportedRows) {
+      const increment = incrementsFor(
+        row.usage_type,
+        Number(row.unreported_seconds ?? 0),
+      );
+      telemetryIncrement = {
+        rtcVoiceSeconds: (telemetryIncrement.rtcVoiceSeconds ?? 0) + (increment.rtcVoiceSeconds ?? 0),
+        rtcVideoSeconds: (telemetryIncrement.rtcVideoSeconds ?? 0) + (increment.rtcVideoSeconds ?? 0),
+        facePassiveStreamSeconds: (telemetryIncrement.facePassiveStreamSeconds ?? 0) + (increment.facePassiveStreamSeconds ?? 0),
+        partyPassiveStreamSeconds: (telemetryIncrement.partyPassiveStreamSeconds ?? 0) + (increment.partyPassiveStreamSeconds ?? 0),
+        mixerCreationSeconds: (telemetryIncrement.mixerCreationSeconds ?? 0) + (increment.mixerCreationSeconds ?? 0),
+        rtcPassiveFallbackSeconds: (telemetryIncrement.rtcPassiveFallbackSeconds ?? 0) + (increment.rtcPassiveFallbackSeconds ?? 0),
+      };
+    }
+    shouldCheckpointTelemetry = unreportedRows.length > 0;
     await connection.execute(
-      `UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3))
+      `UPDATE live_media_usage
+       SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)),
+           telemetry_reported_duration_seconds = duration_seconds,
+           telemetry_reported_at = CURRENT_TIMESTAMP(3)
        WHERE room_id = ? AND application_user_id = ? AND ended_at IS NULL`,
       [input.roomId, input.applicationUserId],
     );
   }
 
+  // Counts, global cost aggregates and cost-alert writes share a daily row.
+  // Keep that expensive coordination outside the normal five-second presence
+  // path; this preserves room responsiveness under concurrent audiences.
+  if (!shouldCheckpointTelemetry) return;
   const counts = await activeCounts(connection);
-  await updateDailyRow(connection, input.usageType ? incrementsFor(input.usageType, deltaSeconds) : {}, counts);
+  await updateDailyRow(connection, telemetryIncrement, counts);
 
   if (input.expectedFaceFallbackCeiling !== undefined) {
     const ceiling = Math.max(0, Math.floor(input.expectedFaceFallbackCeiling));
@@ -210,6 +285,35 @@ export async function recordMediaUsageHeartbeat(
            last_seen_at = CURRENT_TIMESTAMP(3)
          WHERE usage_date = CURRENT_DATE() AND room_id = ?
            AND alert_code = 'FACE_RTC_PASSIVE_OVER_CEILING' AND status = 'OPEN'`,
+        [input.roomId],
+      );
+    }
+  }
+
+  // Any passive RTC user is an incident in normal production. Keep this
+  // separate from the historical Face-only alert so a Party listener cannot
+  // hide behind a valid Face ceiling. Evaluate only the passive heartbeat's
+  // own room, not an unrelated Host heartbeat observing a global count.
+  const passiveUsage = input.usageType === "FACE_PASSIVE_RTC_FALLBACK"
+    || input.usageType === "PARTY_PASSIVE_RTC_FALLBACK";
+  if (passiveUsage && input.expectedPassiveRtcCeiling !== undefined) {
+    const ceiling = Math.max(0, Math.floor(input.expectedPassiveRtcCeiling));
+    if (counts.rtcPassive > ceiling) {
+      await connection.execute(
+        `INSERT INTO live_media_cost_alerts
+          (id, usage_date, room_id, alert_code, observed_count, expected_ceiling, status)
+         VALUES (?, CURRENT_DATE(), ?, 'RTC_PASSIVE_OVER_CEILING', ?, ?, 'OPEN')
+         ON DUPLICATE KEY UPDATE observed_count = GREATEST(observed_count, VALUES(observed_count)),
+           expected_ceiling = VALUES(expected_ceiling), status = 'OPEN',
+           last_seen_at = CURRENT_TIMESTAMP(3), resolved_at = NULL`,
+        [randomUUID(), input.roomId, counts.rtcPassive, ceiling],
+      );
+    } else {
+      await connection.execute(
+        `UPDATE live_media_cost_alerts SET status = 'RESOLVED', resolved_at = CURRENT_TIMESTAMP(3),
+           last_seen_at = CURRENT_TIMESTAMP(3)
+         WHERE usage_date = CURRENT_DATE() AND room_id = ?
+           AND alert_code = 'RTC_PASSIVE_OVER_CEILING' AND status = 'OPEN'`,
         [input.roomId],
       );
     }

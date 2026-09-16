@@ -18,7 +18,7 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
   const [result, incidents, mediaCost, latency] = await Promise.all([
     listRoomsPage(scope, { page: Math.max(1, Number.parseInt(rawPage ?? "1", 10) || 1) }),
     listPresenceIncidents(scope),
-    mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [], current: { activeRtcUsers: 0, activeFaceRtcViewers: 0, activePartyRtcUsers: 0, todayEstimatedSpendUsd: 0 }, thresholds: { warningUsd: 3, criticalUsd: 5 }, costLevel: "NORMAL", topRooms: [], rates: { voiceRate: .99, hdVideoRate: 3.99, liveAudioRate: .39, liveHdRate: 1.49 } }),
+    mayViewCostTelemetry ? listMediaCostTelemetry() : Promise.resolve({ days: [], alerts: [], current: { activeRtcUsers: 0, activeFaceRtcViewers: 0, activePartyRtcSpeakers: 0, activePartyRtcListeners: 0, todayEstimatedSpendUsd: 0 }, thresholds: { warningUsd: 3, criticalUsd: 5 }, costLevel: "NORMAL", topRooms: [], rates: { voiceRate: .99, hdVideoRate: 3.99, liveAudioRate: .39, liveHdRate: 1.49 } }),
     mayViewCostTelemetry ? listMobileLatencyDiagnostics() : Promise.resolve([]),
   ]);
   const rooms = result.items;
@@ -31,11 +31,11 @@ export default async function RoomsPage({ searchParams }: { searchParams: Promis
   return <>
     <SectionHeading title="Live rooms" description="Live and Party status in your branch. Every moderation action requires a reason and is audited." />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
-    {mayViewCostTelemetry && mediaCost.alerts.length ? <Notice type="error">Media cost warning: Face passive RTC exceeded its configured ceiling in {mediaCost.alerts.length} room{mediaCost.alerts.length === 1 ? "" : "s"}. Check the rooms and ZEGO streaming output immediately.</Notice> : null}
+    {mayViewCostTelemetry && mediaCost.alerts.length ? <Notice type="error">Media cost warning: passive RTC exceeded its configured ceiling in {mediaCost.alerts.length} room{mediaCost.alerts.length === 1 ? "" : "s"}. Face viewers and Party listeners must be CDN-only.</Notice> : null}
     {mayViewCostTelemetry && mediaCost.costLevel !== "NORMAL" ? <Notice type="error">{mediaCost.costLevel} ZEGO cost warning: today&apos;s server-observed PAYG equivalent has reached ${mediaCost.current.todayEstimatedSpendUsd.toFixed(2)}. Warning ${mediaCost.thresholds.warningUsd.toFixed(2)} · critical ${mediaCost.thresholds.criticalUsd.toFixed(2)}.</Notice> : null}
     {mayViewCostTelemetry ? <Card>
       <div className="card-title"><div><h2>ZEGO daily media telemetry</h2><p>Server-observed minutes. Face passive RTC should remain zero after paid streaming routing is activated.</p></div></div>
-      <div className="scope-lock">Active now: <b>{formatNumber(mediaCost.current.activeRtcUsers)} RTC users</b> · Face RTC viewers <b>{formatNumber(mediaCost.current.activeFaceRtcViewers)}</b> · Party RTC users <b>{formatNumber(mediaCost.current.activePartyRtcUsers)}</b></div>
+      <div className="scope-lock">Active now: <b>{formatNumber(mediaCost.current.activeRtcUsers)} RTC users</b> · Face passive RTC <b>{formatNumber(mediaCost.current.activeFaceRtcViewers)}</b> · Party speakers <b>{formatNumber(mediaCost.current.activePartyRtcSpeakers)}</b> · Party passive RTC <b>{formatNumber(mediaCost.current.activePartyRtcListeners)}</b></div>
       {mediaCost.days.length ? <div className="table-scroll"><table><thead><tr><th>Date</th><th>RTC voice</th><th>RTC video</th><th>Estimated spend</th><th>Face stream</th><th>Party stream</th><th>Mixer</th><th>Passive RTC current/peak</th><th>Peak concurrency</th></tr></thead><tbody>{mediaCost.days.map((day) => <tr key={day.date}>
         <td data-label="Date">{String(day.date).slice(0, 10)}</td>
         <td data-label="RTC voice">{formatNumber(Math.round(day.rtcVoiceSeconds / 60))} min</td>

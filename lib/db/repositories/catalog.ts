@@ -385,10 +385,14 @@ export async function saveRoomFeatureSettings(input: {
   faceL3Enabled: boolean;
   faceL3ReviewerOnly: boolean;
   nazraaNaturalBeautyEnabled: boolean;
+  nazraaNaturalBeautyReviewerQaEnabled: boolean;
   nazraaNaturalBeautyLandmarksEnabled: boolean;
   nazraaNaturalBeautyDefaultStrength: number;
   passiveEventDelaySeconds: number;
   partyStreamingThreshold: number;
+  passiveRtcAllowed: boolean;
+  maxGlobalRtcParticipants: number;
+  mediaPublishingEnabled: boolean;
   faceCdnKeepWarmWhileHostLive: boolean;
   facePassivePlaybackProtocol: "hls" | "flv";
   paidMediaRoutingEnabled: boolean;
@@ -451,10 +455,14 @@ export async function saveRoomFeatureSettings(input: {
           faceL3Enabled: input.faceL3Enabled,
           faceL3ReviewerOnly: input.faceL3ReviewerOnly,
           nazraaNaturalBeautyEnabled: input.nazraaNaturalBeautyEnabled,
+          nazraaNaturalBeautyReviewerQaEnabled: input.nazraaNaturalBeautyReviewerQaEnabled,
           nazraaNaturalBeautyLandmarksEnabled: input.nazraaNaturalBeautyLandmarksEnabled,
           nazraaNaturalBeautyDefaultStrength: input.nazraaNaturalBeautyDefaultStrength,
           passiveEventDelaySeconds: input.passiveEventDelaySeconds,
           partyStreamingThreshold: input.partyStreamingThreshold,
+          passiveRtcAllowed: input.passiveRtcAllowed,
+          maxGlobalRtcParticipants: input.maxGlobalRtcParticipants,
+          mediaPublishingEnabled: input.mediaPublishingEnabled,
           faceCdnKeepWarmWhileHostLive: input.faceCdnKeepWarmWhileHostLive,
           facePassivePlaybackProtocol: input.facePassivePlaybackProtocol,
           paidMediaRoutingEnabled: input.paidMediaRoutingEnabled,

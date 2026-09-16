@@ -44,6 +44,16 @@ function enabled(value: unknown) {
   return value === true || value === 1 || value === "1" || value === "true";
 }
 
+function mixerErrorCategory(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (/timeout|timed out|abort/.test(message)) return "provider_timeout";
+  if (/secret|app id|activation gate|configuration/.test(message)) {
+    return "server_configuration";
+  }
+  if (/startmix|stopmix|zego/.test(message)) return "provider_request_rejected";
+  return "mixer_sync_failed";
+}
+
 /**
  * Server-only ZEGO StartMix/StopMix adapter.
  *
@@ -178,6 +188,11 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   // lets Master validate the exact Party CDN path without inventing members.
   const threshold = Math.max(1, Math.min(200, Number(features.partyStreamingThreshold ?? 9)));
   const featureEnabled = enabled(features.streamMixingEnabled);
+  // Passive RTC consumes billable participant minutes even without a mic or
+  // subscription. In normal production the first Party listener therefore
+  // starts the CDN output; the old threshold is available only behind the
+  // audited break-glass switch.
+  const passiveRtcAllowed = enabled(features.passiveRtcAllowed);
   const playbackRequested = room.room_type === "PARTY"
     ? features.partyPassivePlaybackMode === "live_streaming"
     : features.facePassivePlaybackMode === "live_streaming";
@@ -262,7 +277,7 @@ async function preparePlan(roomCode: string): Promise<MixerPlan | null> {
   const hasHost = localPublishers.some((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role));
   const shouldRun = room.status !== "ENDED" && featureEnabled && playbackRequested && hasHost &&
     (room.room_type === "PARTY"
-      ? passiveCount >= threshold
+      ? passiveRtcAllowed ? passiveCount >= threshold : passiveCount > 0
       : keepFaceCdnWarmWhileHostLive || passiveCount > 0);
   const hostCount = orderedPublishers.filter((member) => ["HOST", "PARTY_OWNER"].includes(member.media_role)).length;
   let hostIndex = 0;
@@ -397,6 +412,13 @@ export async function syncZegoRoomMixer(roomCode: string) {
        WHERE room_id = ? AND sequence_number = ?`,
       [message, plan.roomId, plan.sequence],
     );
+    // Keep provider details in the protected DB diagnostic, but make the
+    // operational category observable in release logs. This never reaches a
+    // mobile response and intentionally excludes URLs, tokens and secrets.
+    console.warn("ZEGO mixer sync failed", {
+      roomCode,
+      category: mixerErrorCategory(error),
+    });
     return { status: "error" as const };
   }
 }
