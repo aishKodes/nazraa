@@ -103,7 +103,10 @@ import { authorizeRoomRtc } from "@/lib/services/room-media-authority";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
 import { verifyGooglePlayCoinPurchase } from "@/lib/db/repositories/mobile-play-billing";
 import { traceMobileRequest } from "@/lib/observability/mobile-latency-context";
-import { persistMobileLatency } from "@/lib/observability/mobile-latency-store";
+import {
+  persistMobileLatency,
+  persistRoomJoinLatency,
+} from "@/lib/observability/mobile-latency-store";
 import {
   classifyFaceLiveStartFailure,
   recordFaceLiveStartOutcome,
@@ -1534,6 +1537,22 @@ export async function POST(
           remoteHostId: authorization.remoteHostId,
           receiveHostAudio: authorization.receiveHostAudio,
         });
+      }
+      if (resource === "room-join-latency") {
+        const parsed = z
+          .object({
+            provider: z.enum(["livekit", "zego", "unknown"]),
+            outcome: z.enum(["success", "failed"]),
+            shellMs: z.number().int().min(0).max(120_000).optional(),
+            roomJoinMs: z.number().int().min(0).max(120_000).optional(),
+            mediaBootstrapMs: z.number().int().min(0).max(120_000).optional(),
+            connectedMs: z.number().int().min(0).max(120_000).optional(),
+            firstAudioMs: z.number().int().min(0).max(120_000).optional(),
+            firstVideoMs: z.number().int().min(0).max(120_000).optional(),
+          })
+          .parse(body);
+        after(() => persistRoomJoinLatency(parsed));
+        return NextResponse.json({ accepted: true }, { status: 202 });
       }
       return errorResponse(new Error("Mobile mutation not found."), 404);
     } catch (error) {
