@@ -10,24 +10,34 @@ export type PublicRelease = {
 };
 
 const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
+const releaseVersion = "2.4.52";
+const releaseBuild = 7364;
+const releaseApkUrl =
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.52/Nazraa-Live-2.4.52-7364.apk";
+
+// A stale environment URL must never make the public download page point to
+// the previous binary after a production release. Operations can still host
+// the matching build elsewhere, but its versioned GitHub path must agree with
+// this release before it overrides the verified default asset.
+const matchingConfiguredApkUrl =
+  configuredApkUrl && configuredApkUrl.includes(`/v${releaseVersion}/`)
+    ? configuredApkUrl
+    : null;
 
 // This is the single source of truth for the public site and the future
 // in-app update check. Hosting can move from GitHub Releases to a branded CDN
 // by changing only NAZRAA_LATEST_APK_URL, not any component or mobile build.
 export const latestPublicRelease: PublicRelease = {
-  version: "2.4.51",
-  build: 7363,
-  apkUrl:
-    configuredApkUrl && /^https:\/\//.test(configuredApkUrl)
-      ? configuredApkUrl
-      : null,
+  version: releaseVersion,
+  build: releaseBuild,
+  apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 300_505_577,
-  sha256: "272d6bb8e81b8bd2534fd855f414e33883f5d51e24108115462e2eeb3b4207f7",
-  releaseDate: "2026-09-16",
+  sha256: "525fc9ff30283b1b0cfd04f6d9af97f908381043f64875673b64b29fd1a68e9c",
+  releaseDate: "2026-09-17",
   releaseNotes: [
-    "Moves new Face and Party rooms to Nazraa's self-hosted LiveKit media service.",
-    "Keeps passive viewers subscribe-only and grants microphone publishing only after server approval.",
-    "Adds authenticated provider media evidence to the existing Live-session reward ledger.",
+    "Makes Face audio-guest publishing server-authoritative and confirms the microphone before announcing the join.",
+    "Keeps Face and Party boards open through recoverable membership and presence transitions.",
+    "Improves LiveKit portrait capture and keeps active broadcasters awake while they publish.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
