@@ -10,10 +10,12 @@ export type PublicRelease = {
 };
 
 const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
-const releaseVersion = "2.4.55";
-const releaseBuild = 7367;
+// Keep the public channel on the last verified APK while the next release
+// asset finishes uploading. This avoids serving a versioned 404 from /download.
+const releaseVersion = "2.4.54";
+const releaseBuild = 7366;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.55/Nazraa-Live-2.4.55-7367.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.54/Nazraa-Live-2.4.54-7366.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -31,13 +33,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 301_595_227,
-  sha256: "b5bbed0852a24d93e4e570ddfe063dfbcdd3625cace02a3f285881358a3958c0",
+  apkSizeBytes: 300_489_149,
+  sha256: "c63ff83a16e19d8945d8100a532ed5f695fff820158b5e1da5e12560ad6b420c",
   releaseDate: "2026-09-17",
   releaseNotes: [
-    "Adds an indexed Daily Top Winners board using real, settled, net-positive game results from the current server day.",
-    "Makes every enabled game retain its latest 10 settled results without blocking active play.",
-    "Refines Teen Patti, Luck77, Greedy King, Bounty Football, and Game Center presentation while preserving LiveKit, rewards, chat, and gifting.",
+    "Hardens the fail-open LiveKit camera beauty renderer and validates its exact external-texture shader on Android.",
+    "Normal camera publishing continues unchanged if optional on-device beauty cannot run.",
+    "Keeps LiveKit room access, rewards, games, chat, and gifting unchanged.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
