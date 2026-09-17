@@ -10,12 +10,13 @@ export type PublicRelease = {
 };
 
 const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
-// Keep the public channel on the last verified APK while the next release
-// asset finishes uploading. This avoids serving a versioned 404 from /download.
-const releaseVersion = "2.4.54";
-const releaseBuild = 7366;
+// This release points only to the uploaded, verified public APK. Keeping the
+// version, asset path and checksum together prevents an update endpoint from
+// ever advertising a binary that is not available for download.
+const releaseVersion = "2.4.55";
+const releaseBuild = 7367;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.54/Nazraa-Live-2.4.54-7366.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.55/Nazraa-Live-2.4.55-7367.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -33,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 300_489_149,
-  sha256: "c63ff83a16e19d8945d8100a532ed5f695fff820158b5e1da5e12560ad6b420c",
-  releaseDate: "2026-09-17",
+  apkSizeBytes: 145_548_789,
+  sha256: "89842fa16b462170edd833fb39e2328eb95830930707555b4d0dc6e00e5f613f",
+  releaseDate: "2026-09-18",
   releaseNotes: [
-    "Hardens the fail-open LiveKit camera beauty renderer and validates its exact external-texture shader on Android.",
-    "Normal camera publishing continues unchanged if optional on-device beauty cannot run.",
-    "Keeps LiveKit room access, rewards, games, chat, and gifting unchanged.",
+    "Adds the daily net-positive Top Winners board, limited to the current Nazraa business day.",
+    "Keeps the last 10 settled results available across every enabled game without blocking play.",
+    "Refines Game Center, Teen Patti Pro, Luck77, Greedy King, and Bounty Football presentation.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
