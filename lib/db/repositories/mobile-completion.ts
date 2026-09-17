@@ -2329,8 +2329,16 @@ export async function refreshRoomPresence(
         ? String(pkSession.target_room_id)
         : String(pkSession.source_room_id)
       : null;
+    // A PK never merges the two Nazraa rooms.  Only the publishing Host needs
+    // the peer identities, exclusively to apply LiveKit's server-enforced
+    // per-track subscription policy.  Returning this list to spectators would
+    // disclose the other team's local membership/activity even though their
+    // bridge token can only view the opposing Host camera.
+    const needsPkPeerMediaPolicy = Boolean(pkPeerRoomId) &&
+      rows[0].room_role === "OWNER" &&
+      ["HOST", "PARTY_OWNER"].includes(currentMediaRole);
     let pkPeerMembers: RowDataPacket[] = [];
-    if (pkPeerRoomId) {
+    if (needsPkPeerMediaPolicy && pkPeerRoomId) {
       const [members] = await connection.query<RowDataPacket[]>(
         `SELECT user.public_id
          FROM live_room_members member
@@ -2441,9 +2449,9 @@ export async function refreshRoomPresence(
             sourceStreamId: `${String(pkSession.source_room_code)}_${String(pkSession.source_host_public_id)}_main`,
             targetStreamId: `${String(pkSession.target_room_code)}_${String(pkSession.target_host_public_id)}_main`,
             isSourceRoom: String(pkSession.source_room_code) === roomCode,
-            // Only the IDs are needed by the publishing Host to set LiveKit
-            // track-level PK subscription permissions; no chat or profile
-            // payload is bridged across teams.
+            // Present only to the local publishing Host.  The IDs are used to
+            // configure LiveKit's server-side per-track subscriptions; no
+            // guest membership, chat, seat, or profile payload crosses teams.
             peerParticipantIds: pkPeerMembers.map((member) =>
               String(member.public_id),
             ),
