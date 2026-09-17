@@ -2520,7 +2520,19 @@ async function main() {
         "UPDATE game_shared_rounds SET betting_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND), drawing_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 SECOND) WHERE id = ?",
         [before.round.id],
       );
-      const settled = await product.gameSharedRoundState(owner, game);
+      let settled = await product.gameSharedRoundState(owner, game);
+      // A verification run can cross a real global-round boundary between the
+      // optimistic wager and the first state refresh. Re-close the returned
+      // server round once rather than relying on wall-clock timing in the
+      // soak. This still uses the production settlement path and never
+      // fabricates an outcome.
+      if (!settled.outcome || !settled.settlement) {
+        await root.execute(
+          "UPDATE game_shared_rounds SET betting_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND), drawing_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 SECOND) WHERE id = ?",
+          [settled.round.id],
+        );
+        settled = await product.gameSharedRoundState(owner, game);
+      }
       assert.ok(settled.outcome, `${game} must reveal one server outcome`);
       assert.ok(settled.settlement, `${game} must settle the user's wager`);
       assert.equal(
@@ -2745,6 +2757,49 @@ async function main() {
       );
       assert.ok([5, 10, 15, 25, 45].includes(Number(round.outcome.multiplier)));
     }
+    // Advance the exact same server settlement path through 15 distinct
+    // complete rounds for every shared game. The verification database has no
+    // wall-clock wait: after a result is settled, retire only its temporary
+    // round number so ensureSharedRound creates the next isolated QA round.
+    // Production rows are never manipulated by this script.
+    await root.execute(
+      "UPDATE wallet_balances SET available_balance = 2000000 WHERE owner_id = ? AND asset_type = 'COIN'",
+      [owner.userId],
+    );
+    const sharedSoakInputs: ReadonlyArray<{
+      game: "teen_patti_pro" | "luck77" | "bounty_football" | "greedy_king" | "greedy_lion";
+      bets: Record<string, number>;
+    }> = [
+      { game: "teen_patti_pro" as const, bets: { "0": 500, "1": 0, "2": 0, crown: 500 } },
+      { game: "luck77" as const, bets: { watermelon: 500, seven: 0, plum: 0 } },
+      { game: "bounty_football" as const, bets: { "0": 500, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 } },
+      { game: "greedy_king" as const, bets: { "0": 500, "1": 500, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 } },
+      { game: "greedy_lion" as const, bets: { "0": 500, "1": 500, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0 } },
+    ];
+    for (const definition of sharedSoakInputs) {
+      // The earlier feature checks may have already settled the live
+      // wall-clock round for this temporary user. Retire that completed QA
+      // round first so the first soak iteration cannot attach a second wager
+      // to an already-settled round.
+      const existing = await product.gameSharedRoundState(owner, definition.game);
+      await root.execute(
+        "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
+        ["9000000000000000000", existing.round.id, definition.game],
+      );
+      for (let roundIndex = 0; roundIndex < 15; roundIndex += 1) {
+        const settled = await completeSharedRound(definition.game, definition.bets);
+        assert.ok(Number.isSafeInteger(settled.settlement.payout));
+        // round_number is unsigned; this reserved high QA range is unique per
+        // game and makes the next state call create a fresh current round.
+        await root.execute(
+          "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
+          [`9000000000000000${String(roundIndex + 1).padStart(3, "0")}`, settled.round.id, definition.game],
+        );
+      }
+      const history = await product.gameRoundHistory(owner, definition.game, 10);
+      assert.equal(history.rounds.length, 10, `${definition.game} must retain exactly its latest 10 settled rounds after the soak`);
+    }
+    console.log("PASS shared games: 15 complete server-authoritative result/settlement/history transitions per shared game");
     const postGameBootstrap = await product.mobileBootstrap(owner);
     assert.equal(
       postGameBootstrap.wallet.diamonds,
