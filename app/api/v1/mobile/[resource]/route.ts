@@ -432,9 +432,15 @@ export async function GET(
         // between games and could surface net losses.  Keep the API as the
         // single source of truth as well as the client UI: top positive
         // settled winnings for the current business day only.
-        const period = z.literal("daily").default("daily").parse(
-          parameters.get("period") ?? undefined,
-        );
+        // Accept legacy client values during rollout, but intentionally map
+        // every request to the single daily positive-winner view.  This keeps
+        // an older APK from surfacing an avoidable request error while it is
+        // being replaced by the daily-only UI.
+        z
+          .enum(["round", "daily", "weekly", "monthly"])
+          .optional()
+          .parse(parameters.get("period") ?? undefined);
+        const period = "daily" as const;
         return NextResponse.json(
           await gameRoundLeaderboard(game, limit, period),
           { headers: { "Cache-Control": "private, no-store" } },
