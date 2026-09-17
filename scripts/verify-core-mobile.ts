@@ -2533,6 +2533,30 @@ async function main() {
         );
         settled = await product.gameSharedRoundState(owner, game);
       }
+      // A genuine 15-second production round may cross into N+1 after the
+      // authoritative settlement for N has completed.  In that valid case
+      // the mobile contract intentionally returns N+1 as `round` and N as
+      // `latestSettlement`, so clients can render the just-finished result
+      // without pretending that N+1 is settled.  Exercise that contract in
+      // the soak instead of treating the clock boundary as a failed wager.
+      if (
+        (!settled.outcome || !settled.settlement) &&
+        settled.latestSettlement?.roundId === before.round.id
+      ) {
+        settled = {
+          ...settled,
+          round: {...settled.round, id: before.round.id},
+          outcome: settled.latestSettlement.outcome,
+          settlement: {
+            wager: settled.latestSettlement.wager,
+            grossPayout: settled.latestSettlement.grossPayout,
+            deduction: settled.latestSettlement.deduction,
+            payout: settled.latestSettlement.payout,
+            balance: settled.latestSettlement.balance,
+            settledAt: settled.latestSettlement.settledAt,
+          },
+        };
+      }
       assert.ok(settled.outcome, `${game} must reveal one server outcome`);
       assert.ok(settled.settlement, `${game} must settle the user's wager`);
       assert.equal(
@@ -2805,7 +2829,7 @@ async function main() {
         "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
         ["9000000000000000000", existing.round.id, definition.game],
       );
-      for (let roundIndex = 0; roundIndex < 15; roundIndex += 1) {
+      for (let roundIndex = 0; roundIndex < 20; roundIndex += 1) {
         const settled = await completeSharedRound(definition.game, definition.bets);
         assert.ok(Number.isSafeInteger(settled.settlement.payout));
         // round_number is unsigned; this reserved high QA range is unique per
@@ -2818,7 +2842,7 @@ async function main() {
       const history = await product.gameRoundHistory(owner, definition.game, 10);
       assert.equal(history.rounds.length, 10, `${definition.game} must retain exactly its latest 10 settled rounds after the soak`);
     }
-    console.log("PASS shared games: 15 complete server-authoritative result/settlement/history transitions per shared game");
+    console.log("PASS shared games: 20 complete server-authoritative result/settlement/history transitions per shared game");
     const postGameBootstrap = await product.mobileBootstrap(owner);
     assert.equal(
       postGameBootstrap.wallet.diamonds,
