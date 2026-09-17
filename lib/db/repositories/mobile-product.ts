@@ -2382,24 +2382,29 @@ export async function gameRoundLeaderboard(
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
   const { timezone } = await loadFaceLiveRules();
   const businessDate = gameBusinessDate(timezone);
-  // Read only the compact settlement projection.  The projection holds every
-  // accepted wager and settled payout from the current business day, so this
-  // is a true multi-round net-positive ranking rather than a current-round
-  // feed or an expensive scan over game history.
+  // Read only the compact settlement projection. The Game Center ranking is
+  // intentionally one daily, all-games board: a user's settled wins and
+  // losses from every enabled game aggregate before the positive-net filter
+  // is applied. The legacy `game` argument remains validated for API
+  // compatibility with shipped clients, but must never fragment this board
+  // into misleading per-game winner lists.
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.avatar_url,
             avatar.updated_at avatar_updated_at, user.country_code,
-            summary.rounds_won rounds, summary.total_wager, summary.total_payout,
-            summary.daily_net_profit net_winnings
+            SUM(summary.rounds_won) rounds,
+            SUM(summary.total_wager) total_wager,
+            SUM(summary.total_payout) total_payout,
+            SUM(summary.daily_net_profit) net_winnings
      FROM game_daily_winner_summaries summary
      INNER JOIN application_users user ON user.id = summary.application_user_id
      LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-     WHERE summary.game_name = ? AND summary.business_date = ?
-       AND summary.daily_net_profit > 0
-     ORDER BY summary.daily_net_profit DESC, summary.total_payout DESC,
-              summary.updated_at ASC, user.public_id
+     WHERE summary.business_date = ?
+     GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
+              avatar.updated_at, user.country_code
+     HAVING SUM(summary.daily_net_profit) > 0
+     ORDER BY net_winnings DESC, total_payout DESC, user.public_id
      LIMIT ?`,
-    [game, businessDate, Math.max(1, Math.min(20, limit))],
+    [businessDate, Math.max(1, Math.min(20, limit))],
   );
   return {
     period,

@@ -2705,6 +2705,25 @@ async function main() {
       ),
       "The public leaderboard never presents a losing player as a winner",
     );
+    const [leaderboardProjection] = await root.query<
+      (RowDataPacket & { public_id: string; net_winnings: number })[]
+    >(
+      `SELECT user.public_id, SUM(summary.daily_net_profit) net_winnings
+       FROM game_daily_winner_summaries summary
+       INNER JOIN application_users user ON user.id = summary.application_user_id
+       WHERE summary.business_date = (
+         SELECT MAX(business_date) FROM game_daily_winner_summaries
+       )
+       GROUP BY user.id, user.public_id
+       HAVING SUM(summary.daily_net_profit) > 0
+       ORDER BY net_winnings DESC, user.public_id
+       LIMIT 20`,
+    );
+    assert.deepEqual(
+      teenLeaderboard.entries.map((entry) => [entry.publicId, entry.netWinnings]),
+      leaderboardProjection.map((entry) => [String(entry.public_id), Number(entry.net_winnings)]),
+      "Daily Top Winners must aggregate a player's net result across all games before filtering/ranking",
+    );
     const spectatorTeenRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
       game: "teen_patti_pro",
