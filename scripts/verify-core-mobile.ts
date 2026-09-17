@@ -2564,6 +2564,42 @@ async function main() {
       gameRound.round.id,
       "a settled Luck77 wager must remain recoverable even if the client misses RESULT",
     );
+    const [luckContributionRows] = await root.query<
+      (RowDataPacket & { total: number; net_profit: number })[]
+    >(
+      `SELECT COUNT(*) total, MAX(contribution.net_profit) net_profit
+       FROM game_daily_winner_contributions contribution
+       INNER JOIN game_shared_settlements settlement
+         ON settlement.result_record_id = contribution.result_record_id
+       WHERE settlement.round_id = ? AND settlement.application_user_id = ?`,
+      [gameRound.round.id, owner.userId],
+    );
+    assert.equal(
+      Number(luckContributionRows[0]?.total),
+      1,
+      "one settled shared result must create exactly one daily-ranking contribution",
+    );
+    assert.equal(
+      Number(luckContributionRows[0]?.net_profit),
+      Number(gameRound.settlement.payout) - Number(gameRound.settlement.wager),
+      "the daily ranking contribution must use settled net profit, never total wager or wallet balance",
+    );
+    await product.gameSharedRoundState(owner, "luck77");
+    const [luckContributionRetryRows] = await root.query<
+      (RowDataPacket & { total: number })[]
+    >(
+      `SELECT COUNT(*) total
+       FROM game_daily_winner_contributions contribution
+       INNER JOIN game_shared_settlements settlement
+         ON settlement.result_record_id = contribution.result_record_id
+       WHERE settlement.round_id = ? AND settlement.application_user_id = ?`,
+      [gameRound.round.id, owner.userId],
+    );
+    assert.equal(
+      Number(luckContributionRetryRows[0]?.total),
+      1,
+      "a shared state retry must not count a daily winner twice",
+    );
     const sharedTeenRound = await completeSharedRound("teen_patti_pro", {
       "0": 500,
       "1": 0,

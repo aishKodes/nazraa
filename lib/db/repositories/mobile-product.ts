@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
-import type { PoolConnection, RowDataPacket } from "mysql2/promise";
+import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withIdempotentTransaction, withTransaction } from "@/lib/db/transaction";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
@@ -17,7 +17,6 @@ import {
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import {
-  businessDayUtcRange,
   evaluateFaceLiveSchedule,
   loadFaceLiveRules,
 } from "@/lib/services/live-business-policy";
@@ -1136,6 +1135,94 @@ async function gameSettings(connection: PoolConnection) {
   return mobileGamesConfig(rows[0]?.setting_value);
 }
 
+/**
+ * The public game ranking is intentionally a *daily net positive profit*
+ * ranking: accepted wager is subtracted from settled payout across every
+ * completed round in the configured Nazraa business day.  It prevents a
+ * player who has lost more than they won from being presented as a winner.
+ *
+ * Keep this formatting in Node rather than MySQL: production database
+ * connections use UTC and managed MySQL hosts are not guaranteed to ship IANA
+ * timezone tables.
+ */
+function gameBusinessDate(timezone: string, at = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(at);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value;
+  const year = part("year");
+  const month = part("month");
+  const day = part("day");
+  if (!year || !month || !day) throw new Error("The game business date is unavailable.");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Adds one immutable game result to the indexed daily ranking projection.
+ * The contribution's primary key is the result ID, therefore settlement
+ * retries and reconciliation are safe: only the first transaction updates
+ * the summary.
+ */
+async function recordDailyGameWinnerSummary(
+  connection: PoolConnection,
+  input: {
+    resultId: string;
+    game: string;
+    userId: string;
+    wager: number;
+    payout: number;
+    settledAt: Date;
+    timezone: string;
+  },
+) {
+  if (input.wager <= 0) return;
+  const netProfit = input.payout - input.wager;
+  const roundsWon = input.payout > input.wager ? 1 : 0;
+  const [contribution] = await connection.execute<ResultSetHeader>(
+    `INSERT IGNORE INTO game_daily_winner_contributions
+       (result_record_id, game_name, application_user_id, business_date,
+        wager_total, payout_total, net_profit, rounds_won, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      input.resultId,
+      input.game,
+      input.userId,
+      gameBusinessDate(input.timezone, input.settledAt),
+      input.wager,
+      input.payout,
+      netProfit,
+      roundsWon,
+      input.settledAt,
+    ],
+  );
+  if (contribution.affectedRows !== 1) return;
+  await connection.execute(
+    `INSERT INTO game_daily_winner_summaries
+       (game_name, business_date, application_user_id, daily_net_profit,
+        total_wager, total_payout, rounds_won)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       daily_net_profit = daily_net_profit + VALUES(daily_net_profit),
+       total_wager = total_wager + VALUES(total_wager),
+       total_payout = total_payout + VALUES(total_payout),
+       rounds_won = rounds_won + VALUES(rounds_won),
+       updated_at = CURRENT_TIMESTAMP(3)`,
+    [
+      input.game,
+      gameBusinessDate(input.timezone, input.settledAt),
+      input.userId,
+      netProfit,
+      input.wager,
+      input.payout,
+      roundsWon,
+    ],
+  );
+}
+
 function enforcePayoutCap(result: ServerGameOutcome, config?: GameRuntimeConfig) {
   if (!config || result.wager <= 0) return result;
   const maximumPayout = Math.floor(result.wager * config.maximumPayoutMultiplier);
@@ -1732,6 +1819,7 @@ async function settleMaturedSharedRounds(
   game: SharedRoundGame,
   priorityUserId: string,
   settings: MobileGamesConfig,
+  businessTimezone: string,
 ) {
   const gameConfig = settings.games[game];
   const [pairs] = await connection.query<(RowDataPacket & { round_id: string; application_user_id: string })[]>(
@@ -1815,12 +1903,22 @@ async function settleMaturedSharedRounds(
       ...finalizedOutcome, ...result.outcome, sharedRoundId: round.id, roundNumber: Number(round.round_number),
       grossPayout, winningsDeduction: deduction, winningsDeductionRate: deductionRate, netPayout: payout,
     };
+    const settledAt = new Date();
     await connection.execute(
       `INSERT INTO game_round_results
-        (id, client_round_id, application_user_id, game_name, bets_json, outcome_json, wager_total, payout_total, balance_after)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [resultId, clientRoundId, pair.application_user_id, game, JSON.stringify(bets), JSON.stringify(fullOutcome), result.wager, payout, balanceAfter],
+        (id, client_round_id, application_user_id, game_name, bets_json, outcome_json, wager_total, payout_total, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [resultId, clientRoundId, pair.application_user_id, game, JSON.stringify(bets), JSON.stringify(fullOutcome), result.wager, payout, balanceAfter, settledAt],
     );
+    await recordDailyGameWinnerSummary(connection, {
+      resultId,
+      game,
+      userId: pair.application_user_id,
+      wager: result.wager,
+      payout,
+      settledAt,
+      timezone: businessTimezone,
+    });
     await connection.execute(
       `INSERT INTO game_shared_settlements
         (id, round_id, application_user_id, wager_total, gross_payout, deduction_total, payout_total, balance_after, result_record_id)
@@ -1980,7 +2078,8 @@ export async function gameSharedRoundState(identity: MobileIdentity, gameValue: 
   const game = sharedGame(gameValue);
   return withTransaction(async (connection) => {
     const settings = await gameSettings(connection);
-    await settleMaturedSharedRounds(connection, game, identity.userId, settings);
+    const { timezone } = await loadFaceLiveRules(connection);
+    await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
     const now = new Date();
     const config = settings.games[game];
     const round = await ensureSharedRound(connection, game, config, now);
@@ -1995,7 +2094,8 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
   const bets = canonicalBets(input.bets);
   return withTransaction(async (connection) => {
     const settings = await gameSettings(connection);
-    await settleMaturedSharedRounds(connection, game, identity.userId, settings);
+    const { timezone } = await loadFaceLiveRules(connection);
+    await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
     const now = new Date();
     const config = settings.games[game];
     const round = await ensureSharedRound(connection, game, config, now);
@@ -2123,6 +2223,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
       "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
     );
     const mobileGames = mobileGamesConfig(gameSettingRows[0]?.setting_value);
+    const { timezone } = await loadFaceLiveRules(connection);
     const rules = gameEconomyRules(mobileGames);
     const runtimeConfig = mobileGames.games[input.game as ConfigurableGameId];
     if (runtimeConfig && !runtimeConfig.enabled) throw new Error("This game is currently disabled.");
@@ -2191,6 +2292,15 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [id, input.clientRoundId, identity.userId, input.game, JSON.stringify(bets), JSON.stringify(result.outcome), result.wager, result.payout, after, now],
     );
+    await recordDailyGameWinnerSummary(connection, {
+      resultId: id,
+      game: input.game,
+      userId: identity.userId,
+      wager: result.wager,
+      payout: result.payout,
+      settledAt: now,
+      timezone,
+    });
     if (runtimeConfig && result.payout >= runtimeConfig.bigWinThreshold) {
       await connection.execute(
         `INSERT IGNORE INTO game_big_winner_events
@@ -2271,27 +2381,25 @@ export async function gameRoundLeaderboard(
 ) {
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
   const { timezone } = await loadFaceLiveRules();
-  const { startsAt, endsAt } = businessDayUtcRange(timezone);
-  // Only a genuinely positive settled net result earns a place; a large wager
-  // followed by a loss must never appear as a public "winner".
-  const periodFilter = "result.created_at >= ? AND result.created_at < ?";
+  const businessDate = gameBusinessDate(timezone);
+  // Read only the compact settlement projection.  The projection holds every
+  // accepted wager and settled payout from the current business day, so this
+  // is a true multi-round net-positive ranking rather than a current-round
+  // feed or an expensive scan over game history.
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.avatar_url,
             avatar.updated_at avatar_updated_at, user.country_code,
-            COUNT(*) rounds, SUM(result.wager_total) total_wager,
-            SUM(result.payout_total) total_payout,
-            SUM(CAST(result.payout_total AS SIGNED) - CAST(result.wager_total AS SIGNED)) net_winnings
-     FROM game_round_results result
-     INNER JOIN application_users user ON user.id = result.application_user_id
+            summary.rounds_won rounds, summary.total_wager, summary.total_payout,
+            summary.daily_net_profit net_winnings
+     FROM game_daily_winner_summaries summary
+     INNER JOIN application_users user ON user.id = summary.application_user_id
      LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-     WHERE result.game_name = ? AND result.wager_total > 0
-       AND ${periodFilter}
-     GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
-              avatar.updated_at, user.country_code
-     HAVING net_winnings > 0
-     ORDER BY net_winnings DESC, total_payout DESC, MIN(result.created_at), user.public_id
+     WHERE summary.game_name = ? AND summary.business_date = ?
+       AND summary.daily_net_profit > 0
+     ORDER BY summary.daily_net_profit DESC, summary.total_payout DESC,
+              summary.updated_at ASC, user.public_id
      LIMIT ?`,
-    [game, startsAt, endsAt, Math.max(1, Math.min(20, limit))],
+    [game, businessDate, Math.max(1, Math.min(20, limit))],
   );
   return {
     period,
