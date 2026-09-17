@@ -205,6 +205,7 @@ async function main() {
     const social = await import("@/lib/db/repositories/mobile-social");
     const rooms = await import("@/lib/db/repositories/mobile-completion");
     const mediaAuthority = await import("@/lib/services/room-media-authority");
+    const liveKitAuthority = await import("@/lib/services/livekit-room-authority");
     const rewards = await import("@/lib/db/repositories/mobile-rewards");
     const cosmetics = await import("@/lib/db/repositories/mobile-cosmetics");
     const catalog = await import("@/lib/db/repositories/catalog");
@@ -1195,6 +1196,79 @@ async function main() {
     });
     await rooms.joinLiveRoom(guest, faceRoomCode);
     await rooms.joinLiveRoom(stranger, faceRoomCode);
+    // Regression for the historical Face-board drop: a viewer membership can
+    // be briefly absent while presence/realtime reconnects.  That must be a
+    // recoverable rejoin state, never an authoritative Host/room close. Run
+    // enough cycles to exercise the same join/leave churn that previously
+    // made an already-live board disappear.
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      await root.execute(
+        `UPDATE live_room_members member
+         INNER JOIN live_rooms room ON room.id = member.room_id
+         SET member.left_at = CURRENT_TIMESTAMP(3)
+         WHERE room.room_code = ? AND member.application_user_id = ?`,
+        [faceRoomCode, guest.userId],
+      );
+      const recoveringPresence = await rooms.refreshRoomPresence(
+        guest,
+        faceRoomCode,
+      );
+      assert.equal(recoveringPresence.active, false);
+      assert.equal(recoveringPresence.terminal, false);
+      assert.equal(recoveringPresence.closeReason, "MEMBERSHIP_RECOVERING");
+      await rooms.joinLiveRoom(guest, faceRoomCode);
+      const recoveredPresence = await rooms.refreshRoomPresence(
+        guest,
+        faceRoomCode,
+      );
+      assert.equal(recoveredPresence.active, true);
+    }
+    await rooms.recordRoomCloseAttempt(guest, {
+      roomCode: faceRoomCode,
+      closeReason: "MEMBERSHIP_RECOVERING",
+      triggerSource: "CORE_SOAK",
+      callerStack: "core soak only",
+      connectionPhase: "reconnecting",
+      publishing: false,
+      backendRoomState: "ACTIVE",
+      hostParticipantPresent: true,
+      participantCount: 3,
+    });
+    const [closeAttempts] = await root.query<RowDataPacket[]>(
+      `SELECT close_reason, trigger_source, backend_room_state,
+              host_participant_present, participant_count
+       FROM room_close_attempts
+       WHERE room_id = ? AND application_user_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [
+        (
+          await root.query<RowDataPacket[]>(
+            "SELECT id FROM live_rooms WHERE room_code = ? LIMIT 1",
+            [faceRoomCode],
+          )
+        )[0][0].id,
+        guest.userId,
+      ],
+    );
+    assert.deepEqual(
+      {
+        closeReason: closeAttempts[0]?.close_reason,
+        source: closeAttempts[0]?.trigger_source,
+        state: closeAttempts[0]?.backend_room_state,
+        hostPresent: Number(closeAttempts[0]?.host_participant_present),
+        participantCount: Number(closeAttempts[0]?.participant_count),
+      },
+      {
+        closeReason: "MEMBERSHIP_RECOVERING",
+        source: "CORE_SOAK",
+        state: "ACTIVE",
+        hostPresent: 1,
+        participantCount: 3,
+      },
+    );
+    console.log(
+      "PASS Face board resilience: 30 viewer membership recoveries remain non-terminal, rejoin the same active Face room, and emit bounded ROOM_CLOSE_ATTEMPT diagnostics",
+    );
     const hostMediaGrant = await mediaAuthority.authorizeRoomRtc(owner, {
       roomCode: faceRoomCode,
       canPublish: true,
@@ -2117,8 +2191,105 @@ async function main() {
     });
     assert.equal(loss.result, "loss");
     assert.equal(loss.streak, 0);
+    const databaseTimedSession = await rooms.createPkSession(owner, {
+      sourceRoomCode: sourceLiveCode,
+      targetRoomCode: targetLiveCode,
+      mode: "Classic",
+      durationMinutes: 5,
+    });
+    await rooms.respondPkSession(roomAdmin, {
+      sessionId: databaseTimedSession.id,
+      accept: true,
+    });
+    await rooms.joinLiveRoom(guest, sourceLiveCode);
+    await rooms.requestLiveCoHost(guest, sourceLiveCode);
+    await rooms.respondLiveCoHost(owner, {
+      roomCode: sourceLiveCode,
+      targetPublicId: guest.publicId,
+      accept: true,
+    });
+    await rooms.joinLiveRoom(stranger, targetLiveCode);
+    await rooms.requestLiveCoHost(stranger, targetLiveCode);
+    await rooms.respondLiveCoHost(roomAdmin, {
+      roomCode: targetLiveCode,
+      targetPublicId: stranger.publicId,
+      accept: true,
+    });
+    const hostPkBridge = await liveKitAuthority.authorizeLiveKitPkBridge(
+      owner,
+      { sessionId: databaseTimedSession.id, roomCode: sourceLiveCode },
+    );
+    const guestPkBridge = await liveKitAuthority.authorizeLiveKitPkBridge(
+      guest,
+      { sessionId: databaseTimedSession.id, roomCode: sourceLiveCode },
+    );
+    assert.equal(hostPkBridge.receiveHostAudio, true);
+    assert.equal(guestPkBridge.receiveHostAudio, false);
+    assert.equal(String(guestPkBridge.remoteHostId), roomAdmin.publicId);
+    const sourceTeamMessage = `source-team-${randomUUID()}`;
+    const targetTeamMessage = `target-team-${randomUUID()}`;
+    await rooms.sendRoomChat(guest, {
+      roomCode: sourceLiveCode,
+      body: sourceTeamMessage,
+      clientMessageId: randomUUID(),
+    });
+    await rooms.sendRoomChat(stranger, {
+      roomCode: targetLiveCode,
+      body: targetTeamMessage,
+      clientMessageId: randomUUID(),
+    });
+    const [sourceTeamPresence, targetTeamPresence] = await Promise.all([
+      rooms.refreshRoomPresence(owner, sourceLiveCode, true),
+      rooms.refreshRoomPresence(roomAdmin, targetLiveCode, true),
+    ]);
+    assert.equal(
+      sourceTeamPresence.messages?.some((item) => item.body === sourceTeamMessage),
+      true,
+      "the local PK team must receive its own private room chat",
+    );
+    assert.equal(
+      sourceTeamPresence.messages?.some((item) => item.body === targetTeamMessage),
+      false,
+      "the opposing PK team's private chat must never enter this room feed",
+    );
+    assert.equal(
+      targetTeamPresence.messages?.some((item) => item.body === targetTeamMessage),
+      true,
+      "the opposing PK team must receive its own private room chat",
+    );
+    assert.equal(
+      targetTeamPresence.messages?.some((item) => item.body === sourceTeamMessage),
+      false,
+      "this team's private chat must never cross the PK bridge",
+    );
+    await root.execute(
+      "UPDATE live_pk_sessions SET started_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 6 MINUTE) WHERE id = ?",
+      [databaseTimedSession.id],
+    );
+    await root.execute(
+      "INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 100)",
+      [
+        randomUUID(),
+        sourceRoomId,
+        owner.userId,
+        owner.userId,
+        giftCatalog[0].id,
+      ],
+    );
+    const databaseTimedPresence = await rooms.refreshRoomPresence(
+      owner,
+      sourceLiveCode,
+      true,
+    );
+    assert.equal(
+      databaseTimedPresence.pkSession,
+      null,
+      "a due PK must resolve from the backend clock, not a Flutter timer",
+    );
+    assert.equal(databaseTimedPresence.pkResult?.id, databaseTimedSession.id);
+    assert.equal(databaseTimedPresence.pkResult?.result, "win");
     console.log(
-      "PASS PK: invited Host authority, Accept/Reject lifecycle, requester synchronization, 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset",
+      "PASS PK: invited Host authority, server-clock completion/result, bridge audio grants, backend-enforced team chat isolation, Accept/Reject lifecycle, requester synchronization, 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset",
     );
 
     const identities = [owner, guest, roomAdmin];

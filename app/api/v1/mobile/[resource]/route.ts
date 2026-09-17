@@ -28,6 +28,7 @@ import {
   clearRoomChat,
   closePkSession,
   recordFacePresenceAutoStop,
+  recordRoomCloseAttempt,
   requestLiveCoHost,
   respondLiveCoHost,
   respondPkSession,
@@ -1099,6 +1100,31 @@ export async function POST(
           scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         }
         return NextResponse.json(result);
+      }
+      if (resource === "room-close-attempt") {
+        const parsed = z
+          .object({
+            roomCode: z.string().trim().min(3).max(80),
+            liveSessionId: z.string().uuid().nullable().optional(),
+            closeReason: z.string().trim().min(3).max(64),
+            triggerSource: z.string().trim().min(3).max(96),
+            callerStack: z.string().trim().min(1).max(512).nullable().optional(),
+            connectionPhase: z.enum([
+              "idle",
+              "connecting",
+              "connected",
+              "reconnecting",
+              "failed",
+              "ended",
+            ]),
+            publishing: z.boolean(),
+            backendRoomState: z.string().trim().min(3).max(32),
+            hostParticipantPresent: z.boolean(),
+            participantCount: z.number().int().min(0).max(100000),
+          })
+          .parse(body);
+        await recordRoomCloseAttempt(identity, parsed);
+        return NextResponse.json({ recorded: true });
       }
       if (resource === "room-media-bootstrap") {
         const parsed = z

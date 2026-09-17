@@ -1673,6 +1673,89 @@ export async function refreshRoomMediaBootstrap(
   return bootstrap;
 }
 
+/**
+ * PK completion is driven by the database clock, never by a Flutter countdown.
+ * A Host presence heartbeat is only the inexpensive trigger that notices a due
+ * battle; `finalizePkSession` holds the session row lock and is idempotent, so
+ * simultaneous heartbeats from the two Hosts still settle scores exactly once.
+ */
+async function finalizeDuePkSessionForHost(
+  identity: MobileIdentity,
+  roomCode: string,
+) {
+  const [rows] = await db().query<(RowDataPacket & { id: string })[]>(
+    `SELECT session.id
+     FROM live_pk_sessions session
+     INNER JOIN live_rooms source ON source.id = session.source_room_id
+     INNER JOIN live_rooms target ON target.id = session.target_room_id
+     WHERE session.status = 'ACTIVE'
+       AND (source.room_code = ? OR target.room_code = ?)
+       AND (source.host_application_user_id = ? OR target.host_application_user_id = ?)
+       AND session.started_at IS NOT NULL
+       AND session.started_at <= TIMESTAMPADD(MINUTE, -session.duration_minutes, CURRENT_TIMESTAMP(3))
+     ORDER BY session.started_at
+     LIMIT 1`,
+    [roomCode, roomCode, identity.userId, identity.userId],
+  );
+  const due = rows[0];
+  if (due) {
+    await finalizePkSession(identity, { sessionId: String(due.id), completed: true });
+  }
+}
+
+export async function recordRoomCloseAttempt(
+  identity: MobileIdentity,
+  input: {
+    roomCode: string;
+    liveSessionId?: string | null;
+    closeReason: string;
+    triggerSource: string;
+    callerStack?: string | null;
+    connectionPhase: string;
+    publishing: boolean;
+    backendRoomState: string;
+    hostParticipantPresent: boolean;
+    participantCount: number;
+  },
+) {
+  // Diagnostics must never delay/deny a user leaving a board. The route schema
+  // bounds every value; this lookup only associates an existing room/ledger.
+  await withTransaction(async (connection) => {
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; accounting_id: string | null })[]>(
+      `SELECT room.id,
+              accounting.id accounting_id
+       FROM live_rooms room
+       LEFT JOIN live_session_accounting accounting
+         ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
+       WHERE room.room_code = ? LIMIT 1`,
+      [input.roomCode],
+    );
+    const room = rooms[0];
+    await connection.execute(
+      `INSERT INTO room_close_attempts
+        (id, room_id, live_session_accounting_id, application_user_id,
+         close_reason, trigger_source, caller_stack, connection_phase,
+         publishing, backend_room_state, host_participant_present,
+         participant_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        randomUUID(),
+        room?.id ?? null,
+        input.liveSessionId ?? room?.accounting_id ?? null,
+        identity.userId,
+        input.closeReason,
+        input.triggerSource,
+        input.callerStack ?? null,
+        input.connectionPhase,
+        input.publishing,
+        input.backendRoomState,
+        input.hostParticipantPresent,
+        Math.max(0, Math.min(100_000, input.participantCount)),
+      ],
+    );
+  });
+}
+
 export async function refreshRoomPresence(
   identity: MobileIdentity,
   roomCode: string,
@@ -1707,8 +1790,15 @@ export async function refreshRoomPresence(
   const membership = membershipRows[0];
   const serializedPresence =
     membership != null &&
-    (mediaPublishing === true ||
+      (mediaPublishing === true ||
       (membership.room_type !== "PARTY" && membership.room_role === "OWNER"));
+
+  // A client may display an interpolated timer, but only this database-clock
+  // settlement decides the PK result/rewards. This runs on the already
+  // existing Host heartbeat path, not a new polling loop for audiences.
+  if (serializedPresence && membership?.room_role === "OWNER") {
+    await finalizeDuePkSessionForHost(identity, roomCode);
+  }
 
   // The Host is responsible for the authoritative close/reward lifecycle.
   // Running these database checks for every passive CDN heartbeat added work
@@ -2131,6 +2221,28 @@ export async function refreshRoomPresence(
        ORDER BY session.created_at DESC LIMIT 1`,
       [rows[0].id, rows[0].id],
     );
+    // Keep the authoritative result available briefly after the active row is
+    // settled. The mobile board can play a contained battle-area result and
+    // then return to the normal Live room without ending/recreating media.
+    const [pkResults] = await connection.query<RowDataPacket[]>(
+      `SELECT session.id, session.mode, session.duration_minutes,
+              session.source_room_id, session.target_room_id,
+              session.started_at, session.ended_at,
+              session.source_score, session.target_score, session.winner_room_id,
+              source.room_code source_room_code, target.room_code target_room_code,
+              source_user.public_id source_host_public_id, source_user.full_name source_host_name,
+              target_user.public_id target_host_public_id, target_user.full_name target_host_name
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       INNER JOIN application_users source_user ON source_user.id = source.host_application_user_id
+       INNER JOIN application_users target_user ON target_user.id = target.host_application_user_id
+       WHERE session.status = 'COMPLETED'
+         AND (session.source_room_id = ? OR session.target_room_id = ?)
+         AND session.ended_at >= CURRENT_TIMESTAMP(3) - INTERVAL 8 SECOND
+       ORDER BY session.ended_at DESC LIMIT 1`,
+      [rows[0].id, rows[0].id],
+    );
     const [messages] = await connection.query<RowDataPacket[]>(
       `SELECT message.id, message.client_message_id, message.body, message.created_at,
               user.public_id, user.full_name, user.vip_tier, user.country_code, user.language_code,
@@ -2324,6 +2436,7 @@ export async function refreshRoomPresence(
       runtimeDiagnostics,
     };
     const pkSession = pkSessions[0];
+    const pkResult = pkResults[0];
     const pkPeerRoomId = pkSession
       ? String(pkSession.source_room_id) === String(rows[0].id)
         ? String(pkSession.target_room_id)
@@ -2373,6 +2486,10 @@ export async function refreshRoomPresence(
               dailyRewardEarned: settledLiveHours?.dailyRewardEarned ?? false,
               dailyRewardBusinessDate:
                 settledLiveHours?.dailyRewardBusinessDate ?? null,
+              // Returned only to the room Host as operational correlation
+              // metadata.  It lets a terminal client diagnostic identify the
+              // exact durable Live ledger without exposing media credentials.
+              liveSessionId: String(rows[0].reward_accounting_id),
               // The red Live pill, reward countdown and Rewards history all
               // derive from this one server-time ledger value.  Do not expose
               // room.started_at here: it includes reconnect/offline grace and
@@ -2455,6 +2572,32 @@ export async function refreshRoomPresence(
             peerParticipantIds: pkPeerMembers.map((member) =>
               String(member.public_id),
             ),
+          }
+        : null,
+      pkResult: pkResult
+        ? {
+            id: String(pkResult.id),
+            mode: String(pkResult.mode),
+            startedAt: pkResult.started_at,
+            endedAt: pkResult.ended_at,
+            sourceScore: Number(pkResult.source_score ?? 0),
+            targetScore: Number(pkResult.target_score ?? 0),
+            sourceRoomCode: String(pkResult.source_room_code),
+            targetRoomCode: String(pkResult.target_room_code),
+            sourceHost: {
+              id: String(pkResult.source_host_public_id),
+              name: String(pkResult.source_host_name),
+            },
+            targetHost: {
+              id: String(pkResult.target_host_public_id),
+              name: String(pkResult.target_host_name),
+            },
+            isSourceRoom: String(pkResult.source_room_code) === roomCode,
+            result: pkResult.winner_room_id == null
+              ? "draw"
+              : String(pkResult.winner_room_id) === String(rows[0].id)
+                ? "win"
+                : "loss",
           }
         : null,
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),
