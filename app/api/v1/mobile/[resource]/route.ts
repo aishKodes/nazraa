@@ -57,7 +57,10 @@ import {
 } from "@/lib/db/repositories/mobile-completion";
 import { ZegoTokenService } from "@/lib/services/zego-token-service";
 import { LiveKitTokenService } from "@/lib/services/livekit-token-service";
-import { authorizeLiveKitRoom } from "@/lib/services/livekit-room-authority";
+import {
+  authorizeLiveKitPkBridge,
+  authorizeLiveKitRoom,
+} from "@/lib/services/livekit-room-authority";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import { isLiveKitConfigured, mediaProviderFor } from "@/lib/services/media-provider";
 import {
@@ -424,10 +427,14 @@ export async function GET(
           .max(20)
           .default(10)
           .parse(parameters.get("limit") ?? undefined);
-        const period = z
-          .enum(["round", "daily", "weekly", "monthly"])
-          .default("daily")
-          .parse(parameters.get("period") ?? undefined);
+        // Game winners are deliberately a compact, server-day view.  Older
+        // builds exposed round/weekly/monthly variants whose semantics varied
+        // between games and could surface net losses.  Keep the API as the
+        // single source of truth as well as the client UI: top positive
+        // settled winnings for the current business day only.
+        const period = z.literal("daily").default("daily").parse(
+          parameters.get("period") ?? undefined,
+        );
         return NextResponse.json(
           await gameRoundLeaderboard(game, limit, period),
           { headers: { "Cache-Control": "private, no-store" } },
@@ -1491,6 +1498,35 @@ export async function POST(
           provider: "LIVEKIT",
           mediaRole: authorization.mediaRole,
           publishMode: authorization.publishMode,
+        });
+      }
+      if (resource === "livekit-pk-bridge-token") {
+        if (mediaProviderFor(identity) !== "LIVEKIT" || !isLiveKitConfigured()) {
+          throw new Error("Live media is being prepared. Please retry shortly.");
+        }
+        const parsed = z
+          .object({
+            sessionId: z.string().uuid(),
+            roomId: z.string().trim().min(1).max(80),
+          })
+          .parse(body);
+        const authorization = await authorizeLiveKitPkBridge(identity, {
+          sessionId: parsed.sessionId,
+          roomCode: parsed.roomId,
+        });
+        const credentials = await new LiveKitTokenService().issueRoomToken({
+          roomId: authorization.roomId,
+          identity: identity.publicId,
+          participantName: identity.fullName,
+          publishMode: "none",
+          ttlSeconds: authorization.ttlSeconds,
+        });
+        return NextResponse.json({
+          ...credentials,
+          provider: "LIVEKIT",
+          remoteRoomId: authorization.roomId,
+          remoteHostId: authorization.remoteHostId,
+          receiveHostAudio: authorization.receiveHostAudio,
         });
       }
       return errorResponse(new Error("Mobile mutation not found."), 404);

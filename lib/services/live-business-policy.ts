@@ -183,6 +183,22 @@ function boundaryForDay(day: ZonedParts, clock: string, timezone: string) {
   return zonedDateTimeToUtc({ ...day, hour, minute, second: 0 }, timezone);
 }
 
+/**
+ * A database connection is deliberately UTC (see db/pool.ts), whereas game
+ * leaderboards use the product's remotely-configured business day.  Compute
+ * UTC bounds in Node instead of depending on MySQL IANA timezone tables.
+ */
+export function businessDayUtcRange(
+  timezone: string,
+  serverNow: Date = new Date(),
+) {
+  const today = zonedParts(serverNow, timezone);
+  return {
+    startsAt: boundaryForDay(today, "00:00", timezone),
+    endsAt: boundaryForDay(addLocalDays(today, 1), "00:00", timezone),
+  };
+}
+
 function secondsBetween(from: Date, to: Date) {
   return Math.max(0, Math.ceil((to.getTime() - from.getTime()) / 1000));
 }

@@ -99,3 +99,84 @@ export async function authorizeLiveKitRoom(
     } as const;
   });
 }
+
+/**
+ * PK never merges the two Nazraa rooms.  Each side retains its own chat,
+ * audience and audio guests; this short-lived bridge permits only the current
+ * participant to subscribe to the *opposing host* in the other LiveKit room.
+ *
+ * The receiving host may also subscribe to the opposing host microphone so
+ * they can coordinate.  Spectators receive the opposing camera only.  No
+ * guest microphone, data track, camera publishing, or arbitrary room token
+ * is granted here.
+ */
+export async function authorizeLiveKitPkBridge(
+  identity: MobileIdentity,
+  input: { sessionId: string; roomCode: string; ttlSeconds?: number },
+) {
+  return withTransaction(async (connection) => {
+    const [sessions] = await connection.query<(RowDataPacket & {
+      status: string;
+      source_room_id: string;
+      source_room_code: string;
+      source_host_public_id: string;
+      target_room_id: string;
+      target_room_code: string;
+      target_host_public_id: string;
+    })[]>(
+      `SELECT session.status,
+              source.id source_room_id, source.room_code source_room_code,
+              source_host.public_id source_host_public_id,
+              target.id target_room_id, target.room_code target_room_code,
+              target_host.public_id target_host_public_id
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN application_users source_host
+         ON source_host.id = source.host_application_user_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       INNER JOIN application_users target_host
+         ON target_host.id = target.host_application_user_id
+       WHERE session.id = ? AND session.status = 'ACTIVE'
+       LIMIT 1 FOR UPDATE`,
+      [input.sessionId],
+    );
+    const session = sessions[0];
+    if (!session) throw new Error("This PK battle is no longer active.");
+
+    const localIsSource = session.source_room_code === input.roomCode;
+    const localIsTarget = session.target_room_code === input.roomCode;
+    if (!localIsSource && !localIsTarget) {
+      throw new Error("This PK battle does not belong to the current room.");
+    }
+    const localRoomId = localIsSource
+      ? session.source_room_id
+      : session.target_room_id;
+    const [members] = await connection.query<(RowDataPacket & {
+      room_role: string;
+      media_role: MediaRole;
+      muted: number;
+    })[]>(
+      `SELECT room_role, media_role, muted
+       FROM live_room_members
+       WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [localRoomId, identity.userId],
+    );
+    const member = members[0];
+    if (!member) {
+      throw new Error("Join the active PK room before viewing the battle.");
+    }
+
+    const isHost = member.room_role === "OWNER" &&
+      (member.media_role === "HOST" || member.media_role === "PARTY_OWNER");
+    const ttlSeconds = Math.max(300, Math.min(900, input.ttlSeconds ?? 600));
+    return {
+      roomId: localIsSource ? session.target_room_code : session.source_room_code,
+      remoteHostId: localIsSource
+        ? session.target_host_public_id
+        : session.source_host_public_id,
+      receiveHostAudio: isHost,
+      ttlSeconds,
+    } as const;
+  });
+}

@@ -2106,6 +2106,7 @@ export async function refreshRoomPresence(
     );
     const [pkSessions] = await connection.query<RowDataPacket[]>(
       `SELECT session.id, session.status, session.mode, session.duration_minutes,
+              session.source_room_id, session.target_room_id,
               session.created_at, session.started_at,
               CASE WHEN session.status = 'ACTIVE' THEN COALESCE((
                 SELECT SUM(score_event.coin_value) FROM live_room_gift_events score_event
@@ -2323,6 +2324,24 @@ export async function refreshRoomPresence(
       runtimeDiagnostics,
     };
     const pkSession = pkSessions[0];
+    const pkPeerRoomId = pkSession
+      ? String(pkSession.source_room_id) === String(rows[0].id)
+        ? String(pkSession.target_room_id)
+        : String(pkSession.source_room_id)
+      : null;
+    let pkPeerMembers: RowDataPacket[] = [];
+    if (pkPeerRoomId) {
+      const [members] = await connection.query<RowDataPacket[]>(
+        `SELECT user.public_id
+         FROM live_room_members member
+         INNER JOIN application_users user ON user.id = member.application_user_id
+         WHERE member.room_id = ? AND member.left_at IS NULL
+           AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         ORDER BY member.joined_at LIMIT 100`,
+        [pkPeerRoomId],
+      );
+      pkPeerMembers = members;
+    }
     return {
       active: true,
       serverTime: rows[0].reward_server_time,
@@ -2422,6 +2441,12 @@ export async function refreshRoomPresence(
             sourceStreamId: `${String(pkSession.source_room_code)}_${String(pkSession.source_host_public_id)}_main`,
             targetStreamId: `${String(pkSession.target_room_code)}_${String(pkSession.target_host_public_id)}_main`,
             isSourceRoom: String(pkSession.source_room_code) === roomCode,
+            // Only the IDs are needed by the publishing Host to set LiveKit
+            // track-level PK subscription permissions; no chat or profile
+            // payload is bridged across teams.
+            peerParticipantIds: pkPeerMembers.map((member) =>
+              String(member.public_id),
+            ),
           }
         : null,
       lockedSeatIndexes: seatLocks.map((row) => Number(row.seat_index)),

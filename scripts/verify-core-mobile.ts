@@ -2473,18 +2473,18 @@ async function main() {
     );
     const teenLeaderboard = await product.gameRoundLeaderboard(
       "teen_patti_pro",
-      10,
-      "round",
+      20,
+      "daily",
     );
     assert.ok(
-      teenLeaderboard.entries.some(
-        (entry) => entry.publicId === owner.publicId,
-      ),
+      teenLeaderboard.entries.length <= 20,
+      "The public leaderboard is capped at the top 20 for the current day",
     );
     assert.ok(
-      teenLeaderboard.entries.every((entry) =>
-        Number.isInteger(entry.netWinnings),
+      teenLeaderboard.entries.every(
+        (entry) => Number.isInteger(entry.netWinnings) && entry.netWinnings > 0,
       ),
+      "The public leaderboard never presents a losing player as a winner",
     );
     const spectatorTeenRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),

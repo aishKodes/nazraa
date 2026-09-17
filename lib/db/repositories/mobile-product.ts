@@ -16,7 +16,11 @@ import {
 } from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
-import { evaluateFaceLiveSchedule, loadFaceLiveRules } from "@/lib/services/live-business-policy";
+import {
+  businessDayUtcRange,
+  evaluateFaceLiveSchedule,
+  loadFaceLiveRules,
+} from "@/lib/services/live-business-policy";
 import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
@@ -1862,7 +1866,7 @@ async function sharedRoundStatePayload(
       "SELECT wager_total, gross_payout, deduction_total, payout_total, balance_after, settled_at FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1", [round.id, identity.userId]),
     connection.query<SharedRoundRow[]>(
       `SELECT * FROM game_shared_rounds WHERE game_name = ? AND drawing_ends_at <= UTC_TIMESTAMP(3)
-       ORDER BY round_number DESC LIMIT ?`, [game, config.historyLength]),
+       ORDER BY round_number DESC LIMIT 10`, [game]),
     connection.query<RowDataPacket[]>(
       `SELECT round.id round_id, round.round_number, round.outcome_json,
               settlement.wager_total, settlement.gross_payout,
@@ -2263,25 +2267,14 @@ export async function gameRoundHistory(identity: MobileIdentity, game: string, l
 export async function gameRoundLeaderboard(
   game: string,
   limit = 10,
-  period: "round" | "daily" | "weekly" | "monthly" = "daily",
+  period: "daily" = "daily",
 ) {
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
-  const sharedLeaderboard = sharedRoundGames.has(game);
-  const periodFilter = period === "round" && sharedLeaderboard
-    ? `JSON_UNQUOTE(JSON_EXTRACT(result.outcome_json, '$.sharedRoundId')) =
-       (SELECT latest.id FROM game_shared_rounds latest
-        WHERE latest.game_name = ? AND latest.drawing_ends_at <= UTC_TIMESTAMP(3)
-        ORDER BY latest.round_number DESC LIMIT 1)`
-    : period === "round"
-      ? `result.created_at >= DATE_SUB(
-           (SELECT MAX(latest.created_at) FROM game_round_results latest
-            WHERE latest.game_name = ? AND latest.wager_total > 0),
-           INTERVAL 25 SECOND)`
-    : period === "weekly"
-      ? "result.created_at >= DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
-      : period === "monthly"
-        ? "result.created_at >= DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')"
-        : "result.created_at >= CURRENT_DATE AND result.created_at < DATE_ADD(CURRENT_DATE, INTERVAL 1 DAY)";
+  const { timezone } = await loadFaceLiveRules();
+  const { startsAt, endsAt } = businessDayUtcRange(timezone);
+  // Only a genuinely positive settled net result earns a place; a large wager
+  // followed by a loss must never appear as a public "winner".
+  const periodFilter = "result.created_at >= ? AND result.created_at < ?";
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.avatar_url,
             avatar.updated_at avatar_updated_at, user.country_code,
@@ -2295,11 +2288,10 @@ export async function gameRoundLeaderboard(
        AND ${periodFilter}
      GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
               avatar.updated_at, user.country_code
+     HAVING net_winnings > 0
      ORDER BY net_winnings DESC, total_payout DESC, MIN(result.created_at), user.public_id
      LIMIT ?`,
-    period === "round"
-      ? [game, game, Math.max(1, Math.min(20, limit))]
-      : [game, Math.max(1, Math.min(20, limit))],
+    [game, startsAt, endsAt, Math.max(1, Math.min(20, limit))],
   );
   return {
     period,
