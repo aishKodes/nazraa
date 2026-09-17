@@ -41,9 +41,21 @@ At audit time, the VM monitoring screen was idle: CPU peaks were about 0.6%, mem
 - STUN over UDP 3478: binding response passed.
 - TURN/TLS with SNI `turn.rtc.pixtra.site` on TCP 443: STUN binding response passed.
 
-## Required recurring controls
+## Active spend guardrails
 
-No OCI budget existed at the time of this audit. Create a monthly root-compartment budget with 50%, 75%, and 90% actual-spend alerts once the owner specifies the monitored recipient address. Do not assume a recipient from browser history or account metadata.
+On 17 September 2026, an OCI root-compartment monthly budget named
+`nazraa-livekit-monthly-cost` was created with a target of SGD 100.00.
+
+- Actual Spend alert at 50%.
+- Actual Spend alert at 75%.
+- Actual Spend alert at 90%.
+- All three notify the owner-confirmed monitored recipient.
+
+The budget is a notification guardrail; it does not stop or terminate LiveKit
+automatically. Review the active resource inventory and current OCI Cost
+Analysis before changing or stopping a production resource.
+
+## Required recurring controls
 
 Review weekly:
 
