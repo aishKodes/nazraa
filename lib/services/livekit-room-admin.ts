@@ -1,6 +1,6 @@
 import "server-only";
 
-import { RoomServiceClient, TrackType } from "livekit-server-sdk";
+import { RoomServiceClient, TrackSource, TrackType } from "livekit-server-sdk";
 
 function managementUrl(value = process.env.LIVEKIT_URL?.trim() ?? "") {
   if (!/^wss?:\/\//i.test(value)) return "";
@@ -60,6 +60,40 @@ export class LiveKitRoomAdmin {
     } catch {
       // Membership/role state remains the source of truth if this transient
       // management RPC races participant disconnect or server recovery.
+      return { attempted: true, changed: false };
+    }
+  }
+
+  /**
+   * Changes a connected Face guest from subscribe-only to microphone-only.
+   *
+   * This is deliberately a server-to-server permission update, rather than a
+   * token refresh or a Flutter-only role flag.  LiveKit notifies the connected
+   * participant immediately and revoking this permission unpublishes any
+   * existing microphone track.  The Nazraa database remains authoritative for
+   * whether this RPC is allowed in the first place.
+   */
+  async setFaceAudioGuestPublishing(
+    roomCode: string,
+    publicId: string,
+    enabled: boolean,
+  ) {
+    const client = this.client();
+    if (!client) return { attempted: false, changed: false };
+    try {
+      await client.updateParticipant(roomCode, publicId, {
+        permission: {
+          canSubscribe: true,
+          canPublish: enabled,
+          canPublishData: false,
+          canPublishSources: enabled ? [TrackSource.MICROPHONE] : [],
+        },
+      });
+      return { attempted: true, changed: true };
+    } catch {
+      // A member can leave between the DB decision and this media RPC.  A
+      // later reconnect receives a newly-issued, server-authorized token, so
+      // do not undo the authoritative room transition here.
       return { attempted: true, changed: false };
     }
   }

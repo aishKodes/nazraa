@@ -121,8 +121,29 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
       [evidence.roomCode],
     );
     const room = rows[0];
-    if (!room || room.host_public_id !== evidence.participantIdentity) {
-      return { applied: false, duplicate: false, reason: "not-host-or-inactive" };
+    if (!room) {
+      return { applied: false, duplicate: false, reason: "inactive" };
+    }
+
+    // Resolve the event identity against current Nazraa membership. The
+    // LiveKit webhook is authenticated, but a participant can leave between
+    // publication and delivery of its event. In that case it is harmless and
+    // must not resurrect a former speaker.
+    const [memberRows] = await connection.query<(RowDataPacket & {
+      application_user_id: string;
+      media_role: string;
+    })[]>(
+      `SELECT member.application_user_id, member.media_role
+       FROM live_room_members member
+       INNER JOIN application_users user
+         ON user.id = member.application_user_id
+       WHERE member.room_id = ? AND user.public_id = ? AND member.left_at IS NULL
+       LIMIT 1 FOR UPDATE`,
+      [room.room_id, evidence.participantIdentity],
+    );
+    const member = memberRows[0];
+    if (!member) {
+      return { applied: false, duplicate: false, reason: "not-member" };
     }
 
     const [insert] = await connection.execute(
@@ -132,7 +153,7 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         randomUUID(), evidence.providerEventId, room.room_id,
-        room.host_application_user_id, evidence.eventType,
+        member.application_user_id, evidence.eventType,
         evidence.trackSid, evidence.trackKind, evidence.occurredAt,
         evidence.payloadSha256,
       ],
@@ -146,7 +167,7 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
         `UPDATE livekit_active_media_tracks
          SET active = FALSE, last_event_at = ?
          WHERE room_id = ? AND application_user_id = ? AND active = TRUE`,
-        [evidence.occurredAt, room.room_id, room.host_application_user_id],
+        [evidence.occurredAt, room.room_id, member.application_user_id],
       );
     } else if (evidence.trackSid && evidence.trackKind) {
       await connection.execute(
@@ -157,11 +178,62 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
            track_kind = VALUES(track_kind), active = VALUES(active),
            last_event_at = VALUES(last_event_at)`,
         [
-          room.room_id, room.host_application_user_id, evidence.trackSid,
+          room.room_id, member.application_user_id, evidence.trackSid,
           evidence.trackKind, evidence.eventType === "track_published",
           evidence.occurredAt,
         ],
       );
+    }
+
+    const isHost = room.host_public_id === evidence.participantIdentity;
+    if (!isHost && member.media_role === "AUDIO_GUEST") {
+      const audioPublished =
+        evidence.eventType === "track_published" && evidence.trackKind === "AUDIO";
+      const audioEnded =
+        evidence.eventType === "track_unpublished" || evidence.eventType === "participant_left";
+      if (audioPublished || audioEnded) {
+        await connection.execute(
+          `UPDATE live_room_members
+           SET media_publishing = ?, last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
+           WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
+          [audioPublished, room.room_id, member.application_user_id],
+        );
+      }
+      if (audioPublished) {
+        // The event is emitted only after the microphone track is accepted by
+        // LiveKit. This is the application-level AUDIO_GUEST_JOINED signal
+        // used by Face room clients for their compact top notification. A
+        // microphone can republish after a transient media reconnect, so
+        // issue this notification only once for the current accepted request.
+        await connection.execute(
+          `INSERT INTO room_interaction_events
+            (id, room_id, sender_application_user_id, target_application_user_id, interaction_key)
+           SELECT ?, ?, ?, ?, 'audio_guest_joined'
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM room_interaction_events prior
+             INNER JOIN live_cohost_requests request
+               ON request.room_id = ?
+              AND request.requester_application_user_id = ?
+              AND request.status = 'ACCEPTED'
+             WHERE prior.room_id = ?
+               AND prior.sender_application_user_id = ?
+               AND prior.interaction_key = 'audio_guest_joined'
+               AND prior.created_at >= COALESCE(request.responded_at, request.requested_at)
+           )`,
+          [
+            randomUUID(), room.room_id, member.application_user_id,
+            room.host_application_user_id,
+            room.room_id, member.application_user_id,
+            room.room_id, member.application_user_id,
+          ],
+        );
+      }
+      return { applied: true, duplicate: false, reason: audioPublished ? "audio-guest-joined" : "audio-guest-ended" };
+    }
+
+    if (!isHost || !room.accounting_id) {
+      return { applied: true, duplicate: false, reason: "recorded" };
     }
 
     if (room.accounting_id) {

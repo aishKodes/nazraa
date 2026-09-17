@@ -1291,6 +1291,30 @@ export async function POST(
           })
           .parse(body);
         const result = await respondLiveCoHost(identity, parsed);
+        // The database transaction above owns the authorization decision.
+        // Apply the matching LiveKit permission to a currently connected
+        // guest immediately; the client receives a permission event and only
+        // then publishes its microphone.
+        if (mediaProviderFor(identity) === "LIVEKIT") {
+          const permission = await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(
+            parsed.roomCode,
+            parsed.targetPublicId,
+            parsed.accept,
+          );
+          // Do not report a successful acceptance when the connected LiveKit
+          // participant could not receive its microphone-only grant. Revert
+          // the short-lived database transition so the room does not display
+          // a silent speaker; the guest can request again after reconnecting.
+          if (parsed.accept && !permission.changed) {
+            await endLiveCoHost(identity, {
+              roomCode: parsed.roomCode,
+              targetPublicId: parsed.targetPublicId,
+            });
+            throw new Error(
+              "Live audio could not be connected. Ask the guest to rejoin and try again.",
+            );
+          }
+        }
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
@@ -1302,6 +1326,16 @@ export async function POST(
           })
           .parse(body);
         const result = await endLiveCoHost(identity, parsed);
+        if (mediaProviderFor(identity) === "LIVEKIT") {
+          // Demotion must revoke the connected participant's microphone
+          // immediately, not merely prevent a later token refresh.
+          const target = parsed.targetPublicId ?? identity.publicId;
+          await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(
+            parsed.roomCode,
+            target,
+            false,
+          );
+        }
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }

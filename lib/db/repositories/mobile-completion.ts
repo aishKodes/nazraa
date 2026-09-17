@@ -1759,7 +1759,34 @@ export async function refreshRoomPresence(
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1${serializedPresence ? " FOR UPDATE" : ""}`,
       [identity.userId, roomCode],
     );
-    if (!rows[0]) return { active: false };
+    if (!rows[0]) {
+      // Never let a transient membership/pruning race masquerade as a room
+      // close on mobile. A real room end or room-scoped block is terminal;
+      // an active room with a missing membership is recoverable by rejoin.
+      const [stateRows] = await connection.query<RowDataPacket[]>(
+        `SELECT room.status,
+                EXISTS(
+                  SELECT 1 FROM live_room_blocks block_row
+                  WHERE block_row.room_id = room.id
+                    AND block_row.application_user_id = ?
+                    AND block_row.active = TRUE
+                ) blocked
+         FROM live_rooms room
+         WHERE room.room_code = ? LIMIT 1`,
+        [identity.userId, roomCode],
+      );
+      const state = stateRows[0];
+      const activeRoom = state && ["ACTIVE", "LOCKED"].includes(String(state.status));
+      return {
+        active: false,
+        terminal: !activeRoom || Boolean(state?.blocked),
+        closeReason: !activeRoom
+          ? "ROOM_ENDED"
+          : Boolean(state?.blocked)
+            ? "ROOM_BLOCKED"
+            : "MEMBERSHIP_RECOVERING",
+      };
+    }
     const faceLiveRules =
       rows[0].room_type === "PARTY"
         ? null
@@ -2127,7 +2154,7 @@ export async function refreshRoomPresence(
       `SELECT user.public_id, user.full_name,
               user.level_number consumption_level,
               user.anchor_level_number anchor_level,
-              user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
+              user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role, member.media_publishing, member.seat_index, member.muted, member.muted_by_staff,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
@@ -2451,6 +2478,7 @@ export async function refreshRoomPresence(
         },
         roomRole: String(member.room_role).toLowerCase(),
         mediaRole: String(member.media_role).toLowerCase(),
+        mediaPublishing: Boolean(member.media_publishing),
         seatIndex: member.seat_index == null ? null : Number(member.seat_index),
         muted: Boolean(member.muted),
         staffMuted: Boolean(member.muted_by_staff),
