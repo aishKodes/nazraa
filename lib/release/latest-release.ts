@@ -10,10 +10,10 @@ export type PublicRelease = {
 };
 
 const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
-const releaseVersion = "2.4.52";
-const releaseBuild = 7364;
+const releaseVersion = "2.4.53";
+const releaseBuild = 7365;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.52/Nazraa-Live-2.4.52-7364.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.53/Nazraa-Live-2.4.53-7365.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -31,13 +31,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 300_505_577,
-  sha256: "525fc9ff30283b1b0cfd04f6d9af97f908381043f64875673b64b29fd1a68e9c",
+  apkSizeBytes: 300_489_149,
+  sha256: "301831725d06df70384b61239715ac1e0e6a7b22d998c46e44695e66ecec31cd",
   releaseDate: "2026-09-17",
   releaseNotes: [
-    "Makes Face audio-guest publishing server-authoritative and confirms the microphone before announcing the join.",
-    "Keeps Face and Party boards open through recoverable membership and presence transitions.",
-    "Improves LiveKit portrait capture and keeps active broadcasters awake while they publish.",
+    "Adds a fail-open LiveKit camera-frame beauty path: normal camera publishing continues if it is unavailable.",
+    "Keeps PK cross-room media restricted to the opposing Host and prevents peer-team membership metadata reaching spectators.",
+    "Adds sampled anonymous join-stage telemetry and improves daily game winners, history, and visual game cards.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
