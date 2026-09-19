@@ -22,9 +22,13 @@ SET @nazraa_pk_streak_check = (
     AND LOWER(cc.CHECK_CLAUSE) LIKE '%current_streak%'
   LIMIT 1
 );
+-- MariaDB uses DROP CONSTRAINT for a CHECK while MySQL accepts DROP CHECK.
+-- Keep the migration portable because production runs MariaDB whereas local
+-- development may use either engine.
+SET @nazraa_drop_pk_check = IF(LOCATE('MariaDB', VERSION()) > 0, 'DROP CONSTRAINT', 'DROP CHECK');
 SET @nazraa_sql = IF(@nazraa_pk_streak_check IS NULL,
   'SELECT 1',
-  CONCAT('ALTER TABLE pk_host_streaks DROP CHECK `', REPLACE(@nazraa_pk_streak_check, '`', '``'), '`'));
+  CONCAT('ALTER TABLE pk_host_streaks ', @nazraa_drop_pk_check, ' `', REPLACE(@nazraa_pk_streak_check, '`', '``'), '`'));
 PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
 
 SET @nazraa_sql = IF((SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = @nazraa_schema AND TABLE_NAME = 'pk_host_streaks' AND CONSTRAINT_NAME = 'chk_pk_host_streak_range') = 0,
