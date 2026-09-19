@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.56";
-const releaseBuild = 7368;
+const releaseVersion = "2.4.58";
+const releaseBuild = 7370;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.56/Nazraa-Live-2.4.56-7368.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.58/Nazraa-Live-2.4.58-7370.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 145_548_789,
-  sha256: "a65e0dc518086c9d3f9dedde3dd880eac832baf6e45cdbd5c456d393e6f60fdc",
-  releaseDate: "2026-09-18",
+  apkSizeBytes: 301_523_609,
+  sha256: "4f1f3e1beadf2c416fff5b181ffe75cd0516f1d4ff958ce3ee1229930686d3c9",
+  releaseDate: "2026-09-19",
   releaseNotes: [
-    "Adds the stronger on-device Glow beauty preset for LiveKit Hosts, with safe low-end fallback.",
-    "Completes the PK result layer with bounded win, loss, and draw visuals while keeping both Host videos stable.",
-    "Hardens every shared game across 20 authoritative settlement and 15-second round-boundary cycles.",
+    "Keeps the LiveKit Face video surface stable while PK score and supporter updates arrive.",
+    "Adds the reference-aligned PK battle layout, authoritative Red/Blue score bar, timer, and top-gifter strips.",
+    "Includes the stronger on-device Glow beauty preset with a safe low-end fallback.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
