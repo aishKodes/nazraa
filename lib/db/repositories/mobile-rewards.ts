@@ -421,21 +421,100 @@ export async function pkStreakSnapshot(identity: MobileIdentity) {
       [identity.userId],
     ),
   ]);
+  const currentStreak = Number(streaks[0][0]?.current_streak ?? 0);
+  const next = pkStreakMilestone(currentStreak);
   return {
-    currentStreak: Number(streaks[0][0]?.current_streak ?? 0), requiredWins: 3, minimumBattleCoins: 5000, bonusCoins: 10000,
+    currentStreak,
+    // Retained for old APKs. New clients use the explicit next milestone so
+    // the UI can show 2/3 followed by 5/7 without implying a 30k payout.
+    requiredWins: next.wins,
+    nextMilestoneWins: next.wins,
+    nextMilestoneTotalCoins: next.totalCoins,
+    nextMilestoneAwardCoins: next.awardCoins,
+    minimumBattleCoins: 5000,
+    bonusCoins: next.awardCoins,
     qualifyingWinsTotal: Number(streaks[0][0]?.qualifying_wins_total ?? 0), bonusesAwarded: Number(streaks[0][0]?.bonuses_awarded ?? 0),
     history: events[0].map((row) => ({ result: String(row.result).toLowerCase(), receivedCoins: Number(row.received_coins), qualifyingWin: Boolean(row.qualifying_win), streakAfter: Number(row.streak_after), bonusCoins: Number(row.bonus_coins), createdAt: row.created_at })),
   };
 }
 
+export type PkResult = "WIN" | "LOSS" | "DRAW";
+
+export function pkStreakMilestone(currentStreak: number) {
+  const streak = Math.max(0, Math.min(7, Math.floor(currentStreak)));
+  return streak < 3
+    ? { wins: 3, totalCoins: 10000, awardCoins: 10000 }
+    : { wins: 7, totalCoins: 20000, awardCoins: 10000 };
+}
+
+/// Pure settlement policy so the exact 3/7 behaviour is independently
+/// testable without a production wallet. A qualifying win is at least 5,000
+/// received Gift Coins; a normal visual win below that threshold is not a
+/// streak win and resets the consecutive qualification sequence.
+export function calculatePkStreakSettlement(input: {
+  currentStreak: number;
+  result: PkResult;
+  receivedCoins: number;
+}) {
+  const prior = Math.max(0, Math.min(7, Math.floor(input.currentStreak)));
+  const qualifying = input.result === "WIN" && input.receivedCoins >= 5000;
+  if (!qualifying) {
+    return {
+      qualifying: false,
+      streakAfter: 0,
+      milestoneWins: null as number | null,
+      bonusCoins: 0,
+      milestoneTotalCoins: 0,
+    };
+  }
+  // A legacy seven should have been reset after its milestone. Treat it as a
+  // fresh sequence rather than ever issuing a duplicate milestone.
+  const candidate = (prior >= 7 ? 0 : prior) + 1;
+  if (candidate === 3) {
+    return {
+      qualifying: true,
+      streakAfter: 3,
+      milestoneWins: 3,
+      bonusCoins: 10000,
+      milestoneTotalCoins: 10000,
+    };
+  }
+  if (candidate === 7) {
+    // The first 10k was issued at 3. Credit only the additional 10k here so
+    // the reward for this seven-win run is exactly 20,000 Coins in total.
+    return {
+      qualifying: true,
+      streakAfter: 0,
+      milestoneWins: 7,
+      bonusCoins: 10000,
+      milestoneTotalCoins: 20000,
+    };
+  }
+  return {
+    qualifying: true,
+    streakAfter: candidate,
+    milestoneWins: null as number | null,
+    bonusCoins: 0,
+    milestoneTotalCoins: 0,
+  };
+}
+
 async function applyPkHostResult(connection: PoolConnection, input: {
-  sessionId: string; hostUserId: string; result: "WIN" | "LOSS" | "DRAW"; receivedCoins: number;
+  sessionId: string; hostUserId: string; result: PkResult; receivedCoins: number;
 }) {
   const [existing] = await connection.query<RowDataPacket[]>(
-    "SELECT streak_after, bonus_coins FROM pk_host_streak_events WHERE pk_session_id = ? AND application_user_id = ? LIMIT 1",
+    "SELECT streak_after, bonus_coins, qualifying_win FROM pk_host_streak_events WHERE pk_session_id = ? AND application_user_id = ? LIMIT 1",
     [input.sessionId, input.hostUserId],
   );
-  if (existing.length) return { streak: Number(existing[0].streak_after), bonusCoins: Number(existing[0].bonus_coins) };
+  if (existing.length) {
+    return {
+      streak: Number(existing[0].streak_after),
+      bonusCoins: Number(existing[0].bonus_coins),
+      qualifying: Boolean(existing[0].qualifying_win),
+      milestoneWins: null,
+      milestoneTotalCoins: 0,
+    };
+  }
   await connection.execute(
     "INSERT IGNORE INTO pk_host_streaks (application_user_id) VALUES (?)",
     [input.hostUserId],
@@ -444,44 +523,68 @@ async function applyPkHostResult(connection: PoolConnection, input: {
     "SELECT current_streak FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1 FOR UPDATE",
     [input.hostUserId],
   );
-  const qualifying = input.result === "WIN" && input.receivedCoins >= 5000;
-  let streak = qualifying ? Number(streakRows[0].current_streak) + 1 : 0;
-  let bonus = 0;
+  const settlement = calculatePkStreakSettlement({
+    currentStreak: Number(streakRows[0].current_streak),
+    result: input.result,
+    receivedCoins: input.receivedCoins,
+  });
+  const streak = settlement.streakAfter;
+  const bonus = settlement.bonusCoins;
   let ledgerId: string | null = null;
-  if (streak >= 3) {
-    bonus = 10000;
-    streak = 0;
+  if (bonus > 0) {
     await ensureCoinWallet(connection, input.hostUserId);
     const [wallets] = await connection.query<(RowDataPacket & { id: string })[]>(
       "SELECT id FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' LIMIT 1 FOR UPDATE",
       [input.hostUserId],
     );
     ledgerId = randomUUID();
-    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + 10000 WHERE id = ?", [wallets[0].id]);
+    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [bonus, wallets[0].id]);
     await connection.execute(
       `INSERT INTO ledger_transactions
         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, destination_type, destination_id, amount, status, reason)
-       VALUES (?, ?, ?, 'COIN', 'PK_STREAK_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, 10000, 'COMPLETED', 'Three qualifying PK wins')`,
-      [ledgerId, transactionCode("PK3"), `pk-streak:${input.sessionId}:${input.hostUserId}`, input.hostUserId],
+       VALUES (?, ?, ?, 'COIN', 'PK_STREAK_REWARD', 'SYSTEM', 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
+      [
+        ledgerId,
+        transactionCode(`PK${settlement.milestoneWins}`),
+        `pk-streak:${input.sessionId}:${input.hostUserId}`,
+        input.hostUserId,
+        bonus,
+        settlement.milestoneWins === 7
+          ? 'Seven qualifying PK wins — 20,000 Coins total milestone'
+          : 'Three qualifying PK wins — 10,000 Coins milestone',
+      ],
     );
     await connection.execute(
-      "INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'PK_STREAK', 'Battle Royal complete', '10,000 coins added for three qualifying PK wins.', 'pk')",
-      [randomUUID(), input.hostUserId],
+      "INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'PK_STREAK', ?, ?, 'pk')",
+      [
+        randomUUID(),
+        input.hostUserId,
+        settlement.milestoneWins === 7 ? 'Seven-win Royal milestone' : 'Three-win Battle milestone',
+        settlement.milestoneWins === 7
+          ? '10,000 Coins added. Your completed seven-win run earned 20,000 Coins total.'
+          : '10,000 Coins added for three qualifying PK wins.',
+      ],
     );
   }
   await connection.execute(
     `UPDATE pk_host_streaks SET current_streak = ?,
        qualifying_wins_total = qualifying_wins_total + ?, bonuses_awarded = bonuses_awarded + ?
      WHERE application_user_id = ?`,
-    [streak, qualifying ? 1 : 0, bonus > 0 ? 1 : 0, input.hostUserId],
+    [streak, settlement.qualifying ? 1 : 0, bonus > 0 ? 1 : 0, input.hostUserId],
   );
   await connection.execute(
     `INSERT INTO pk_host_streak_events
       (id, pk_session_id, application_user_id, result, received_coins, qualifying_win, streak_after, bonus_coins, bonus_ledger_transaction_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [randomUUID(), input.sessionId, input.hostUserId, input.result, input.receivedCoins, qualifying, streak, bonus, ledgerId],
+    [randomUUID(), input.sessionId, input.hostUserId, input.result, input.receivedCoins, settlement.qualifying, streak, bonus, ledgerId],
   );
-  return { streak, bonusCoins: bonus, qualifying };
+  return {
+    streak,
+    bonusCoins: bonus,
+    qualifying: settlement.qualifying,
+    milestoneWins: settlement.milestoneWins,
+    milestoneTotalCoins: settlement.milestoneTotalCoins,
+  };
 }
 
 export async function finalizePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {

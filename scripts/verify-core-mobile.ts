@@ -2128,7 +2128,7 @@ async function main() {
       ).status,
       "rejected",
     );
-    for (let round = 1; round <= 3; round += 1) {
+    for (let round = 1; round <= 7; round += 1) {
       const session = await rooms.createPkSession(owner, {
         sourceRoomCode: sourceLiveCode,
         targetRoomCode: targetLiveCode,
@@ -2150,13 +2150,40 @@ async function main() {
         "INSERT INTO live_room_gift_events (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value) VALUES (?, ?, ?, ?, ?, 1, 6000)",
         [eventId, sourceRoomId, owner.userId, owner.userId, giftCatalog[0].id],
       );
+      if (round === 1) {
+        const [sourceBattle, targetBattle] = await Promise.all([
+          rooms.refreshRoomPresence(owner, sourceLiveCode, true),
+          rooms.refreshRoomPresence(roomAdmin, targetLiveCode, true),
+        ]);
+        const sourceTop = sourceBattle.pkSession?.topGifters?.source ?? [];
+        const mirroredTop = targetBattle.pkSession?.topGifters?.source ?? [];
+        assert.equal(sourceTop.length, 1);
+        assert.equal(sourceTop[0].id, owner.publicId);
+        assert.equal(sourceTop[0].totalCoins, 6000);
+        assert.deepEqual(
+          mirroredTop,
+          sourceTop,
+          "both hosts must receive the same source-team top-gifter strip",
+        );
+        const [sourceDelta, targetDelta] = await Promise.all([
+          rooms.refreshPkBattleState(owner, sourceLiveCode),
+          rooms.refreshPkBattleState(roomAdmin, targetLiveCode),
+        ]);
+        assert.equal(sourceDelta?.pkSession?.sourceScore, 6000);
+        assert.equal(targetDelta?.pkSession?.sourceScore, 6000);
+        assert.deepEqual(
+          targetDelta?.pkSession?.topGifters?.source,
+          sourceDelta?.pkSession?.topGifters?.source,
+          "small PK battle deltas preserve the shared source-team ranking",
+        );
+      }
       const result = await rooms.closePkSession(owner, {
         sessionId: session.id,
         completed: true,
       });
       assert.equal(result.qualifyingWin, true);
-      assert.equal(result.streak, round === 3 ? 0 : round);
-      assert.equal(result.bonusCoins, round === 3 ? 10000 : 0);
+      assert.equal(result.streak, round === 7 ? 0 : round);
+      assert.equal(result.bonusCoins, round === 3 || round === 7 ? 10000 : 0);
       await root.execute(
         "UPDATE live_room_gift_events SET created_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 5 SECOND) WHERE id = ?",
         [eventId],
@@ -2164,7 +2191,53 @@ async function main() {
     }
     const streakAfterBonus = await rewards.pkStreakSnapshot(owner);
     assert.equal(streakAfterBonus.currentStreak, 0);
-    assert.equal(streakAfterBonus.bonusesAwarded, 1);
+    assert.equal(streakAfterBonus.bonusesAwarded, 2);
+    assert.equal(streakAfterBonus.nextMilestoneWins, 3);
+    assert.equal(streakAfterBonus.nextMilestoneTotalCoins, 10000);
+    assert.deepEqual(
+      rewards.calculatePkStreakSettlement({
+        currentStreak: 2,
+        result: "WIN",
+        receivedCoins: 5000,
+      }),
+      {
+        qualifying: true,
+        streakAfter: 3,
+        milestoneWins: 3,
+        bonusCoins: 10000,
+        milestoneTotalCoins: 10000,
+      },
+    );
+    assert.deepEqual(
+      rewards.calculatePkStreakSettlement({
+        currentStreak: 6,
+        result: "WIN",
+        receivedCoins: 5000,
+      }),
+      {
+        qualifying: true,
+        streakAfter: 0,
+        milestoneWins: 7,
+        bonusCoins: 10000,
+        milestoneTotalCoins: 20000,
+      },
+      "the seven-win run must credit 20,000 Coins total, not 30,000",
+    );
+    assert.deepEqual(
+      rewards.calculatePkStreakSettlement({
+        currentStreak: 2,
+        result: "WIN",
+        receivedCoins: 4999,
+      }),
+      {
+        qualifying: false,
+        streakAfter: 0,
+        milestoneWins: null,
+        bonusCoins: 0,
+        milestoneTotalCoins: 0,
+      },
+      "a visual PK win below 5,000 cannot advance the qualifying streak",
+    );
     const losingSession = await rooms.createPkSession(owner, {
       sourceRoomCode: sourceLiveCode,
       targetRoomCode: targetLiveCode,
@@ -2289,7 +2362,7 @@ async function main() {
     assert.equal(databaseTimedPresence.pkResult?.id, databaseTimedSession.id);
     assert.equal(databaseTimedPresence.pkResult?.result, "win");
     console.log(
-      "PASS PK: invited Host authority, server-clock completion/result, bridge audio grants, backend-enforced team chat isolation, Accept/Reject lifecycle, requester synchronization, 5,000 minimum, 3 consecutive wins, 10,000 bonus once, completed-streak reset, loss reset",
+      "PASS PK: invited Host authority, shared source/target score/top-gifter payload, server-clock completion/result, bridge audio grants, backend-enforced team chat isolation, Accept/Reject lifecycle, 5,000 minimum, three-win 10,000 and seven-win 20,000-total milestones, no-result safety and loss reset",
     );
 
     const identities = [owner, guest, roomAdmin];

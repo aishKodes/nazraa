@@ -44,6 +44,7 @@ import {
   markMobileNotificationsRead,
   mobileDailyRewardsSnapshot,
   mobileFaceVerificationSnapshot,
+  refreshPkBattleState,
   refreshRoomPresence,
   refreshRoomMediaBootstrap,
   refreshLiveRoomAudienceCount,
@@ -127,6 +128,7 @@ export const dynamic = "force-dynamic";
 // and turns join/presence into an avoidable database waterfall.
 const mediaCriticalResources = new Set([
   "room-join",
+  "pk-battle",
   "room-presence",
   "room-media-bootstrap",
 ]);
@@ -1100,6 +1102,17 @@ export async function POST(
           scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         }
         return NextResponse.json(result);
+      }
+      if (resource === "pk-battle") {
+        const parsed = z
+          .object({ roomCode: z.string().trim().min(3).max(80) })
+          .parse(body);
+        // This is deliberately a small shared PK delta.  It never settles a
+        // result or writes room state; the normal Host presence heartbeat is
+        // still the authoritative reconciliation path.
+        return NextResponse.json(
+          await refreshPkBattleState(identity, parsed.roomCode),
+        );
       }
       if (resource === "room-close-attempt") {
         const parsed = z

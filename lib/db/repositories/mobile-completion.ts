@@ -1756,6 +1756,146 @@ export async function recordRoomCloseAttempt(
   });
 }
 
+/**
+ * Returns the small, room-safe portion of an active PK board.  A gift should
+ * not force the sender to download messages, seats, cosmetics, and the entire
+ * activity feed simply to animate the score bar.  The full presence heartbeat
+ * remains the periodic authoritative reconciliation (and owns result
+ * settlement); this endpoint is intentionally read-only and only contains
+ * public battle state shared by both Hosts and their audiences.
+ */
+export async function refreshPkBattleState(
+  identity: MobileIdentity,
+  roomCode: string,
+) {
+  const [membershipRows] = await db().query<RowDataPacket[]>(
+    `SELECT room.id
+       FROM live_rooms room
+       INNER JOIN live_room_members member
+         ON member.room_id = room.id
+        AND member.application_user_id = ?
+        AND member.left_at IS NULL
+      WHERE room.room_code = ? AND room.status IN ('ACTIVE', 'LOCKED')
+      LIMIT 1`,
+    [identity.userId, roomCode],
+  );
+  const membership = membershipRows[0];
+  if (!membership) return null;
+
+  const [pkSessions] = await db().query<RowDataPacket[]>(
+    `SELECT session.id, session.status, session.mode, session.duration_minutes,
+            session.source_room_id, session.target_room_id, session.created_at,
+            session.started_at, CURRENT_TIMESTAMP(3) server_time,
+            COALESCE((
+              SELECT SUM(event.coin_value)
+                FROM live_room_gift_events event
+               WHERE event.room_id = session.source_room_id
+                 AND event.created_at >= session.started_at
+            ), 0) source_score,
+            COALESCE((
+              SELECT SUM(event.coin_value)
+                FROM live_room_gift_events event
+               WHERE event.room_id = session.target_room_id
+                 AND event.created_at >= session.started_at
+            ), 0) target_score,
+            source.room_code source_room_code, target.room_code target_room_code,
+            source_user.public_id source_host_public_id,
+            source_user.full_name source_host_name,
+            target_user.public_id target_host_public_id,
+            target_user.full_name target_host_name
+       FROM live_pk_sessions session
+       INNER JOIN live_rooms source ON source.id = session.source_room_id
+       INNER JOIN live_rooms target ON target.id = session.target_room_id
+       INNER JOIN application_users source_user
+         ON source_user.id = source.host_application_user_id
+       INNER JOIN application_users target_user
+         ON target_user.id = target.host_application_user_id
+      WHERE session.status = 'ACTIVE'
+        AND (session.source_room_id = ? OR session.target_room_id = ?)
+      ORDER BY session.started_at DESC
+      LIMIT 1`,
+    [membership.id, membership.id],
+  );
+  const session = pkSessions[0];
+  if (!session) {
+    const [clockRows] = await db().query<RowDataPacket[]>(
+      "SELECT CURRENT_TIMESTAMP(3) server_time",
+    );
+    return {
+      active: true,
+      serverTime: clockRows[0]?.server_time ?? null,
+      pkSession: null,
+    };
+  }
+
+  const topGifters = async (teamRoomId: string) => {
+    const [rows] = await db().query<RowDataPacket[]>(
+      `SELECT user.public_id, user.full_name, ranked.total_coins,
+              CASE WHEN avatar.updated_at IS NOT NULL
+                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                ELSE user.avatar_url END avatar_url
+         FROM (
+           SELECT event.sender_application_user_id,
+                  SUM(event.coin_value) total_coins,
+                  MAX(event.created_at) last_gift_at
+             FROM live_room_gift_events event
+            WHERE event.room_id = ? AND event.created_at >= ?
+            GROUP BY event.sender_application_user_id
+            ORDER BY total_coins DESC, last_gift_at ASC,
+                     event.sender_application_user_id
+            LIMIT 3
+         ) ranked
+         INNER JOIN application_users user
+           ON user.id = ranked.sender_application_user_id
+         LEFT JOIN application_user_avatars avatar
+           ON avatar.application_user_id = user.id`,
+      [teamRoomId, session.started_at],
+    );
+    return rows.map((row) => ({
+      id: String(row.public_id),
+      name: String(row.full_name),
+      avatarUrl: row.avatar_url ?? null,
+      totalCoins: Number(row.total_coins ?? 0),
+    }));
+  };
+
+  const [sourceTopGifters, targetTopGifters] = await Promise.all([
+    topGifters(String(session.source_room_id)),
+    topGifters(String(session.target_room_id)),
+  ]);
+  return {
+    active: true,
+    serverTime: session.server_time,
+    pkSession: {
+      id: String(session.id),
+      status: "active",
+      mode: String(session.mode),
+      durationMinutes: Number(session.duration_minutes),
+      requestedAt: session.created_at,
+      startedAt: session.started_at,
+      sourceScore: Number(session.source_score ?? 0),
+      targetScore: Number(session.target_score ?? 0),
+      sourceRoomCode: String(session.source_room_code),
+      targetRoomCode: String(session.target_room_code),
+      sourceHost: {
+        id: String(session.source_host_public_id),
+        name: String(session.source_host_name),
+      },
+      targetHost: {
+        id: String(session.target_host_public_id),
+        name: String(session.target_host_name),
+      },
+      sourceStreamId: `${String(session.source_room_code)}_${String(session.source_host_public_id)}_main`,
+      targetStreamId: `${String(session.target_room_code)}_${String(session.target_host_public_id)}_main`,
+      isSourceRoom: String(session.source_room_id) === String(membership.id),
+      topGifters: {
+        source: sourceTopGifters,
+        target: targetTopGifters,
+      },
+    },
+  };
+}
+
 export async function refreshRoomPresence(
   identity: MobileIdentity,
   roomCode: string,
@@ -2437,6 +2577,55 @@ export async function refreshRoomPresence(
     };
     const pkSession = pkSessions[0];
     const pkResult = pkResults[0];
+    // PK score and the two three-person supporter strips are one shared
+    // battle payload. The query is deliberately bounded per team instead of
+    // reusing the local room's Gift feed: that preserves room chat/audience
+    // isolation while giving both Hosts the same public battle ranking.
+    let pkTopGifters: RowDataPacket[] = [];
+    if (pkSession?.status === "ACTIVE" && pkSession.started_at) {
+      const [rankedGifters] = await connection.query<RowDataPacket[]>(
+        `SELECT ranked.room_id, user.public_id, user.full_name,
+                ranked.total_coins,
+                CASE WHEN avatar.updated_at IS NOT NULL
+                  THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                  ELSE user.avatar_url END avatar_url
+         FROM (
+           SELECT event.room_id, event.sender_application_user_id,
+                  SUM(event.coin_value) total_coins, MAX(event.created_at) last_gift_at
+           FROM live_room_gift_events event
+           WHERE event.room_id = ? AND event.created_at >= ?
+           GROUP BY event.room_id, event.sender_application_user_id
+           ORDER BY total_coins DESC, last_gift_at ASC, event.sender_application_user_id
+           LIMIT 3
+         ) ranked
+         INNER JOIN application_users user ON user.id = ranked.sender_application_user_id
+         LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
+         UNION ALL
+         SELECT ranked.room_id, user.public_id, user.full_name,
+                ranked.total_coins,
+                CASE WHEN avatar.updated_at IS NOT NULL
+                  THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                  ELSE user.avatar_url END avatar_url
+         FROM (
+           SELECT event.room_id, event.sender_application_user_id,
+                  SUM(event.coin_value) total_coins, MAX(event.created_at) last_gift_at
+           FROM live_room_gift_events event
+           WHERE event.room_id = ? AND event.created_at >= ?
+           GROUP BY event.room_id, event.sender_application_user_id
+           ORDER BY total_coins DESC, last_gift_at ASC, event.sender_application_user_id
+           LIMIT 3
+         ) ranked
+         INNER JOIN application_users user ON user.id = ranked.sender_application_user_id
+         LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id`,
+        [
+          pkSession.source_room_id,
+          pkSession.started_at,
+          pkSession.target_room_id,
+          pkSession.started_at,
+        ],
+      );
+      pkTopGifters = rankedGifters;
+    }
     const pkPeerRoomId = pkSession
       ? String(pkSession.source_room_id) === String(rows[0].id)
         ? String(pkSession.target_room_id)
@@ -2566,6 +2755,24 @@ export async function refreshRoomPresence(
             sourceStreamId: `${String(pkSession.source_room_code)}_${String(pkSession.source_host_public_id)}_main`,
             targetStreamId: `${String(pkSession.target_room_code)}_${String(pkSession.target_host_public_id)}_main`,
             isSourceRoom: String(pkSession.source_room_code) === roomCode,
+            topGifters: {
+              source: pkTopGifters
+                .filter((row) => String(row.room_id) === String(pkSession.source_room_id))
+                .map((row) => ({
+                  id: String(row.public_id),
+                  name: String(row.full_name),
+                  avatarUrl: row.avatar_url ?? null,
+                  totalCoins: Number(row.total_coins ?? 0),
+                })),
+              target: pkTopGifters
+                .filter((row) => String(row.room_id) === String(pkSession.target_room_id))
+                .map((row) => ({
+                  id: String(row.public_id),
+                  name: String(row.full_name),
+                  avatarUrl: row.avatar_url ?? null,
+                  totalCoins: Number(row.total_coins ?? 0),
+                })),
+            },
             // Present only to the local publishing Host.  The IDs are used to
             // configure LiveKit's server-side per-track subscriptions; no
             // guest membership, chat, seat, or profile payload crosses teams.
