@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.58";
-const releaseBuild = 7370;
+const releaseVersion = "2.4.59";
+const releaseBuild = 7371;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.58/Nazraa-Live-2.4.58-7370.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.59/Nazraa-Live-2.4.59-7371.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 301_523_609,
-  sha256: "4f1f3e1beadf2c416fff5b181ffe75cd0516f1d4ff958ce3ee1229930686d3c9",
+  apkSizeBytes: 301_539_993,
+  sha256: "bd514f4c5502b5148fb2a97699ceb64afb7631b940fea2ff43ae59fe66cb6a1f",
   releaseDate: "2026-09-19",
   releaseNotes: [
-    "Keeps the LiveKit Face video surface stable while PK score and supporter updates arrive.",
-    "Adds the reference-aligned PK battle layout, authoritative Red/Blue score bar, timer, and top-gifter strips.",
-    "Includes the stronger on-device Glow beauty preset with a safe low-end fallback.",
+    "Publishes Face Live at a full 720×1280 high layer, up to 30 FPS and 2.7 Mbps on capable Android devices.",
+    "Prevents Face viewers from being held on a low simulcast layer while the video canvas is first laid out or restored.",
+    "Strengthens full-resolution on-device Beauty while keeping low-end pass-through and video-quality safeguards.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
