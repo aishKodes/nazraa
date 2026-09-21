@@ -517,6 +517,8 @@ export async function POST(
             ]),
             seatIndex: z.number().int().min(0).max(19).optional(),
             targetPublicId: z.string().regex(/^\d+$/).optional(),
+            seatSessionId: z.string().uuid().optional(),
+            seatVersion: z.number().int().min(0).optional(),
           })
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
@@ -1268,7 +1270,11 @@ export async function POST(
       }
       if (resource === "pk-end") {
         const parsed = z
-          .object({ sessionId: z.string().uuid(), completed: z.boolean() })
+          .object({
+            sessionId: z.string().uuid(),
+            completed: z.boolean(),
+            outcome: z.enum(["MANUAL_CANCEL", "NETWORK_INTERRUPTED"]).optional(),
+          })
           .parse(body);
         const result = await closePkSession(identity, parsed);
         scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");

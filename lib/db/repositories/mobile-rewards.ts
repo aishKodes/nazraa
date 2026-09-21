@@ -6,6 +6,17 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { grantVipCosmetics } from "@/lib/db/repositories/mobile-cosmetics";
+import {
+  calculatePkStreakSettlement,
+  pkStreakMilestone,
+  type PkResult,
+} from "@/lib/policy/pk-streak-policy";
+
+export {
+  calculatePkStreakSettlement,
+  pkStreakMilestone,
+  type PkResult,
+} from "@/lib/policy/pk-streak-policy";
 
 function transactionCode(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -415,10 +426,30 @@ export async function rocketSnapshot(identity: MobileIdentity, roomCode: string)
 
 export async function pkStreakSnapshot(identity: MobileIdentity) {
   const [streaks, events] = await Promise.all([
-    db().query<RowDataPacket[]>("SELECT current_streak, qualifying_wins_total, bonuses_awarded FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1", [identity.userId]),
+    db().query<RowDataPacket[]>("SELECT current_streak, streak_cycle_id, qualifying_wins_total, bonuses_awarded FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1", [identity.userId]),
+    // PK history is independent of a streak event: manual cancellation and
+    // network interruption are legitimate daily history rows even though they
+    // deliberately never settle or reset a streak.
     db().query<RowDataPacket[]>(
-      "SELECT result, received_coins, qualifying_win, streak_after, bonus_coins, created_at FROM pk_host_streak_events WHERE application_user_id = ? ORDER BY created_at DESC LIMIT 12",
-      [identity.userId],
+      `SELECT session.id session_id, session.status session_status,
+              session.started_at, session.ended_at, session.source_score, session.target_score,
+              source.host_application_user_id source_host_id,
+              target.host_application_user_id target_host_id,
+              source_user.public_id source_public_id, source_user.full_name source_name,
+              target_user.public_id target_public_id, target_user.full_name target_name,
+              event.result, event.received_coins, event.qualifying_win,
+              event.streak_after, event.bonus_coins, event.created_at event_created_at
+         FROM live_pk_sessions session
+         INNER JOIN live_rooms source ON source.id = session.source_room_id
+         INNER JOIN live_rooms target ON target.id = session.target_room_id
+         INNER JOIN application_users source_user ON source_user.id = source.host_application_user_id
+         INNER JOIN application_users target_user ON target_user.id = target.host_application_user_id
+         LEFT JOIN pk_host_streak_events event
+           ON event.pk_session_id = session.id AND event.application_user_id = ?
+        WHERE source.host_application_user_id = ? OR target.host_application_user_id = ?
+        ORDER BY COALESCE(session.ended_at, session.started_at, session.created_at) DESC
+        LIMIT 30`,
+      [identity.userId, identity.userId, identity.userId],
     ),
   ]);
   const currentStreak = Number(streaks[0][0]?.current_streak ?? 0);
@@ -434,68 +465,30 @@ export async function pkStreakSnapshot(identity: MobileIdentity) {
     minimumBattleCoins: 5000,
     bonusCoins: next.awardCoins,
     qualifyingWinsTotal: Number(streaks[0][0]?.qualifying_wins_total ?? 0), bonusesAwarded: Number(streaks[0][0]?.bonuses_awarded ?? 0),
-    history: events[0].map((row) => ({ result: String(row.result).toLowerCase(), receivedCoins: Number(row.received_coins), qualifyingWin: Boolean(row.qualifying_win), streakAfter: Number(row.streak_after), bonusCoins: Number(row.bonus_coins), createdAt: row.created_at })),
-  };
-}
-
-export type PkResult = "WIN" | "LOSS" | "DRAW";
-
-export function pkStreakMilestone(currentStreak: number) {
-  const streak = Math.max(0, Math.min(7, Math.floor(currentStreak)));
-  return streak < 3
-    ? { wins: 3, totalCoins: 10000, awardCoins: 10000 }
-    : { wins: 7, totalCoins: 20000, awardCoins: 10000 };
-}
-
-/// Pure settlement policy so the exact 3/7 behaviour is independently
-/// testable without a production wallet. A qualifying win is at least 5,000
-/// received Gift Coins; a normal visual win below that threshold is not a
-/// streak win and resets the consecutive qualification sequence.
-export function calculatePkStreakSettlement(input: {
-  currentStreak: number;
-  result: PkResult;
-  receivedCoins: number;
-}) {
-  const prior = Math.max(0, Math.min(7, Math.floor(input.currentStreak)));
-  const qualifying = input.result === "WIN" && input.receivedCoins >= 5000;
-  if (!qualifying) {
-    return {
-      qualifying: false,
-      streakAfter: 0,
-      milestoneWins: null as number | null,
-      bonusCoins: 0,
-      milestoneTotalCoins: 0,
-    };
-  }
-  // A legacy seven should have been reset after its milestone. Treat it as a
-  // fresh sequence rather than ever issuing a duplicate milestone.
-  const candidate = (prior >= 7 ? 0 : prior) + 1;
-  if (candidate === 3) {
-    return {
-      qualifying: true,
-      streakAfter: 3,
-      milestoneWins: 3,
-      bonusCoins: 10000,
-      milestoneTotalCoins: 10000,
-    };
-  }
-  if (candidate === 7) {
-    // The first 10k was issued at 3. Credit only the additional 10k here so
-    // the reward for this seven-win run is exactly 20,000 Coins in total.
-    return {
-      qualifying: true,
-      streakAfter: 0,
-      milestoneWins: 7,
-      bonusCoins: 10000,
-      milestoneTotalCoins: 20000,
-    };
-  }
-  return {
-    qualifying: true,
-    streakAfter: candidate,
-    milestoneWins: null as number | null,
-    bonusCoins: 0,
-    milestoneTotalCoins: 0,
+    history: events[0].map((row) => {
+      const sourceIsMe = String(row.source_host_id) === identity.userId;
+      const opponentName = sourceIsMe ? row.target_name : row.source_name;
+      const opponentPublicId = sourceIsMe ? row.target_public_id : row.source_public_id;
+      const myScore = sourceIsMe ? Number(row.source_score) : Number(row.target_score);
+      const opponentScore = sourceIsMe ? Number(row.target_score) : Number(row.source_score);
+      return {
+        sessionId: String(row.session_id),
+        status: String(row.session_status).toLowerCase(),
+        result: row.result == null ? null : String(row.result).toLowerCase(),
+        sourceScore: Number(row.source_score),
+        targetScore: Number(row.target_score),
+        myScore,
+        opponentScore,
+        opponent: { publicId: String(opponentPublicId), name: String(opponentName) },
+        receivedCoins: Number(row.received_coins ?? 0),
+        qualifyingWin: Boolean(row.qualifying_win),
+        streakAfter: row.streak_after == null ? null : Number(row.streak_after),
+        bonusCoins: Number(row.bonus_coins ?? 0),
+        startedAt: row.started_at,
+        endedAt: row.ended_at,
+        createdAt: row.event_created_at ?? row.ended_at ?? row.started_at,
+      };
+    }),
   };
 }
 
@@ -519,8 +512,8 @@ async function applyPkHostResult(connection: PoolConnection, input: {
     "INSERT IGNORE INTO pk_host_streaks (application_user_id) VALUES (?)",
     [input.hostUserId],
   );
-  const [streakRows] = await connection.query<(RowDataPacket & { current_streak: number })[]>(
-    "SELECT current_streak FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1 FOR UPDATE",
+  const [streakRows] = await connection.query<(RowDataPacket & { current_streak: number; streak_cycle_id: string | null })[]>(
+    "SELECT current_streak, streak_cycle_id FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1 FOR UPDATE",
     [input.hostUserId],
   );
   const settlement = calculatePkStreakSettlement({
@@ -530,6 +523,10 @@ async function applyPkHostResult(connection: PoolConnection, input: {
   });
   const streak = settlement.streakAfter;
   const bonus = settlement.bonusCoins;
+  const priorStreak = Number(streakRows[0].current_streak);
+  const streakCycleId = settlement.qualifying
+    ? (priorStreak === 0 ? randomUUID() : streakRows[0].streak_cycle_id ?? randomUUID())
+    : streakRows[0].streak_cycle_id;
   let ledgerId: string | null = null;
   if (bonus > 0) {
     await ensureCoinWallet(connection, input.hostUserId);
@@ -546,7 +543,7 @@ async function applyPkHostResult(connection: PoolConnection, input: {
       [
         ledgerId,
         transactionCode(`PK${settlement.milestoneWins}`),
-        `pk-streak:${input.sessionId}:${input.hostUserId}`,
+        `PK_STREAK:${streakCycleId}:${settlement.milestoneWins}`,
         input.hostUserId,
         bonus,
         settlement.milestoneWins === 7
@@ -567,16 +564,16 @@ async function applyPkHostResult(connection: PoolConnection, input: {
     );
   }
   await connection.execute(
-    `UPDATE pk_host_streaks SET current_streak = ?,
+    `UPDATE pk_host_streaks SET current_streak = ?, streak_cycle_id = ?,
        qualifying_wins_total = qualifying_wins_total + ?, bonuses_awarded = bonuses_awarded + ?
      WHERE application_user_id = ?`,
-    [streak, settlement.qualifying ? 1 : 0, bonus > 0 ? 1 : 0, input.hostUserId],
+    [streak, streak === 0 ? null : streakCycleId, settlement.qualifying ? 1 : 0, bonus > 0 ? 1 : 0, input.hostUserId],
   );
   await connection.execute(
     `INSERT INTO pk_host_streak_events
-      (id, pk_session_id, application_user_id, result, received_coins, qualifying_win, streak_after, bonus_coins, bonus_ledger_transaction_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [randomUUID(), input.sessionId, input.hostUserId, input.result, input.receivedCoins, settlement.qualifying, streak, bonus, ledgerId],
+      (id, pk_session_id, application_user_id, streak_cycle_id, result, received_coins, qualifying_win, streak_after, bonus_coins, bonus_ledger_transaction_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [randomUUID(), input.sessionId, input.hostUserId, streakCycleId, input.result, input.receivedCoins, settlement.qualifying, streak, bonus, ledgerId],
   );
   return {
     streak,
@@ -587,7 +584,11 @@ async function applyPkHostResult(connection: PoolConnection, input: {
   };
 }
 
-export async function finalizePkSession(identity: MobileIdentity, input: { sessionId: string; completed: boolean }) {
+export async function finalizePkSession(identity: MobileIdentity, input: {
+  sessionId: string;
+  completed: boolean;
+  outcome?: "MANUAL_CANCEL" | "NETWORK_INTERRUPTED";
+}) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
       id: string; status: string; source_room_id: string; target_room_id: string; source_room_code: string; target_room_code: string; source_host_id: string; target_host_id: string; starts_at: Date; source_score: number; target_score: number; winner_room_id: string | null;
@@ -604,7 +605,7 @@ export async function finalizePkSession(identity: MobileIdentity, input: { sessi
     );
     const session = rows[0];
     if (!session) throw new Error("The PK session could not be closed.");
-    if (["REJECTED", "CANCELLED", "EXPIRED"].includes(session.status)) {
+    if (["REJECTED", "CANCELLED", "NETWORK_INTERRUPTED", "EXPIRED"].includes(session.status)) {
       return { id: session.id, status: session.status.toLowerCase(), sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
     }
     if (session.status === "COMPLETED") {
@@ -614,8 +615,14 @@ export async function finalizePkSession(identity: MobileIdentity, input: { sessi
     }
     if (!["REQUESTED", "ACTIVE"].includes(session.status)) throw new Error("The PK session could not be closed.");
     if (!input.completed) {
-      await connection.execute("UPDATE live_pk_sessions SET status = 'CANCELLED', ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [session.id]);
-      return { id: session.id, status: "cancelled", sourceRoomCode: session.source_room_code, targetRoomCode: session.target_room_code };
+      const status = input.outcome === "NETWORK_INTERRUPTED" ? "NETWORK_INTERRUPTED" : "CANCELLED";
+      await connection.execute("UPDATE live_pk_sessions SET status = ?, ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [status, session.id]);
+      return {
+        id: session.id,
+        status: status.toLowerCase(),
+        sourceRoomCode: session.source_room_code,
+        targetRoomCode: session.target_room_code,
+      };
     }
     const [scores] = await connection.query<(RowDataPacket & { room_id: string; score: number })[]>(
       `SELECT event.room_id, COALESCE(SUM(event.coin_value), 0) score

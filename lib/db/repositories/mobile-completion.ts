@@ -49,6 +49,65 @@ function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
 }
 
+type AuthoritativeSeatRow = RowDataPacket & {
+  seat_index: number | null;
+  seat_session_id: string | null;
+  seat_version: number;
+};
+
+/**
+ * Terminal room actions are the sole cross-cutting way to end a Party seat.
+ * Media failures deliberately never call this helper. Keeping it server-side
+ * gives an auditable reason and makes delayed client callbacks harmless.
+ */
+async function terminateAuthoritativeSeat(
+  connection: PoolConnection,
+  input: {
+    roomId: string;
+    userId: string;
+    eventSource: string;
+    terminationReason:
+      | "USER_LEFT_ROOM"
+      | "HOST_REMOVED_USER"
+      | "ROOM_ENDED";
+  },
+) {
+  const [rows] = await connection.query<AuthoritativeSeatRow[]>(
+    `SELECT seat_index, seat_session_id, seat_version
+       FROM live_room_members
+      WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL
+      LIMIT 1 FOR UPDATE`,
+    [input.roomId, input.userId],
+  );
+  const seat = rows[0];
+  if (!seat || seat.seat_index == null) return false;
+  const nextVersion = Number(seat.seat_version ?? 0) + 1;
+  await connection.execute(
+    `UPDATE live_room_members
+        SET seat_index = NULL, seat_session_id = NULL, seat_version = ?,
+            muted = TRUE, media_publishing = FALSE
+      WHERE room_id = ? AND application_user_id = ?`,
+    [nextVersion, input.roomId, input.userId],
+  );
+  await connection.execute(
+    `INSERT INTO live_room_seat_transitions
+      (id, room_id, application_user_id, seat_index, seat_session_id, seat_version,
+       previous_state, next_state, desired_mic_state, event_source, termination_reason)
+     VALUES (?, ?, ?, ?, ?, ?, 'SEATED', 'UNSEATED', 'MUTED', ?, ?)`,
+    [
+      randomUUID(),
+      input.roomId,
+      input.userId,
+      seat.seat_index,
+      seat.seat_session_id,
+      nextVersion,
+      input.eventSource,
+      input.terminationReason,
+    ],
+  );
+  return true;
+}
+
 function jsonObject(value: unknown): Record<string, unknown> {
   // mysql2 can expose a JSON/TEXT settings value as a Buffer depending on
   // the connection/server character-set negotiation. Treat it exactly like
@@ -1327,6 +1386,8 @@ export async function joinLiveRoom(
       `INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, left_at, last_seen_at)
        VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
        ON DUPLICATE KEY UPDATE seat_index = IF(left_at IS NULL, seat_index, NULL),
+         seat_session_id = IF(left_at IS NULL, seat_session_id, NULL),
+         seat_version = IF(left_at IS NULL, seat_version, seat_version + 1),
          room_role = IF(room_role IN ('OWNER','ADMIN') OR left_at IS NULL, room_role, VALUES(room_role)),
          media_role = IF(left_at IS NULL, media_role, VALUES(media_role)),
          muted = IF(left_at IS NULL, muted, VALUES(muted)), muted_by_staff = IF(left_at IS NULL, muted_by_staff, FALSE), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
@@ -1419,8 +1480,14 @@ export async function leaveLiveRoom(
         throw new Error(
           "Appoint a Room Admin to keep this Party open, or choose Close Room.",
         );
+      await terminateAuthoritativeSeat(connection, {
+        roomId: room.id,
+        userId: identity.userId,
+        eventSource: "ROOM_LEAVE_OWNER_TRANSFER",
+        terminationReason: "USER_LEFT_ROOM",
+      });
       await connection.execute(
-        "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL, media_role = 'PASSIVE_LISTENER', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
+        "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, media_role = 'PASSIVE_LISTENER', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
         [room.id, identity.userId],
       );
       await connection.execute(
@@ -1451,8 +1518,14 @@ export async function leaveLiveRoom(
       );
       return { left: true, transferredTo: String(successor.public_id) };
     }
+    await terminateAuthoritativeSeat(connection, {
+      roomId: room.id,
+      userId: identity.userId,
+      eventSource: "ROOM_LEAVE",
+      terminationReason: "USER_LEFT_ROOM",
+    });
     await connection.execute(
-      `UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, seat_index = NULL,
+      `UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE,
          media_role = ?, media_publishing = FALSE
        WHERE room_id = ? AND application_user_id = ?`,
       [
@@ -1950,7 +2023,8 @@ export async function refreshRoomPresence(
   const presence = await withTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
-              member.room_role, member.media_role, member.seat_index, member.muted, member.muted_by_staff,
+              member.room_role, member.media_role, member.seat_index, member.seat_session_id, member.seat_version,
+              member.muted, member.muted_by_staff,
               accounting.id reward_accounting_id,
               accounting.host_application_user_id reward_host_application_user_id,
               accounting.started_at reward_started_at,
@@ -2407,7 +2481,9 @@ export async function refreshRoomPresence(
       `SELECT user.public_id, user.full_name,
               user.level_number consumption_level,
               user.anchor_level_number anchor_level,
-              user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role, member.media_publishing, member.seat_index, member.muted, member.muted_by_staff,
+              user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role,
+              member.media_publishing, member.seat_index, member.seat_session_id, member.seat_version,
+              member.muted, member.muted_by_staff,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
@@ -2658,6 +2734,8 @@ export async function refreshRoomPresence(
       roomRole: String(rows[0].room_role).toLowerCase(),
       mediaRole: currentMediaRole.toLowerCase(),
       seatIndex: rows[0].seat_index,
+      seatSessionId: rows[0].seat_session_id == null ? null : String(rows[0].seat_session_id),
+      seatVersion: Number(rows[0].seat_version ?? 0),
       muted: Boolean(rows[0].muted),
       staffMuted: Boolean(rows[0].muted_by_staff),
       chatLocked: Boolean(rows[0].chat_locked),
@@ -2863,6 +2941,8 @@ export async function refreshRoomPresence(
         mediaRole: String(member.media_role).toLowerCase(),
         mediaPublishing: Boolean(member.media_publishing),
         seatIndex: member.seat_index == null ? null : Number(member.seat_index),
+        seatSessionId: member.seat_session_id == null ? null : String(member.seat_session_id),
+        seatVersion: Number(member.seat_version ?? 0),
         muted: Boolean(member.muted),
         staffMuted: Boolean(member.muted_by_staff),
         receivedGiftValue: Number(member.received_gift_value),
@@ -3730,7 +3810,11 @@ export async function respondPkSession(
 
 export async function closePkSession(
   identity: MobileIdentity,
-  input: { sessionId: string; completed: boolean },
+  input: {
+    sessionId: string;
+    completed: boolean;
+    outcome?: "MANUAL_CANCEL" | "NETWORK_INTERRUPTED";
+  },
 ) {
   return finalizePkSession(identity, input);
 }
@@ -4069,6 +4153,12 @@ export async function kickRoomMember(
     if (member.actor_role === "ADMIN" && member.target_role === "ADMIN") {
       throw new Error("Only the Room Owner can remove another Room Admin.");
     }
+    await terminateAuthoritativeSeat(connection, {
+      roomId: member.room_id,
+      userId: member.target_id,
+      eventSource: "ROOM_KICK",
+      terminationReason: "HOST_REMOVED_USER",
+    });
     await connection.execute(
       "UPDATE live_room_members SET left_at = CURRENT_TIMESTAMP(3), muted = TRUE, media_role = IF(media_role IN ('PARTY_OWNER','PASSIVE_LISTENER','MIC_REQUESTED','RTC_SPEAKER'), 'PASSIVE_LISTENER', 'PASSIVE_VIEWER'), media_publishing = FALSE WHERE room_id = ? AND application_user_id = ?",
       [member.room_id, member.target_id],
@@ -4390,6 +4480,25 @@ export async function finalizeLiveSession(
         session.accounting_id,
       ],
     );
+    // Closing a room is terminal for every occupied Party seat. Record each
+    // termination before marking membership left so no later reconnect can
+    // resurrect a stale microphone permission.
+    const [occupiedSeats] = await connection.query<
+      (RowDataPacket & { application_user_id: string })[]
+    >(
+      `SELECT application_user_id FROM live_room_members
+        WHERE room_id = ? AND left_at IS NULL AND seat_index IS NOT NULL
+        FOR UPDATE`,
+      [session.room_id],
+    );
+    for (const seat of occupiedSeats) {
+      await terminateAuthoritativeSeat(connection, {
+        roomId: session.room_id,
+        userId: seat.application_user_id,
+        eventSource: "ROOM_FINALIZED",
+        terminationReason: "ROOM_ENDED",
+      });
+    }
     await connection.execute(
       "UPDATE live_room_members SET left_at = COALESCE(left_at, CURRENT_TIMESTAMP(3)), muted = TRUE, media_publishing = FALSE WHERE room_id = ?",
       [session.room_id],
