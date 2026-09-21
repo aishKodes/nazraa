@@ -1136,12 +1136,7 @@ async function gameSettings(connection: PoolConnection) {
 }
 
 /**
- * The public game ranking is intentionally a *daily net positive profit*
- * ranking: accepted wager is subtracted from settled payout across every
- * completed round in the configured Nazraa business day.  It prevents a
- * player who has lost more than they won from being presented as a winner.
- *
- * Keep this formatting in Node rather than MySQL: production database
+ * Keep business-date formatting in Node rather than MySQL: production database
  * connections use UTC and managed MySQL hosts are not guaranteed to ship IANA
  * timezone tables.
  */
@@ -1162,10 +1157,9 @@ function gameBusinessDate(timezone: string, at = new Date()) {
 }
 
 /**
- * Adds one immutable game result to the indexed daily ranking projection.
- * The contribution's primary key is the result ID, therefore settlement
- * retries and reconciliation are safe: only the first transaction updates
- * the summary.
+ * Adds one immutable game result to the indexed daily-winning projection.
+ * The contribution primary key is the result ID, so retries and reconciliation
+ * cannot add the same settled payout twice.
  */
 async function recordDailyGameWinnerSummary(
   connection: PoolConnection,
@@ -1202,11 +1196,12 @@ async function recordDailyGameWinnerSummary(
   if (contribution.affectedRows !== 1) return;
   await connection.execute(
     `INSERT INTO game_daily_winner_summaries
-       (game_name, business_date, application_user_id, daily_net_profit,
+       (game_name, business_date, application_user_id, daily_net_profit, daily_winnings,
         total_wager, total_payout, rounds_won)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        daily_net_profit = daily_net_profit + VALUES(daily_net_profit),
+       daily_winnings = daily_winnings + VALUES(daily_winnings),
        total_wager = total_wager + VALUES(total_wager),
        total_payout = total_payout + VALUES(total_payout),
        rounds_won = rounds_won + VALUES(rounds_won),
@@ -1216,6 +1211,7 @@ async function recordDailyGameWinnerSummary(
       gameBusinessDate(input.timezone, input.settledAt),
       input.userId,
       netProfit,
+      input.payout,
       input.wager,
       input.payout,
       roundsWon,
@@ -1551,17 +1547,25 @@ export function evaluateGreedyRound(
     ? [5, 45, 25, 5, 15, 5, 5, 10] as const
     : [5, 10, 15, 25, 45, 5, 5, 5, 1.25, 4.37] as const;
   const labels = lion
-    ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Steak"] as const
+    ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Meat"] as const
     : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce", "Salad", "Pizza"] as const;
   const saladMembers = lion ? [0, 3, 5, 6] : [0, 5, 6, 7];
   const pizzaMembers = lion ? [1, 2, 4, 7] : [1, 2, 3, 4];
   if (outcome === "salad" || outcome === "pizza") {
     const winners = outcome === "salad" ? saladMembers : pizzaMembers;
-    const payout = Math.floor(winners.reduce((sum, index) => sum + checked.bets[String(index)] * multipliers[index], 0));
+    // Greedy King exposes two actual group houses (Salad/Pizza). A special
+    // outcome must settle both the food houses and the matching group-house
+    // wager; accepting that chip but omitting it made valid King bets fail.
+    const groupIndex = lion ? null : outcome === "salad" ? 8 : 9;
+    const payout = Math.floor(
+      winners.reduce((sum, index) => sum + checked.bets[String(index)] * multipliers[index], 0) +
+      (groupIndex == null ? 0 : checked.bets[String(groupIndex)] * Number(multipliers[groupIndex] ?? 0)),
+    );
     return {
       outcome: {
         winner: outcome, label: outcome === "salad" ? "Salad" : "Pizza",
-        winners, winningGroups: [outcome.toUpperCase()], specialResult: true,
+        winners: groupIndex == null ? winners : [...winners, groupIndex],
+        winningGroups: [outcome.toUpperCase()], specialResult: true,
       },
       wager: checked.total,
       payout,
@@ -1612,6 +1616,7 @@ type SharedRoundGame = "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_kin
 type SharedRoundRow = RowDataPacket & {
   id: string; game_name: SharedRoundGame; round_number: number;
   betting_starts_at: Date; betting_ends_at: Date; drawing_ends_at: Date; result_ends_at: Date;
+  result_committed_at: Date | null; result_version: number;
   outcome_json: unknown;
 };
 
@@ -1674,20 +1679,23 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
   );
   const poolAmount = Number(poolRows[0]?.amount ?? 0);
   const specialsEligible = poolAmount >= Number(config.poolMinimumForSpecial ?? 0);
+  const lion = game === "greedy_lion";
   const configuredWeights = config.outcomeWeights?.length === 8
     ? config.outcomeWeights
     : Array.from({ length: 8 }, () => 1);
   const outcomes: { result: number | "salad" | "pizza"; weight: number }[] = configuredWeights.map(
     (weight, index) => ({ result: index, weight }),
   );
-  if (specialsEligible && Number(config.saladWeight ?? 0) > 0) {
+  // Lion has only the eight food-house controls. It must never receive a
+  // Salad/Pizza result because users have no matching group wager and the
+  // result cannot be represented by its board. King has those two controls.
+  if (!lion && specialsEligible && Number(config.saladWeight ?? 0) > 0) {
     outcomes.push({ result: "salad", weight: Number(config.saladWeight) });
   }
-  if (specialsEligible && Number(config.pizzaWeight ?? 0) > 0) {
+  if (!lion && specialsEligible && Number(config.pizzaWeight ?? 0) > 0) {
     outcomes.push({ result: "pizza", weight: Number(config.pizzaWeight) });
   }
   const selected = chooseWeighted(outcomes).result;
-  const lion = game === "greedy_lion";
   const labels = lion
     ? ["Strawberry", "Chicken", "Octopus", "Corn", "Fish", "Lettuce", "Grapes", "Meat"]
     : ["Carrot", "Hot Dog", "Skewers", "Ham", "Steak", "Tomato", "Corn", "Lettuce"];
@@ -1789,9 +1797,9 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
   const resultEndsAt = new Date(drawingEndsAt.getTime() + timing.result * 1000);
   await connection.execute(
     `INSERT IGNORE INTO game_shared_rounds
-      (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_ends_at, outcome_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config))],
+      (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_committed_at, result_ends_at, result_version, outcome_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config))],
   );
   const [rows] = await connection.query<SharedRoundRow[]>(
     "SELECT * FROM game_shared_rounds WHERE game_name = ? AND round_number = ? LIMIT 1 FOR UPDATE",
@@ -1809,9 +1817,28 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
 }
 
 function sharedPhase(round: SharedRoundRow, now: Date) {
-  if (now < new Date(round.betting_ends_at)) return { phase: "BETTING", phaseEndsAt: new Date(round.betting_ends_at) };
-  if (now < new Date(round.drawing_ends_at)) return { phase: "DRAWING", phaseEndsAt: new Date(round.drawing_ends_at) };
-  return { phase: "RESULT", phaseEndsAt: new Date(round.result_ends_at) };
+  if (now < new Date(round.betting_ends_at)) {
+    return { phase: "BETTING", lifecycle: "BETTING_OPEN", phaseEndsAt: new Date(round.betting_ends_at) };
+  }
+  if (now < new Date(round.drawing_ends_at)) {
+    return { phase: "DRAWING", lifecycle: "BETTING_LOCKED", phaseEndsAt: new Date(round.drawing_ends_at) };
+  }
+  const resultStartsAt = new Date(round.drawing_ends_at);
+  const resultEndsAt = new Date(round.result_ends_at);
+  const animationEndsAt = new Date(Math.min(
+    resultEndsAt.getTime(),
+    resultStartsAt.getTime() + Math.max(800, Math.floor((resultEndsAt.getTime() - resultStartsAt.getTime()) * 0.68)),
+  ));
+  return {
+    phase: "RESULT",
+    lifecycle: now < animationEndsAt ? "RESULT_ANIMATING" : "RESULT_VISIBLE",
+    phaseEndsAt: resultEndsAt,
+  };
+}
+
+function sharedWinningItemId(game: SharedRoundGame, outcome: Record<string, unknown>) {
+  if (game === teenPattiGame) return String(outcome.winnerLane ?? "");
+  return String(outcome.winner ?? "");
 }
 
 async function settleMaturedSharedRounds(
@@ -1964,7 +1991,7 @@ async function sharedRoundStatePayload(
       "SELECT wager_total, gross_payout, deduction_total, payout_total, balance_after, settled_at FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1", [round.id, identity.userId]),
     connection.query<SharedRoundRow[]>(
       `SELECT * FROM game_shared_rounds WHERE game_name = ? AND drawing_ends_at <= UTC_TIMESTAMP(3)
-       ORDER BY round_number DESC LIMIT 10`, [game]),
+       ORDER BY round_number DESC LIMIT ?`, [game, Math.max(1, Math.min(50, config.historyLength))]),
     connection.query<RowDataPacket[]>(
       `SELECT round.id round_id, round.round_number, round.outcome_json,
               settlement.wager_total, settlement.gross_payout,
@@ -2032,7 +2059,10 @@ async function sharedRoundStatePayload(
     serverTimestamp: now.toISOString(),
     round: {
       id: round.id, number: Number(round.round_number), phase: phase.phase,
+      lifecycle: phase.lifecycle,
       phaseEndsAt: phase.phaseEndsAt.toISOString(), bettingEndsAt: new Date(round.betting_ends_at).toISOString(),
+      resultCommittedAt: new Date(round.result_committed_at ?? round.drawing_ends_at).toISOString(),
+      resultVersion: Number(round.result_version ?? 1),
     },
     targetTotals: Object.fromEntries(targets.map((target) => [target, Number(totalMap[target] ?? 0)])),
     myBets: Object.fromEntries(targets.map((target) => [target, Number(myMap[target] ?? 0)])),
@@ -2062,9 +2092,18 @@ async function sharedRoundStatePayload(
       balance: Number(latestSettlement.balance_after),
       settledAt: new Date(latestSettlement.settled_at as Date).toISOString(),
     } : null,
-    recentResults: recentRows[0].map((item) => ({
-      roundId: item.id, roundNumber: Number(item.round_number), outcome: asObject(item.outcome_json),
-    })),
+    recentResults: recentRows[0].map((item) => {
+      const outcome = asObject(item.outcome_json);
+      return {
+        gameId: game,
+        roundId: item.id,
+        roundNumber: Number(item.round_number),
+        winningItemId: sharedWinningItemId(game, outcome),
+        settledAt: new Date(item.result_committed_at ?? item.drawing_ends_at).toISOString(),
+        resultVersion: Number(item.result_version ?? 1),
+        outcome,
+      };
+    }),
     bigWinners: bigWinnerRows[0].map((item) => ({
       id: String(item.id), publicId: String(item.public_id), name: String(item.full_name),
       avatarUrl: mobileAvatarUrl(item), userLevel: Number(item.consumption_level ?? 1),
@@ -2382,29 +2421,26 @@ export async function gameRoundLeaderboard(
   if (!supportedRoundGames.has(game)) throw new Error("This game is unavailable.");
   const { timezone } = await loadFaceLiveRules();
   const businessDate = gameBusinessDate(timezone);
-  // Read only the compact settlement projection. The Game Center ranking is
-  // intentionally one daily, all-games board: a user's settled wins and
-  // losses from every enabled game aggregate before the positive-net filter
-  // is applied. The legacy `game` argument remains validated for API
-  // compatibility with shipped clients, but must never fragment this board
-  // into misleading per-game winner lists.
+  // Read the compact, idempotent settlement projection for this game only.
+  // A player accumulates every real winning payout in the business day; the
+  // query never scans raw bets and never fabricates enough rows to fill 20.
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT user.public_id, user.full_name, user.avatar_url,
             avatar.updated_at avatar_updated_at, user.country_code,
-            SUM(summary.rounds_won) rounds,
-            SUM(summary.total_wager) total_wager,
-            SUM(summary.total_payout) total_payout,
-            SUM(summary.daily_net_profit) net_winnings
+            summary.rounds_won rounds,
+            summary.total_wager,
+            summary.total_payout,
+            summary.daily_net_profit net_winnings,
+            summary.daily_winnings
      FROM game_daily_winner_summaries summary
      INNER JOIN application_users user ON user.id = summary.application_user_id
      LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-     WHERE summary.business_date = ?
-     GROUP BY user.id, user.public_id, user.full_name, user.avatar_url,
-              avatar.updated_at, user.country_code
-     HAVING SUM(summary.daily_net_profit) > 0
-     ORDER BY net_winnings DESC, total_payout DESC, user.public_id
+     WHERE summary.game_name = ?
+       AND summary.business_date = ?
+       AND summary.daily_winnings > 0
+     ORDER BY summary.daily_winnings DESC, summary.total_payout DESC, user.public_id
      LIMIT ?`,
-    [businessDate, Math.max(1, Math.min(20, limit))],
+    [game, businessDate, Math.max(1, Math.min(20, limit))],
   );
   return {
     period,
@@ -2418,6 +2454,7 @@ export async function gameRoundLeaderboard(
       totalWager: Number(row.total_wager),
       totalPayout: Number(row.total_payout),
       netWinnings: Number(row.net_winnings),
+      dailyWinnings: Number(row.daily_winnings),
     })),
   };
 }

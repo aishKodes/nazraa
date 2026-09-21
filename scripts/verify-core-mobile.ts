@@ -2231,12 +2231,12 @@ async function main() {
       }),
       {
         qualifying: false,
-        streakAfter: 0,
+        streakAfter: 2,
         milestoneWins: null,
         bonusCoins: 0,
         milestoneTotalCoins: 0,
       },
-      "a visual PK win below 5,000 cannot advance the qualifying streak",
+      "a visual PK win below 5,000 cannot advance or erase the qualifying streak",
     );
     const losingSession = await rooms.createPkSession(owner, {
       sourceRoomCode: sourceLiveCode,
@@ -2798,28 +2798,65 @@ async function main() {
     );
     assert.ok(
       teenLeaderboard.entries.every(
-        (entry) => Number.isInteger(entry.netWinnings) && entry.netWinnings > 0,
+        (entry) => Number.isInteger(entry.dailyWinnings) && entry.dailyWinnings > 0,
       ),
-      "The public leaderboard never presents a losing player as a winner",
+      "The public leaderboard never presents a non-winning daily payout",
     );
     const [leaderboardProjection] = await root.query<
-      (RowDataPacket & { public_id: string; net_winnings: number })[]
+      (RowDataPacket & { public_id: string; daily_winnings: number })[]
     >(
-      `SELECT user.public_id, SUM(summary.daily_net_profit) net_winnings
+      `SELECT user.public_id, summary.daily_winnings
        FROM game_daily_winner_summaries summary
        INNER JOIN application_users user ON user.id = summary.application_user_id
-       WHERE summary.business_date = (
-         SELECT MAX(business_date) FROM game_daily_winner_summaries
-       )
-       GROUP BY user.id, user.public_id
-       HAVING SUM(summary.daily_net_profit) > 0
-       ORDER BY net_winnings DESC, user.public_id
+       WHERE summary.game_name = 'teen_patti_pro'
+         AND summary.business_date = (
+           SELECT MAX(business_date) FROM game_daily_winner_summaries
+         )
+         AND summary.daily_winnings > 0
+       ORDER BY summary.daily_winnings DESC, summary.total_payout DESC, user.public_id
        LIMIT 20`,
     );
     assert.deepEqual(
-      teenLeaderboard.entries.map((entry) => [entry.publicId, entry.netWinnings]),
-      leaderboardProjection.map((entry) => [String(entry.public_id), Number(entry.net_winnings)]),
-      "Daily Top Winners must aggregate a player's net result across all games before filtering/ranking",
+      teenLeaderboard.entries.map((entry) => [entry.publicId, entry.dailyWinnings]),
+      leaderboardProjection.map((entry) => [String(entry.public_id), Number(entry.daily_winnings)]),
+      "Daily Top 20 must order each game's real cumulative payouts without scanning bets",
+    );
+    const rankingUsers = await Promise.all(
+      Array.from({ length: 21 }, (_, index) => user(`QA Ranking ${index + 1}`)),
+    );
+    const [businessDayRows] = await root.query<(RowDataPacket & { business_date: string })[]>(
+      "SELECT DATE_FORMAT(DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 330 MINUTE), '%Y-%m-%d') business_date",
+    );
+    const rankingBusinessDate = String(businessDayRows[0].business_date);
+    const rankingAmounts = [2000, 4000, 8000, 12000, ...Array.from({ length: 17 }, (_, index) => 1000 - index)];
+    for (let index = 0; index < rankingUsers.length; index += 1) {
+      const amount = rankingAmounts[index];
+      await root.execute(
+        `INSERT INTO game_daily_winner_summaries
+           (game_name, business_date, application_user_id, daily_net_profit, daily_winnings,
+            total_wager, total_payout, rounds_won)
+         VALUES ('greedy_king', ?, ?, ?, ?, 0, ?, 1)`,
+        [rankingBusinessDate, rankingUsers[index].userId, amount, amount, amount],
+      );
+    }
+    const rankingBeforeExtraWin = await product.gameRoundLeaderboard("greedy_king", 20, "daily");
+    assert.equal(rankingBeforeExtraWin.entries.length, 20, "Daily ranking must cap real entries at 20");
+    assert.deepEqual(
+      rankingBeforeExtraWin.entries.slice(0, 4).map((entry) => entry.publicId),
+      [rankingUsers[3], rankingUsers[2], rankingUsers[1], rankingUsers[0]].map((identity) => identity.publicId),
+      "Daily ranking must reorder actual cumulative winnings across multiple players",
+    );
+    await root.execute(
+      `UPDATE game_daily_winner_summaries
+       SET daily_winnings = 15000, total_payout = 15000, daily_net_profit = 15000, rounds_won = 2
+       WHERE game_name = 'greedy_king' AND business_date = ? AND application_user_id = ?`,
+      [rankingBusinessDate, rankingUsers[0].userId],
+    );
+    const rankingAfterExtraWin = await product.gameRoundLeaderboard("greedy_king", 20, "daily");
+    assert.equal(
+      rankingAfterExtraWin.entries[0]?.publicId,
+      rankingUsers[0].publicId,
+      "A later settled win must immediately move the same real player to the correct rank",
     );
     const spectatorTeenRound = await product.settleGameRound(owner, {
       clientRoundId: randomUUID(),
@@ -2902,7 +2939,7 @@ async function main() {
         "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
         ["9000000000000000000", existing.round.id, definition.game],
       );
-      for (let roundIndex = 0; roundIndex < 20; roundIndex += 1) {
+      for (let roundIndex = 0; roundIndex < 30; roundIndex += 1) {
         const settled = await completeSharedRound(definition.game, definition.bets);
         assert.ok(Number.isSafeInteger(settled.settlement.payout));
         // round_number is unsigned; this reserved high QA range is unique per
@@ -2914,8 +2951,30 @@ async function main() {
       }
       const history = await product.gameRoundHistory(owner, definition.game, 10);
       assert.equal(history.rounds.length, 10, `${definition.game} must retain exactly its latest 10 settled rounds after the soak`);
+      const publicState = await product.gameSharedRoundState(owner, definition.game);
+      const requiredPublicHistory = definition.game === "luck77"
+        ? 20
+        : definition.game === "greedy_king" || definition.game === "greedy_lion"
+          ? 10
+          : null;
+      if (requiredPublicHistory != null) {
+        assert.equal(
+          publicState.recentResults.length,
+          requiredPublicHistory,
+          `${definition.game} must return its configured latest completed public results`,
+        );
+      } else {
+        assert.ok(
+          publicState.recentResults.length > 0 && publicState.recentResults.length <= 50,
+          `${definition.game} must return a bounded completed public-result history`,
+        );
+      }
+      assert.ok(
+        publicState.recentResults.every((result) => result.roundId && result.settledAt && result.winningItemId),
+        `${definition.game} public history must contain only versioned completed results`,
+      );
     }
-    console.log("PASS shared games: 20 complete server-authoritative result/settlement/history transitions per shared game");
+    console.log("PASS shared games: 30 complete server-authoritative result/settlement/history transitions per shared game");
     const postGameBootstrap = await product.mobileBootstrap(owner);
     assert.equal(
       postGameBootstrap.wallet.diamonds,

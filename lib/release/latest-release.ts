@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.60";
-const releaseBuild = 7372;
+const releaseVersion = "2.4.61";
+const releaseBuild = 7373;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.60/Nazraa-Live-2.4.60-7372-release.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.61/Nazraa-Live-2.4.61-7373-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -35,12 +35,12 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 301_539_993,
-  sha256: "5b0f5fba4936fe058aec1ad9a7c7393b55b8d2e1d908393b643c5db17221b645",
+  sha256: "84f0b18b9f971088f1f5d11ad096618d2e2dd20c23801e60badb0b206ae018b3",
   releaseDate: "2026-09-21",
   releaseNotes: [
-    "Keeps Face Live viewers on the best sustainable video layer and changes layers only after sustained network conditions.",
-    "Protects Party seats through server-owned seat sessions so media recovery cannot remove an active speaker.",
-    "Hardens PK settlement with authoritative qualifying streak rewards and an auditable daily history.",
+    "Keeps shared game results durable through fast round transitions, with exact server-result landing animations.",
+    "Shows real per-game Daily Top 20 winnings and current result histories without duplicate or stale rounds.",
+    "Improves Lucky Seven, Greedy King, and Greedy Lion pacing, image results, real-player presence, and game-safe performance.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };

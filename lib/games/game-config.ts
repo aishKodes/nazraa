@@ -66,7 +66,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       targetWinRate: 0.5, targetRtp: 0.95, payoutScalePpm: 1_079_545,
       maximumPayoutMultiplier: 9,
       resultSeconds: 3, minimumBet: 100, maximumBet: 50_000_000,
-      denominations: [100, 500, 1000, 10_000, 50_000], historyLength: 12,
+      denominations: [100, 500, 1000, 10_000, 50_000], historyLength: 20,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       outcomeWeights: [1, 4, 4],
     },
@@ -75,7 +75,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
       resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
-      denominations: [500, 1000, 10_000, 50_000], historyLength: 12,
+      denominations: [500, 1000, 10_000, 50_000], historyLength: 10,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: true,
       // The references do not establish these probabilities or contribution
       // rules, so both special outcomes and pool funding stay disabled until
@@ -89,7 +89,7 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
       resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
-      denominations: [500, 1000, 5000, 10_000, 50_000], historyLength: 12,
+      denominations: [500, 1000, 5000, 10_000, 50_000], historyLength: 10,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       saladWeight: 0, pizzaWeight: 0, poolContributionBps: 0,
       poolMinimumForSpecial: 0,
