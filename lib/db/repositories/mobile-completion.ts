@@ -329,6 +329,7 @@ function roomMediaDelivery(
       temporaryFaceRtcViewerCeiling,
       passivePlaybackResourceMode: "cdn" as const,
       viewerTransport: "livekit" as const,
+      faceSingleLayer720Enabled: features.faceSingleLayer720Enabled !== false,
       naturalBeauty: {
         enabled:
           settingEnabled(features.nazraaNaturalBeautyEnabled) ||
@@ -1712,8 +1713,22 @@ async function refreshRoomMediaBootstrapWithConnection(
   roomCode: string,
   preferredFacePlaybackProtocol?: "hls" | "flv",
 ) {
+  const provider = mediaProviderFor(identity);
   const [rows] = await connection.query<RowDataPacket[]>(
-    `SELECT room.id, room.room_type,
+    provider === "LIVEKIT"
+      ? `SELECT room.id, room.room_type,
+            member.room_role, member.media_role,
+            room_features.setting_value room_features_json
+       FROM live_rooms room
+       INNER JOIN live_room_members member
+         ON member.room_id = room.id
+        AND member.application_user_id = ?
+        AND member.left_at IS NULL
+       LEFT JOIN system_settings room_features
+         ON room_features.setting_key = 'mobile.room_features'
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED')
+       LIMIT 1`
+      : `SELECT room.id, room.room_type,
             member.room_role, member.media_role,
             room_features.setting_value room_features_json,
             mixer.status mixer_status, mixer.playback_url mixer_playback_url,
@@ -1746,7 +1761,7 @@ async function refreshRoomMediaBootstrapWithConnection(
     preferredFacePlaybackProtocol,
     Boolean(identity.playReviewerAccessOverride),
     Boolean(identity.playReviewerAccessOverride),
-    mediaProviderFor(identity),
+    provider,
   );
 
   return {

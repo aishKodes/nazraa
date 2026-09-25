@@ -59,6 +59,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     faceViewerTransport?: "hls" | "l3" | "auto";
     faceL3Enabled?: boolean;
     faceL3ReviewerOnly?: boolean;
+    faceSingleLayer720Enabled?: boolean;
     nazraaNaturalBeautyEnabled?: boolean;
     nazraaNaturalBeautyReviewerQaEnabled?: boolean;
     nazraaNaturalBeautyLandmarksEnabled?: boolean;
@@ -307,6 +308,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Face viewer transport<select name="faceViewerTransport" defaultValue={roomFeatures?.faceViewerTransport ?? "hls"}><option value="hls">HLS</option><option value="l3">L3 only</option><option value="auto">L3 with HLS fallback</option></select><span>L3 remains reviewer-only until ZEGO entitlement, cost, and first-frame QA pass.</span></label>
         <label>L3 enabled<select name="faceL3Enabled" defaultValue={String(roomFeatures?.faceL3Enabled === true)}><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
         <label>L3 reviewer-only<select name="faceL3ReviewerOnly" defaultValue={String(roomFeatures?.faceL3ReviewerOnly !== false)}><option value="true">Reviewer accounts only</option><option value="false">All eligible viewers</option></select></label>
+        <label>Face single-layer 720p<select name="faceSingleLayer720Enabled" defaultValue={String(roomFeatures?.faceSingleLayer720Enabled !== false)}><option value="true">On — one 720p encoding</option><option value="false">Rollback — previous simulcast</option></select><span>Applies when a Face Host starts a new LiveKit publication; never restarts an active room. PK bridge and Party are unchanged.</span></label>
         <label>Natural beauty<select name="nazraaNaturalBeautyEnabled" defaultValue={String(roomFeatures?.nazraaNaturalBeautyEnabled === true)}><option value="false">Disabled</option><option value="true">Enabled</option></select><span>On-device optional enhancement. Disable remotely if any camera/GPU issue occurs.</span></label>
         <label>Beauty reviewer QA<select name="nazraaNaturalBeautyReviewerQaEnabled" defaultValue={String(roomFeatures?.nazraaNaturalBeautyReviewerQaEnabled === true)}><option value="false">Disabled</option><option value="true">Play-review Hosts only</option></select><span>Never affects ordinary Hosts. Keep this enabled only while reviewing the on-device beauty path.</span></label>
         <label>Beauty landmarks<select name="nazraaNaturalBeautyLandmarksEnabled" defaultValue={String(roomFeatures?.nazraaNaturalBeautyLandmarksEnabled === true)}><option value="false">Basic path only</option><option value="true">MediaPipe region masks</option></select></label>

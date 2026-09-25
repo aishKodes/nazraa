@@ -384,6 +384,7 @@ export async function saveRoomFeatureSettings(input: {
   faceViewerTransport: "hls" | "l3" | "auto";
   faceL3Enabled: boolean;
   faceL3ReviewerOnly: boolean;
+  faceSingleLayer720Enabled: boolean;
   nazraaNaturalBeautyEnabled: boolean;
   nazraaNaturalBeautyReviewerQaEnabled: boolean;
   nazraaNaturalBeautyLandmarksEnabled: boolean;
@@ -454,6 +455,7 @@ export async function saveRoomFeatureSettings(input: {
           faceViewerTransport: input.faceViewerTransport,
           faceL3Enabled: input.faceL3Enabled,
           faceL3ReviewerOnly: input.faceL3ReviewerOnly,
+          faceSingleLayer720Enabled: input.faceSingleLayer720Enabled,
           nazraaNaturalBeautyEnabled: input.nazraaNaturalBeautyEnabled,
           nazraaNaturalBeautyReviewerQaEnabled: input.nazraaNaturalBeautyReviewerQaEnabled,
           nazraaNaturalBeautyLandmarksEnabled: input.nazraaNaturalBeautyLandmarksEnabled,
