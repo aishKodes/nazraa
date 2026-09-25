@@ -6,6 +6,23 @@ import { mobileLatencySnapshot } from "./mobile-latency-context";
 
 const bounds = [25, 50, 100, 200, 350, 500, 750, 1000, 1500, 2500, 5000, 10000, 30000];
 
+/**
+ * These aggregates are diagnostic samples, not financial or room state.
+ * Persisting two SQL upserts after every five-second presence poll created
+ * more than 200,000 avoidable writes in a six-hour production window and
+ * competed with the single DB connection in each Vercel isolate. A 5% hot
+ * sample still gives thousands of observations for the common room path.
+ */
+export function shouldPersistMobileLatency(
+  operation: string,
+  sample = Math.random(),
+) {
+  const rate = operation === "POST:room-presence" || operation === "POST:pk-battle"
+    ? 0.05
+    : 0.10;
+  return Number.isFinite(sample) && sample >= 0 && sample < rate;
+}
+
 function bucketFor(milliseconds: number) {
   return bounds.find((bound) => milliseconds <= bound) ?? bounds.at(-1)!;
 }

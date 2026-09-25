@@ -108,6 +108,7 @@ import { traceMobileRequest } from "@/lib/observability/mobile-latency-context";
 import {
   persistMobileLatency,
   persistRoomJoinLatency,
+  shouldPersistMobileLatency,
 } from "@/lib/observability/mobile-latency-store";
 import {
   classifyFaceLiveStartFailure,
@@ -485,7 +486,9 @@ export async function GET(
       return errorResponse(error, 503);
     }
   });
-  after(() => persistMobileLatency(traced.trace));
+  if (shouldPersistMobileLatency(traced.trace.operation)) {
+    after(() => persistMobileLatency(traced.trace));
+  }
   return traced.response;
 }
 
@@ -1604,6 +1607,8 @@ export async function POST(
       return errorResponse(error);
     }
   });
-  after(() => persistMobileLatency(traced.trace));
+  if (shouldPersistMobileLatency(traced.trace.operation)) {
+    after(() => persistMobileLatency(traced.trace));
+  }
   return traced.response;
 }
