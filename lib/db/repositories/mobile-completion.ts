@@ -8,7 +8,7 @@ import type {
   ResultSetHeader,
   RowDataPacket,
 } from "mysql2/promise";
-import { db } from "@/lib/db/pool";
+import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
@@ -213,7 +213,10 @@ function touchRoomMembership(userId: string, roomCode: string) {
   // A five-second social poll does not need five-second membership writes;
   // touching at most every 15 seconds avoids needless row locking while
   // remaining far inside the two-minute expiry window.
-  void db().execute(
+  // This touch is safe to retry after an ambiguous socket reset: its only
+  // effect is bringing the same member's last-seen timestamp up to the
+  // database clock, and the 15-second guard prevents a rapid second write.
+  void withDatabaseReadRetry(() => db().execute(
     `UPDATE live_room_members member
      INNER JOIN live_rooms room ON room.id = member.room_id
      SET member.last_seen_at = CURRENT_TIMESTAMP(3)
@@ -222,7 +225,7 @@ function touchRoomMembership(userId: string, roomCode: string) {
        AND (member.last_seen_at IS NULL OR
             member.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 15 SECOND)`,
     [roomCode, userId],
-  ).catch((error) => {
+  )).catch((error) => {
     const now = Date.now();
     if (now - lastMembershipTouchWarningAt < 60_000) return;
     lastMembershipTouchWarningAt = now;
