@@ -1337,6 +1337,136 @@ async function main() {
       ).length,
       2,
     );
+    const [faceGuestRoom] = await root.query<RowDataPacket[]>(
+      "SELECT id FROM live_rooms WHERE room_code = ? LIMIT 1",
+      [faceRoomCode],
+    );
+    const faceGuestRoomId = String(faceGuestRoom[0].id);
+    await root.execute(
+      `UPDATE live_room_members
+       SET last_seen_at = CURRENT_TIMESTAMP(3) - INTERVAL 4 MINUTE,
+           media_publishing = TRUE
+       WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId],
+    );
+    const staleButPublishing = await rooms.refreshRoomPresence(owner, faceRoomCode);
+    assert.equal(
+      (await rooms.refreshRoomPresence(guest, faceRoomCode)).mediaRole,
+      "audio_guest",
+      "a missed API heartbeat must not revoke a published Guest",
+    );
+    assert.ok(
+      staleButPublishing.participants?.some(
+        (participant: { user: { id: string }; mediaRole: string }) =>
+          participant.user.id === guest.publicId &&
+          participant.mediaRole === "audio_guest",
+      ),
+      "active Guest must remain in the Host snapshot during presence loss",
+    );
+    await root.execute(
+      `UPDATE live_room_members SET media_publishing = FALSE,
+         last_seen_at = CURRENT_TIMESTAMP(3) - INTERVAL 4 MINUTE
+       WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId],
+    );
+    await root.execute(
+      `INSERT INTO livekit_active_media_tracks
+         (room_id, application_user_id, track_sid, track_kind, active, last_event_at)
+       VALUES (?, ?, ?, 'AUDIO', TRUE, CURRENT_TIMESTAMP(3))`,
+      [faceGuestRoomId, guest.userId, "qa-guest-mic-republished"],
+    );
+    const staleButTrackActive = await rooms.refreshRoomPresence(owner, faceRoomCode);
+    assert.ok(
+      staleButTrackActive.participants?.some(
+        (participant: { user: { id: string }; mediaRole: string }) =>
+          participant.user.id === guest.publicId &&
+          participant.mediaRole === "audio_guest",
+      ),
+      "LiveKit audio evidence must preserve Guest seat when presence is stale",
+    );
+    await root.execute(
+      `UPDATE livekit_active_media_tracks SET active = FALSE
+       WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId],
+    );
+    await root.execute(
+      `UPDATE live_room_members SET media_publishing = FALSE,
+         last_seen_at = CURRENT_TIMESTAMP(3) - INTERVAL 4 MINUTE,
+         last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
+       WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId],
+    );
+    const guestDuringFullReconnect = await rooms.refreshRoomPresence(
+      owner,
+      faceRoomCode,
+    );
+    assert.ok(
+      guestDuringFullReconnect.participants?.some(
+        (participant: { user: { id: string }; mediaRole: string }) =>
+          participant.user.id === guest.publicId &&
+          participant.mediaRole === "audio_guest",
+      ),
+      "a brief old-track unpublish must not revoke the Guest seat before republish",
+    );
+    assert.equal(
+      (await rooms.refreshRoomPresence(guest, faceRoomCode)).mediaRole,
+      "audio_guest",
+      "Guest authority must survive the full-reconnect track-SID gap",
+    );
+    await root.execute(
+      `INSERT INTO livekit_active_media_tracks
+         (room_id, application_user_id, track_sid, track_kind, active, last_event_at)
+       VALUES (?, ?, ?, 'AUDIO', TRUE, CURRENT_TIMESTAMP(3))`,
+      [faceGuestRoomId, guest.userId, "qa-guest-mic-after-reconnect"],
+    );
+    assert.ok(
+      (await rooms.refreshRoomPresence(owner, faceRoomCode)).participants?.some(
+        (participant: { user: { id: string }; mediaRole: string }) =>
+          participant.user.id === guest.publicId &&
+          participant.mediaRole === "audio_guest",
+      ),
+      "the same Guest remains accepted after a new microphone track SID appears",
+    );
+    await root.execute(
+      `UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3)
+       WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId],
+    );
+    console.log(
+      "PASS Face Guest presence resilience: stale heartbeat, full-reconnect old-track gap and new track SID preserve the accepted seat",
+    );
+    // Churn in the audience must not alter an accepted Guest's authoritative
+    // membership/seat identity. This exercises the real join/leave API, not
+    // a fabricated Flutter snapshot. Media-track continuity still requires
+    // two connected clients and is a separate release gate.
+    const [guestBeforeAudienceChurn] = await root.query<RowDataPacket[]>(
+      `SELECT member.application_user_id, member.room_role, member.media_role,
+              member.seat_session_id, member.seat_version
+       FROM live_room_members member
+       INNER JOIN live_rooms room ON room.id = member.room_id
+       WHERE room.room_code = ? AND member.application_user_id = ?`,
+      [faceRoomCode, guest.userId],
+    );
+    for (let cycle = 0; cycle < 20; cycle += 1) {
+      await rooms.joinLiveRoom(roomAdmin, faceRoomCode);
+      assert.equal(
+        (await rooms.refreshRoomPresence(guest, faceRoomCode)).mediaRole,
+        "audio_guest",
+      );
+      await rooms.leaveLiveRoom(roomAdmin, faceRoomCode);
+    }
+    const [guestAfterAudienceChurn] = await root.query<RowDataPacket[]>(
+      `SELECT member.application_user_id, member.room_role, member.media_role,
+              member.seat_session_id, member.seat_version
+       FROM live_room_members member
+       INNER JOIN live_rooms room ON room.id = member.room_id
+       WHERE room.room_code = ? AND member.application_user_id = ?`,
+      [faceRoomCode, guest.userId],
+    );
+    assert.deepEqual(guestAfterAudienceChurn[0], guestBeforeAudienceChurn[0]);
+    console.log(
+      "PASS Face Guest authority: 20 real audience join/leave cycles preserve the accepted Guest membership and seat fields",
+    );
     await rooms.endLiveCoHost(owner, {
       roomCode: faceRoomCode,
       targetPublicId: guest.publicId,

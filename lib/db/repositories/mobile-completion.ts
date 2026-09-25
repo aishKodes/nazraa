@@ -191,12 +191,17 @@ function touchRoomMembership(userId: string, roomCode: string) {
   // this one-row touch outside a long social/reward transaction so it cannot
   // form a lock cycle with seat, leave, or role transitions. A failed touch
   // simply leaves the existing two-minute server expiry as the safety net.
+  // A five-second social poll does not need five-second membership writes;
+  // touching at most every 15 seconds avoids needless row locking while
+  // remaining far inside the two-minute expiry window.
   void db().execute(
     `UPDATE live_room_members member
      INNER JOIN live_rooms room ON room.id = member.room_id
      SET member.last_seen_at = CURRENT_TIMESTAMP(3)
      WHERE room.room_code = ? AND member.application_user_id = ?
-       AND member.left_at IS NULL`,
+       AND member.left_at IS NULL
+       AND (member.last_seen_at IS NULL OR
+            member.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 15 SECOND)`,
     [roomCode, userId],
   ).catch(() => {
     const now = Date.now();
@@ -2112,8 +2117,25 @@ export async function refreshRoomPresence(
              muted_by_staff = FALSE, media_publishing = FALSE
          WHERE room_id = ? AND media_role = 'AUDIO_GUEST'
            AND application_user_id <> ? AND left_at IS NULL
-           AND last_seen_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))`,
-        [rows[0].id, identity.userId, reconnectGrace],
+           AND last_seen_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))
+           -- Presence/API failures are not proof that an accepted Guest stopped
+           -- publishing. Keep the seat until media evidence is terminal or the
+           -- Host explicitly removes the Guest. A full LiveKit reconnect can
+           -- republish the microphone under a different track SID.
+           AND media_publishing = FALSE
+           -- A full reconnect briefly marks the old microphone unpublished
+           -- before the replacement SID is reported. Preserve the accepted
+           -- seat for the configured media grace after that terminal evidence.
+           AND (last_media_heartbeat_at IS NULL OR
+                last_media_heartbeat_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3)))
+           AND NOT EXISTS (
+             SELECT 1 FROM livekit_active_media_tracks active_track
+             WHERE active_track.room_id = live_room_members.room_id
+               AND active_track.application_user_id = live_room_members.application_user_id
+               AND active_track.active = TRUE
+               AND active_track.track_kind = 'AUDIO'
+           )`,
+        [rows[0].id, identity.userId, reconnectGrace, reconnectGrace],
       );
       await connection.execute(
         `UPDATE live_cohost_requests request
@@ -2498,9 +2520,26 @@ export async function refreshRoomPresence(
          FROM live_room_gift_events WHERE room_id = ? GROUP BY room_id, receiver_application_user_id
        ) gifts ON gifts.room_id = member.room_id AND gifts.receiver_application_user_id = member.application_user_id
        WHERE member.room_id = ? AND member.left_at IS NULL
-         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         AND (
+           member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+           OR (
+             member.media_role = 'AUDIO_GUEST'
+             AND (
+               member.media_publishing = TRUE
+               OR member.last_media_heartbeat_at >= TIMESTAMPADD(
+                 SECOND, -?, CURRENT_TIMESTAMP(3))
+               OR EXISTS (
+                 SELECT 1 FROM livekit_active_media_tracks active_track
+                 WHERE active_track.room_id = member.room_id
+                   AND active_track.application_user_id = member.application_user_id
+                   AND active_track.active = TRUE
+                   AND active_track.track_kind = 'AUDIO'
+               )
+             )
+           )
+         )
        ORDER BY member.room_role = 'OWNER' DESC, member.joined_at`,
-      [rows[0].id, rows[0].id],
+      [rows[0].id, rows[0].id, reconnectGrace],
     );
     const [giftEvents] = await connection.query<RowDataPacket[]>(
       `SELECT event.id, event.quantity, event.coin_value, event.created_at,
