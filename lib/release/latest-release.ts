@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.62";
-const releaseBuild = 7374;
+const releaseVersion = "2.4.63";
+const releaseBuild = 7375;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.62/Nazraa-Live-2.4.62-7374-release.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.63/Nazraa-Live-2.4.63-7375-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -35,12 +35,12 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 300_883_029,
-  sha256: "d119c1c478d090bed298e626aa330229690e5e3839dddb7ab78c6340fa1d9bd0",
+  sha256: "69d312068d0e07f5e79b49366d70e52f52caf0ed6544620e50f24a6b0b1aed59",
   releaseDate: "2026-09-25",
   releaseNotes: [
-    "Improves Face camera capture to select the full sensor mode for clearer portrait Live video.",
-    "Corrects LiveKit bitrate diagnostics so video-quality issues can be measured accurately.",
-    "Preserves the existing Face, Party, PK, rewards, games, and economy architecture.",
+    "Publishes one full-resolution 720p Face video layer instead of switching between simulcast layers.",
+    "Reduces full room-presence polling and keeps media reconnect independent from transient API failures.",
+    "Preserves Party, PK, Beauty, rewards, games, and economy behavior.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
