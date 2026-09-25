@@ -165,6 +165,26 @@ type DeferredMediaUsageHeartbeat = {
 let lastMediaTelemetryWarningAt = 0;
 let lastMembershipTouchWarningAt = 0;
 
+const safeDeferredDatabaseCodes = new Set([
+  "ER_USER_LIMIT_REACHED",
+  "ER_CON_COUNT_ERROR",
+  "ER_LOCK_DEADLOCK",
+  "ER_LOCK_WAIT_TIMEOUT",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "PROTOCOL_CONNECTION_LOST",
+]);
+
+function deferredDatabaseCode(error: unknown) {
+  const code = error && typeof error === "object" && "code" in error
+    ? String(error.code)
+    : "";
+  // An allowlist preserves the diagnostic signal without logging SQL,
+  // connection strings, messages, user IDs, or provider response bodies.
+  return safeDeferredDatabaseCodes.has(code) ? code : "OTHER";
+}
+
 async function recordDeferredMediaUsageHeartbeat(input: DeferredMediaUsageHeartbeat) {
   // Media-cost accounting must never make an otherwise valid room response
   // fail. It is reconciled from durable session/use rows and is deliberately
@@ -175,13 +195,12 @@ async function recordDeferredMediaUsageHeartbeat(input: DeferredMediaUsageHeartb
     const now = Date.now();
     if (now - lastMediaTelemetryWarningAt < 60_000) return;
     lastMediaTelemetryWarningAt = now;
-    const code = error && typeof error === "object" && "code" in error
-      ? String(error.code)
-      : "unknown";
+    const code = deferredDatabaseCode(error);
     console.warn("Media usage telemetry deferred", {
       category: code === "ER_LOCK_DEADLOCK" || code === "ER_LOCK_WAIT_TIMEOUT"
         ? "database_contention"
         : "database_unavailable",
+      code,
     });
   }
 }
@@ -203,12 +222,13 @@ function touchRoomMembership(userId: string, roomCode: string) {
        AND (member.last_seen_at IS NULL OR
             member.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 15 SECOND)`,
     [roomCode, userId],
-  ).catch(() => {
+  ).catch((error) => {
     const now = Date.now();
     if (now - lastMembershipTouchWarningAt < 60_000) return;
     lastMembershipTouchWarningAt = now;
     console.warn("Room membership touch deferred", {
       category: "database_unavailable",
+      code: deferredDatabaseCode(error),
     });
   });
 }
