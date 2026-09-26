@@ -283,7 +283,11 @@ export function liveHourlyRewardEligibility(
 ): LiveHourlyRewardEligibility {
   if (!rules.rewardEnabled) return { eligible: false, diamondsPerHour: 0, reason: "REWARD_DISABLED" };
   if (!input.validBroadcastSession || !["FACE", "LIVE"].includes(input.roomType)) return { eligible: false, diamondsPerHour: 0, reason: "INVALID_BROADCAST_SESSION" };
-  if (!input.accountActive || !input.isHost || !input.hostProfileActive) return { eligible: false, diamondsPerHour: 0, reason: "HOST_NOT_ELIGIBLE" };
+  // A verified, active Host profile is the durable Host authorization. Agency
+  // acceptance and Face verification can make a user an authorized broadcaster
+  // without synchronizing the legacy application_users.is_host decoration.
+  // Requiring both let a valid Live start but silently denied its hour reward.
+  if (!input.accountActive || !input.hostProfileActive) return { eligible: false, diamondsPerHour: 0, reason: "HOST_NOT_ELIGIBLE" };
   if (!input.faceVerified) return { eligible: false, diamondsPerHour: 0, reason: "LIVE_PERMISSION_MISSING" };
   if (rules.agencyAuthorizationRequired && !input.agencyAuthorized) return { eligible: false, diamondsPerHour: 0, reason: "AGENCY_AUTHORIZATION_MISSING" };
   if (input.activelyRestricted) return { eligible: false, diamondsPerHour: 0, reason: "LIVE_RESTRICTED" };

@@ -156,6 +156,18 @@ async function main() {
         reason: "ELIGIBLE",
       },
     );
+    assert.deepEqual(
+      liveBusiness.liveHourlyRewardEligibility(defaultLiveRules, {
+        ...eligibleHost,
+        isHost: false,
+      }),
+      {
+        eligible: true,
+        diamondsPerHour: 3500,
+        reason: "ELIGIBLE",
+      },
+      "an active verified Host profile must not lose a reward because the legacy is_host flag was not synchronized",
+    );
     assert.equal(
       liveBusiness.faceLiveRulesFromSetting({ hourlyRewardDiamonds: 4200 })
         .maleHourlyRewardDiamonds,
@@ -3281,10 +3293,17 @@ async function main() {
       "UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?",
       [qaAgency.accountId, rewardHost.userId],
     );
+    // A Bangladesh Agency member can become a verified Face broadcaster while
+    // the legacy is_host decoration remains false. Country and that stale flag
+    // must not suppress the first completed-hour entitlement.
+    await root.execute(
+      "UPDATE application_users SET is_host = FALSE, country_code = 'BD' WHERE id = ?",
+      [rewardHost.userId],
+    );
     const liveRewardCode = `LIVEREWARD${Date.now()}`;
     const liveRewardRoomId = randomUUID();
     await root.execute(
-      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, ?, 'FACE', 'QA Reward Live', 'Talk', 'Hindi', 'PUBLIC', 0, 0, FALSE, 'IN', 'ACTIVE')",
+      "INSERT INTO live_rooms (id, room_code, host_application_user_id, agency_account_id, room_type, title, category, language_code, privacy, seat_count, theme_index, theme_enabled, country_code, status) VALUES (?, ?, ?, ?, 'FACE', 'QA Reward Live', 'Talk', 'Bangla', 'PUBLIC', 0, 0, FALSE, 'BD', 'ACTIVE')",
       [liveRewardRoomId, liveRewardCode, rewardHost.userId, qaAgency.accountId],
     );
     await root.execute(
@@ -3334,6 +3353,10 @@ async function main() {
       "the countdown must stop after today's reward is earned",
     );
     assert.equal(liveProgress.liveRewardProgress!.newlyClaimableDiamonds, 3500);
+    await root.execute(
+      "UPDATE application_users SET is_host = TRUE WHERE id = ?",
+      [rewardHost.userId],
+    );
     let rewardBootstrap = await product.mobileBootstrap(rewardHost);
     assert.equal(
       rewardBootstrap.wallet.diamonds,
