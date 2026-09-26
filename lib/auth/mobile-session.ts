@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import type { RowDataPacket } from "mysql2";
+import type { PoolConnection } from "mysql2/promise";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import { verifyGoogleIdentity } from "@/lib/auth/google-identity";
@@ -47,7 +48,7 @@ export type MobileIdentity = {
 };
 
 export class MobileAccessDeniedError extends Error {
-  constructor(public readonly accessCode: "ACCOUNT_BANNED" | "ACCOUNT_RESTRICTED" | "DEVICE_BLOCKED", message: string) {
+  constructor(public readonly accessCode: "ACCOUNT_BANNED" | "ACCOUNT_RESTRICTED" | "DEVICE_BLOCKED" | "DEVICE_ID_REQUIRED", message: string) {
     super(message);
     this.name = "MobileAccessDeniedError";
   }
@@ -71,6 +72,42 @@ function tokenHash(token: string) {
 
 function deviceHash(deviceId?: string) {
   return deviceId ? createHash("sha256").update(`nazraa-device:${deviceId}`).digest("hex") : null;
+}
+
+function requiredDeviceHash(deviceId?: string) {
+  const normalized = deviceId?.trim();
+  if (!normalized || normalized.length < 8) {
+    throw new MobileAccessDeniedError("DEVICE_ID_REQUIRED", "Update Nazraa to continue securely.");
+  }
+  return deviceHash(normalized)!;
+}
+
+function deviceIdentityKind(deviceId?: string) {
+  return /^android:[0-9a-f]{16}$/i.test(deviceId?.trim() ?? "") ? "ANDROID_ID" : "INSTALLATION";
+}
+
+async function assertDeviceNotGloballyBanned(deviceIdHash: string) {
+  const [rows] = await withDatabaseReadRetry(() => db().query<RowDataPacket[]>(
+    "SELECT id FROM mobile_device_security_state WHERE device_id_hash = ? AND status = 'BANNED' LIMIT 1",
+    [deviceIdHash],
+  ));
+  if (rows[0]) throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This device can’t access Nazraa. Contact Nazraa support.");
+}
+
+// Both sign-in and Master ban lock the same row. A concurrent sign-in cannot
+// create a fresh account/session after a ban commits, nor race past revocation.
+async function lockDeviceForSession(connection: PoolConnection, deviceIdHash: string) {
+  await connection.execute(
+    "INSERT IGNORE INTO mobile_device_security_state (id, device_id_hash) VALUES (?, ?)",
+    [randomUUID(), deviceIdHash],
+  );
+  const [rows] = await connection.query<(RowDataPacket & { status: string })[]>(
+    "SELECT status FROM mobile_device_security_state WHERE device_id_hash = ? LIMIT 1 FOR UPDATE",
+    [deviceIdHash],
+  );
+  if (rows[0]?.status !== "ALLOWED") {
+    throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This device can’t access Nazraa. Contact Nazraa support.");
+  }
 }
 
 function mapPlatformRole(role: string | null, isHost: number): MobileRole {
@@ -119,12 +156,14 @@ export async function createGoogleMobileSession(input: {
   deviceId?: string;
 }) {
   const google = await verifyGoogleIdentity(input.idToken);
-  const hashedDeviceId = deviceHash(input.deviceId);
+  const hashedDeviceId = requiredDeviceHash(input.deviceId);
+  const identityKind = deviceIdentityKind(input.deviceId);
   const [existingRows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string; public_id: number; onboarding_completed: number; whatsapp_e164: string | null; account_status: string })[]>(
     "SELECT id, public_id, onboarding_completed, whatsapp_e164, account_status FROM application_users WHERE google_subject = ? LIMIT 1",
     [google.subject],
   ));
   const existing = existingRows[0];
+  await assertDeviceNotGloballyBanned(hashedDeviceId);
   if (existing?.account_status === "BANNED") throw new MobileAccessDeniedError("ACCOUNT_BANNED", "This Nazraa account is banned. Contact Nazraa support.");
   if (existing && existing.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This Nazraa account is not active. Contact Nazraa support.");
   if (existing && hashedDeviceId) {
@@ -143,6 +182,7 @@ export async function createGoogleMobileSession(input: {
   const sessionId = randomUUID();
 
   const result = await withTransaction(async (connection) => {
+    await lockDeviceForSession(connection, hashedDeviceId);
     let userId = existing?.id;
     let publicId = existing ? String(existing.public_id) : "";
     if (!userId) {
@@ -206,9 +246,9 @@ export async function createGoogleMobileSession(input: {
       [randomUUID(), userId],
     );
     await connection.execute(
-      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at)
-       VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))`,
-      [sessionId, userId, tokenHash(token), input.deviceLabel || null, hashedDeviceId],
+      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, device_identity_kind, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))`,
+      [sessionId, userId, tokenHash(token), input.deviceLabel || null, hashedDeviceId, identityKind],
     );
     return publicId;
   });
@@ -224,7 +264,9 @@ export async function createDevelopmentMobileSession(input: { fullName: string; 
   const placeholderExternalId = `pending-${randomUUID()}`;
   const sessionId = randomUUID();
   const token = randomBytes(32).toString("base64url");
+  const hashedDeviceId = requiredDeviceHash(input.deviceId);
   const publicId = await withTransaction(async (connection) => {
+    await lockDeviceForSession(connection, hashedDeviceId);
     await connection.execute(
       `INSERT INTO application_users
         (id, external_user_id, full_name, country_code, onboarding_completed, is_host, last_active_at)
@@ -238,14 +280,15 @@ export async function createDevelopmentMobileSession(input: { fullName: string; 
       await connection.execute("INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, ?)", [randomUUID(), userId, assetType]);
     }
     await connection.execute("INSERT INTO host_profiles (id, application_user_id, status, verification_status) VALUES (?, ?, 'ACTIVE', 'UNVERIFIED')", [randomUUID(), userId]);
-    await connection.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))", [sessionId, userId, tokenHash(token), input.deviceLabel || null, deviceHash(input.deviceId)]);
+    await connection.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, device_identity_kind, expires_at) VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 180 DAY))", [sessionId, userId, tokenHash(token), input.deviceLabel || null, hashedDeviceId, deviceIdentityKind(input.deviceId)]);
     return id;
   });
   return { token, userId: publicId, requiresProfile: false };
 }
 
 export async function createPlayReviewerMobileSession(input: { username: string; password: string; deviceLabel?: string; deviceId?: string }) {
-  const hashedDeviceId = deviceHash(input.deviceId);
+  const hashedDeviceId = requiredDeviceHash(input.deviceId);
+  await assertDeviceNotGloballyBanned(hashedDeviceId);
   const [rows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & {
     id: string; application_user_id: string; password_hash: string; account_status: string;
   })[]>(
@@ -269,10 +312,11 @@ export async function createPlayReviewerMobileSession(input: { username: string;
   }
   const token = randomBytes(32).toString("base64url");
   await withTransaction(async (connection) => {
+    await lockDeviceForSession(connection, hashedDeviceId);
     await connection.execute(
-      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at)
-       VALUES (?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 365 DAY))`,
-      [randomUUID(), credential.application_user_id, tokenHash(token), input.deviceLabel || "Google Play reviewer", hashedDeviceId],
+      `INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, device_identity_kind, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 365 DAY))`,
+      [randomUUID(), credential.application_user_id, tokenHash(token), input.deviceLabel || "Google Play reviewer", hashedDeviceId, deviceIdentityKind(input.deviceId)],
     );
     await connection.execute("UPDATE play_reviewer_credentials SET last_login_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [credential.id]);
     await connection.execute(
@@ -326,6 +370,7 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
     revoked_at: Date | string | null;
     active_device_block_id: string | null;
     active_device_block_reason: string | null;
+    global_device_block_id: string | null;
     device_id_hash: string | null;
   })[]>(
     `SELECT session.id session_id, session.device_id_hash, session.revoked_at,
@@ -346,6 +391,7 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
             (hosting_suspension.id IS NOT NULL) hosting_suspended,
             hosting_suspension.ends_at hosting_suspended_until,
             hosting_suspension.reason hosting_suspension_reason,
+            global_device_block.id global_device_block_id,
             active_device_block.id active_device_block_id,
             active_device_block.reason active_device_block_reason
      FROM mobile_sessions session
@@ -385,6 +431,9 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
       AND active_device_block.status = 'ACTIVE'
       AND (active_device_block.mobile_session_id = session.id
         OR (session.device_id_hash IS NOT NULL AND active_device_block.device_id_hash = session.device_id_hash))
+     LEFT JOIN mobile_device_security_state global_device_block
+       ON global_device_block.device_id_hash = session.device_id_hash
+      AND global_device_block.status = 'BANNED'
      WHERE session.token_hash = ? AND session.expires_at > CURRENT_TIMESTAMP(3)
      ORDER BY account.created_at ASC LIMIT 1`,
     [tokenHash(token)],
@@ -393,6 +442,7 @@ export async function authenticateMobileRequest(request: Request): Promise<Mobil
   if (!row) return null;
   if (row.account_status === "BANNED") throw new MobileAccessDeniedError("ACCOUNT_BANNED", "This Nazraa account is banned. Contact Nazraa support.");
   if (row.account_status !== "ACTIVE") throw new MobileAccessDeniedError("ACCOUNT_RESTRICTED", "This Nazraa account is not active. Contact Nazraa support.");
+  if (row.global_device_block_id) throw new MobileAccessDeniedError("DEVICE_BLOCKED", "This device can’t access Nazraa. Contact Nazraa support.");
   if (row.active_device_block_id) throw new MobileAccessDeniedError("DEVICE_BLOCKED", `${row.active_device_block_reason || "This device is blocked for this Nazraa account."} Contact Nazraa support.`);
   if (row.revoked_at) return null;
   void withDatabaseReadRetry(() => db().execute(

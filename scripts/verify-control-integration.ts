@@ -16,6 +16,7 @@ async function main() {
   await root.query(`CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
   await root.query(`USE \`${database}\``);
   global.nazraaPool = mysql.createPool({ host: "127.0.0.1", user: "root", database, connectionLimit: 8, decimalNumbers: true, timezone: "Z" });
+  global.nazraaInstrumentedPool = global.nazraaPool;
   let passed = 0;
   let keep = false;
   try {
@@ -364,7 +365,8 @@ async function main() {
     const sessionId = randomUUID();
     const matchingSessionId = randomUUID();
     const unrelatedSessionId = randomUUID();
-    const sharedDeviceHash = createHash("sha256").update("qa-device").digest("hex");
+    const sharedDeviceId = "android:1234567890abcdef";
+    const sharedDeviceHash = createHash("sha256").update(`nazraa-device:${sharedDeviceId}`).digest("hex");
     await root.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, 'QA device', ?, DATE_ADD(NOW(), INTERVAL 1 DAY))", [sessionId, ownUser.id, createHash("sha256").update(token).digest("hex"), sharedDeviceHash]);
     await root.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, 'QA same device', ?, DATE_ADD(NOW(), INTERVAL 1 DAY))", [matchingSessionId, ownUser.id, createHash("sha256").update(matchingDeviceToken).digest("hex"), sharedDeviceHash]);
     await root.execute("INSERT INTO mobile_sessions (id, application_user_id, token_hash, device_label, device_id_hash, expires_at) VALUES (?, ?, ?, 'QA unrelated account device', ?, DATE_ADD(NOW(), INTERVAL 1 DAY))", [unrelatedSessionId, otherUser.id, createHash("sha256").update(unrelatedUserToken).digest("hex"), sharedDeviceHash]);
@@ -396,6 +398,57 @@ async function main() {
     assert.deepEqual(deviceAuditRows.map((row) => row.action), ["device.block", "device.unblock"]);
     assert.ok(deviceAuditRows.every((row) => row.actor_account_id === cm.account.id && String(row.reason).startsWith("QA own device")));
     await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS still cannot block" }), /Only Master or the assigned Country Manager/);
+    passed++;
+
+    await assert.rejects(
+      monitoring.banDeviceAcrossAccounts({ scope: await refresh(cm), sessionId, reason: "QA country manager cannot ban all accounts" }),
+      /Only Master/,
+    );
+    await assert.rejects(
+      monitoring.banDeviceAcrossAccounts({ scope: await refresh(cs), sessionId, reason: "QA CS cannot ban all accounts" }),
+      /Only Master/,
+    );
+    const globalBan = await monitoring.banDeviceAcrossAccounts({ scope: master, sessionId, reason: "QA Master protects all accounts on device" });
+    assert.equal(globalBan.alreadyBanned, false);
+    assert.equal(globalBan.revokedSessions, 3, "all accounts using the same device identifier are revoked");
+    for (const affectedRequest of [request, matchingDeviceRequest, unrelatedUserRequest]) {
+      await assert.rejects(mobileSession.authenticateMobileRequest(affectedRequest),
+        (error: unknown) => error instanceof mobileSession.MobileAccessDeniedError && error.accessCode === "DEVICE_BLOCKED");
+    }
+    const globalDevices = await monitoring.listUserDevices(master, ownUser.id);
+    assert.ok(globalDevices[0].globalBlockId);
+    assert.equal(globalDevices[0].globalBlocked, true);
+    assert.equal(globalDevices[0].matchingAccounts, 2);
+    assert.equal((await monitoring.listUserDevices(await refresh(cm), ownUser.id))[0].globalBlockId, null,
+      "only Master sees the global ban control identifier");
+    process.env.ALLOW_DEVELOPMENT_MOBILE_AUTH = "true";
+    const [usersBeforeDeniedSignIn] = await root.query<(RowDataPacket & { count: number })[]>("SELECT COUNT(*) count FROM application_users");
+    await assert.rejects(
+      mobileSession.createDevelopmentMobileSession({ fullName: "QA Banned New Account", countryCode: "IN", deviceId: sharedDeviceId }),
+      (error: unknown) => error instanceof mobileSession.MobileAccessDeniedError && error.accessCode === "DEVICE_BLOCKED",
+    );
+    await assert.rejects(
+      mobileSession.createDevelopmentMobileSession({ fullName: "QA Missing Device", countryCode: "IN" }),
+      (error: unknown) => error instanceof mobileSession.MobileAccessDeniedError && error.accessCode === "DEVICE_ID_REQUIRED",
+    );
+    const [usersAfterDeniedSignIn] = await root.query<(RowDataPacket & { count: number })[]>("SELECT COUNT(*) count FROM application_users");
+    assert.equal(usersAfterDeniedSignIn[0].count, usersBeforeDeniedSignIn[0].count,
+      "a banned or unidentified device cannot create a new account row");
+    const repeatedGlobalBan = await monitoring.banDeviceAcrossAccounts({ scope: master, sessionId, reason: "QA repeated Master device ban" });
+    assert.equal(repeatedGlobalBan.alreadyBanned, true);
+    assert.equal(repeatedGlobalBan.revokedSessions, 0);
+    await assert.rejects(monitoring.unbanDeviceAcrossAccounts({ scope: await refresh(cm), banId: globalDevices[0].globalBlockId!, reason: "QA unauthorized restore" }), /Only Master/);
+    await monitoring.unbanDeviceAcrossAccounts({ scope: master, banId: globalDevices[0].globalBlockId!, reason: "QA Master restores device access" });
+    assert.equal(await mobileSession.authenticateMobileRequest(request), null,
+      "unbanning must not resurrect previously revoked bearer tokens");
+    const freshSession = await mobileSession.createDevelopmentMobileSession({ fullName: "QA Fresh Device Sign-In", countryCode: "IN", deviceId: sharedDeviceId });
+    assert.ok(freshSession.token);
+    const [globalAudit] = await root.query<(RowDataPacket & { action: string })[]>(
+      "SELECT action FROM audit_logs WHERE target_id = ? ORDER BY created_at",
+      [globalDevices[0].globalBlockId],
+    );
+    assert.deepEqual(globalAudit.map((row) => row.action), ["device.global_ban", "device.global_unban"]);
+    delete process.env.ALLOW_DEVELOPMENT_MOBILE_AUTH;
     passed++;
 
     await ops.adjustPlatformCoinInventory({ scope: master, accountId: master.account.id, direction: "ADD", amount: 1000, reason: "QA generate inventory", idempotencyKey: randomUUID() });

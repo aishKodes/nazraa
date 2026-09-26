@@ -9,7 +9,7 @@ import { z } from "zod";
 import { clearSession, createSession } from "@/lib/auth/session";
 import { requirePermission } from "@/lib/auth/guard";
 import { accountByManagementId, createInitialMaster } from "@/lib/db/repositories/accounts";
-import { blockUserDevice, unblockUserDevice } from "@/lib/db/repositories/monitoring";
+import { banDeviceAcrossAccounts, blockUserDevice, unbanDeviceAcrossAccounts, unblockUserDevice } from "@/lib/db/repositories/monitoring";
 import { adjustPlatformCoinInventory, allocatePlatformCoins, createTemporaryLiveRestriction, permanentlyBanUser, permanentlyUnbanUser, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
 import { withTransaction } from "@/lib/db/transaction";
 
@@ -201,4 +201,37 @@ export async function submitDeviceUnblock(formData: FormData) {
   }
   revalidatePath("/dashboard/monitoring");
   redirect("/dashboard/monitoring?success=Device+unblocked.+The+user+can+sign+in+again.");
+}
+
+export async function submitGlobalDeviceBan(formData: FormData) {
+  const scope = await requirePermission("devices.manage");
+  const parsed = z.object({
+    sessionId: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmation: z.literal("BAN DEVICE"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect("/dashboard/monitoring?error=Choose+a+device%2C+provide+a+reason%2C+and+type+BAN+DEVICE.");
+  let result: Awaited<ReturnType<typeof banDeviceAcrossAccounts>>;
+  try {
+    result = await banDeviceAcrossAccounts({ scope, sessionId: parsed.data.sessionId, reason: parsed.data.reason });
+  } catch (error) {
+    redirect(`/dashboard/monitoring?error=${encodeURIComponent(error instanceof Error ? error.message : "Global device ban could not be saved.")}`);
+  }
+  revalidatePath("/dashboard/monitoring");
+  redirect(`/dashboard/monitoring?success=${encodeURIComponent(result.alreadyBanned
+    ? "This device identifier was already banned across all accounts. Any remaining sessions were revoked."
+    : `${result.revokedSessions} session(s) revoked. This device identifier cannot sign in or create a new account.`)}`);
+}
+
+export async function submitGlobalDeviceUnban(formData: FormData) {
+  const scope = await requirePermission("devices.manage");
+  const parsed = z.object({
+    banId: z.string().uuid(), reason: z.string().trim().min(5).max(500), confirmation: z.literal("UNBAN DEVICE"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) redirect("/dashboard/monitoring?error=Choose+a+global+device+ban%2C+provide+a+reason%2C+and+type+UNBAN+DEVICE.");
+  try {
+    await unbanDeviceAcrossAccounts({ scope, banId: parsed.data.banId, reason: parsed.data.reason });
+  } catch (error) {
+    redirect(`/dashboard/monitoring?error=${encodeURIComponent(error instanceof Error ? error.message : "Global device ban could not be removed.")}`);
+  }
+  revalidatePath("/dashboard/monitoring");
+  redirect("/dashboard/monitoring?success=Global+device+ban+removed.+Previously+revoked+sessions+remain+signed+out%3B+users+can+sign+in+again.");
 }

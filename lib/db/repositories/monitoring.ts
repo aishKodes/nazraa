@@ -105,11 +105,20 @@ export async function listModerationHistory(scope: Scope, userIds: string[]) {
 export async function listUserDevices(scope: Scope, applicationUserId: string) {
   const scoped = scopeWhere(scope, "u.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & {
-    id: string; device_label: string | null; device_id_hash: string | null; last_used_at: string; expires_at: string; revoked_at: string | null;
+    id: string; device_label: string | null; device_id_hash: string | null; device_identity_kind: string | null;
+    last_used_at: string; expires_at: string; revoked_at: string | null;
     blocked_id: string | null; blocked_reason: string | null; blocked_at: string | null; blocked_by_name: string | null;
+    global_block_id: string | null; global_block_reason: string | null; global_blocked_at: string | null;
+    matching_accounts: number;
   })[]>(
-    `SELECT session.id, session.device_label, session.device_id_hash, session.last_used_at, session.expires_at, session.revoked_at,
-            block.id blocked_id, block.reason blocked_reason, block.blocked_at, block_actor.full_name blocked_by_name
+    `SELECT session.id, session.device_label, session.device_id_hash, session.device_identity_kind,
+            session.last_used_at, session.expires_at, session.revoked_at,
+            block.id blocked_id, block.reason blocked_reason, block.blocked_at, block_actor.full_name blocked_by_name,
+            global_block.id global_block_id, global_block.reason global_block_reason,
+            global_block.banned_at global_blocked_at,
+            (SELECT COUNT(DISTINCT matching_session.application_user_id)
+             FROM mobile_sessions matching_session
+             WHERE matching_session.device_id_hash = session.device_id_hash) matching_accounts
      FROM mobile_sessions session
      INNER JOIN application_users u ON u.id = session.application_user_id
      LEFT JOIN mobile_device_blocks block
@@ -118,15 +127,101 @@ export async function listUserDevices(scope: Scope, applicationUserId: string) {
       AND (block.mobile_session_id = session.id
         OR (session.device_id_hash IS NOT NULL AND block.device_id_hash = session.device_id_hash))
      LEFT JOIN platform_accounts block_actor ON block_actor.id = block.blocked_by
+     LEFT JOIN mobile_device_security_state global_block
+       ON global_block.device_id_hash = session.device_id_hash
+      AND global_block.status = 'BANNED'
      WHERE session.application_user_id = ? AND ${scoped.clause}
      ORDER BY session.last_used_at DESC LIMIT 20`,
     [applicationUserId, ...scoped.values],
   );
   return rows.map((row) => ({
-    id: row.id, label: row.device_label ?? "Unknown device", persistentDevice: Boolean(row.device_id_hash), lastUsedAt: row.last_used_at,
+    id: row.id, label: row.device_label ?? "Unknown device", persistentDevice: Boolean(row.device_id_hash),
+    deviceIdentityKind: row.device_identity_kind, matchingAccounts: Number(row.matching_accounts), lastUsedAt: row.last_used_at,
     expiresAt: row.expires_at, revokedAt: row.revoked_at, blockId: row.blocked_id,
     blockReason: row.blocked_reason, blockedAt: row.blocked_at, blockedByName: row.blocked_by_name,
+    globalBlockId: scope.account.role === "MASTER" ? row.global_block_id : null,
+    globalBlocked: Boolean(row.global_block_id),
+    globalBlockReason: scope.account.role === "MASTER" ? row.global_block_reason : null,
+    globalBlockedAt: row.global_blocked_at,
   }));
+}
+
+/** Unlike an account-scoped block, this Master action denies every account
+ * presenting the same device identifier and revokes all matching sessions. */
+export async function banDeviceAcrossAccounts(input: { scope: Scope; sessionId: string; reason: string }) {
+  if (input.scope.account.role !== "MASTER") throw new Error("Only Master can ban a device across all accounts.");
+  const reason = input.reason.trim();
+  if (reason.length < 5 || reason.length > 500) throw new Error("Provide a clear device-ban reason of 5 to 500 characters.");
+  return withTransaction(async (connection) => {
+    const [sessions] = await connection.query<(RowDataPacket & {
+      id: string; application_user_id: string; device_id_hash: string | null;
+    })[]>(
+      `SELECT id, application_user_id, device_id_hash FROM mobile_sessions
+       WHERE id = ? LIMIT 1`,
+      [input.sessionId],
+    );
+    const session = sessions[0];
+    if (!session?.device_id_hash) throw new Error("This legacy session has no stable device identifier. Ask the user to sign in with the current app first.");
+    await connection.execute(
+      "INSERT IGNORE INTO mobile_device_security_state (id, device_id_hash) VALUES (?, ?)",
+      [randomUUID(), session.device_id_hash],
+    );
+    const [states] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(
+      "SELECT id, status FROM mobile_device_security_state WHERE device_id_hash = ? LIMIT 1 FOR UPDATE",
+      [session.device_id_hash],
+    );
+    const state = states[0];
+    if (!state) throw new Error("Device security state could not be locked. Please retry.");
+    if (state.status !== "BANNED") {
+      await connection.execute(
+        `UPDATE mobile_device_security_state
+         SET status = 'BANNED', reason = ?, banned_by = ?, banned_at = CURRENT_TIMESTAMP(3),
+             unbanned_by = NULL, unbanned_at = NULL WHERE id = ?`,
+        [reason, input.scope.account.id, state.id],
+      );
+    }
+    const [revoked] = await connection.execute<ResultSetHeader>(
+      `UPDATE mobile_sessions
+       SET revoked_at = CURRENT_TIMESTAMP(3), revoked_reason = 'DEVICE_GLOBAL_BAN', revoked_reference_id = ?
+       WHERE device_id_hash = ? AND revoked_at IS NULL`,
+      [state.id, session.device_id_hash],
+    );
+    if (state.status !== "BANNED") {
+      await connection.execute(
+        `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, new_data, reason)
+         VALUES (?, ?, 'MASTER', 'device.global_ban', 'devices', 'mobile_device_security_state', ?, ?, ?)`,
+        [randomUUID(), input.scope.account.id, state.id,
+          JSON.stringify({ sourceApplicationUserId: session.application_user_id, sourceSessionId: session.id, revokedSessions: revoked.affectedRows }), reason],
+      );
+    }
+    return { alreadyBanned: state.status === "BANNED", revokedSessions: revoked.affectedRows };
+  });
+}
+
+export async function unbanDeviceAcrossAccounts(input: { scope: Scope; banId: string; reason: string }) {
+  if (input.scope.account.role !== "MASTER") throw new Error("Only Master can remove a global device ban.");
+  const reason = input.reason.trim();
+  if (reason.length < 5 || reason.length > 500) throw new Error("Provide a clear unban reason of 5 to 500 characters.");
+  return withTransaction(async (connection) => {
+    const [states] = await connection.query<(RowDataPacket & { id: string })[]>(
+      "SELECT id FROM mobile_device_security_state WHERE id = ? AND status = 'BANNED' LIMIT 1 FOR UPDATE",
+      [input.banId],
+    );
+    if (!states[0]) throw new Error("An active global device ban was not found.");
+    await connection.execute(
+      `UPDATE mobile_device_security_state
+       SET status = 'ALLOWED', unbanned_by = ?, unbanned_at = CURRENT_TIMESTAMP(3)
+       WHERE id = ?`,
+      [input.scope.account.id, input.banId],
+    );
+    await connection.execute(
+      `INSERT INTO audit_logs (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
+       VALUES (?, ?, 'MASTER', 'device.global_unban', 'devices', 'mobile_device_security_state', ?, ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.banId,
+        JSON.stringify({ status: "BANNED" }), JSON.stringify({ status: "ALLOWED", sessionTokensRestored: 0 }), reason],
+    );
+    return { signInRequired: true };
+  });
 }
 
 export async function blockUserDevice(input: { scope: Scope; sessionId: string; reason: string }) {

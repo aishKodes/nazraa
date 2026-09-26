@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     if (error instanceof MobileAccessDeniedError) {
       return NextResponse.json(
         { message: error.message, code: error.accessCode },
-        { status: 403, headers: { "Cache-Control": "no-store" } },
+        { status: error.accessCode === "DEVICE_ID_REQUIRED" ? 400 : 403, headers: { "Cache-Control": "no-store" } },
       );
     }
     console.error("Mobile session creation failed", error);
