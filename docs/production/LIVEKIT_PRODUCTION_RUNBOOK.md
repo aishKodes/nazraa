@@ -1,6 +1,6 @@
 # Nazraa production LiveKit runbook
 
-Last verified: 2026-09-16
+Last verified: 2026-09-26
 
 ## Service ownership
 
@@ -11,6 +11,21 @@ Last verified: 2026-09-16
 - The mobile app never contains a LiveKit API secret. Vercel issues short-lived,
   role-scoped participant tokens with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
   `LIVEKIT_API_SECRET` held only as Production secrets.
+
+## Maintenance access
+
+The authorized development Mac has a `nazraa-livekit` alias in its private
+`~/.ssh/config`. It connects as `ubuntu` to `rtc.pixtra.site` with the existing
+OCI identity file and strict host-key checking. On 2026-09-26, a noninteractive
+SSH command through that alias succeeded, and Caddy, LiveKit, and Redis were
+healthy. The SSH private key and the pinned host key are not stored in this
+repository.
+
+This alias makes routine access simple, but it does not guarantee access if the
+Mac's public IP changes: OCI ingress rules still determine reachability. Before
+an incident, verify `ssh -o BatchMode=yes nazraa-livekit 'hostname'` from the
+authorized Mac. Never broaden SSH ingress to the public Internet just to make
+the alias work; use an approved narrow source rule or private maintenance path.
 
 ## Network contract
 

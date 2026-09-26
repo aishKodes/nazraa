@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.63";
-const releaseBuild = 7375;
+const releaseVersion = "2.4.64";
+const releaseBuild = 7376;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.63/Nazraa-Live-2.4.63-7375-release.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.64/Nazraa-Live-2.4.64-7376-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 300_883_029,
-  sha256: "69d312068d0e07f5e79b49366d70e52f52caf0ed6544620e50f24a6b0b1aed59",
-  releaseDate: "2026-09-25",
+  apkSizeBytes: 301_539_993,
+  sha256: "b50c64ddaecd6a0ab722967baa16aad9087559f4cce0123eef470451cd79e25e",
+  releaseDate: "2026-09-26",
   releaseNotes: [
-    "Publishes one full-resolution 720p Face video layer instead of switching between simulcast layers.",
-    "Reduces full room-presence polling and keeps media reconnect independent from transient API failures.",
-    "Preserves Party, PK, Beauty, rewards, games, and economy behavior.",
+    "Keeps the Live duration and reward countdown moving smoothly from the same authoritative server clock.",
+    "Improves Host publishing checkpoints and reward eligibility for verified Agency Hosts with a stale legacy Host flag.",
+    "Preserves LiveKit media, Party, PK, Beauty, games, wallets, and the existing once-daily claimable reward rule.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
