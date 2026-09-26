@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.64";
-const releaseBuild = 7376;
+const releaseVersion = "2.4.65";
+const releaseBuild = 7377;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.64/Nazraa-Live-2.4.64-7376-release.apk";
+  "https://github.com/aishKodes/nazraa/releases/download/v2.4.65/Nazraa-Live-2.4.65-7377-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -35,12 +35,12 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 301_539_993,
-  sha256: "b50c64ddaecd6a0ab722967baa16aad9087559f4cce0123eef470451cd79e25e",
+  sha256: "19c06fe06fe5be02346e94c9bbdf1f3f9c421d11170dd2d3a92fd8dce11cd2c6",
   releaseDate: "2026-09-26",
   releaseNotes: [
-    "Keeps the Live duration and reward countdown moving smoothly from the same authoritative server clock.",
-    "Improves Host publishing checkpoints and reward eligibility for verified Agency Hosts with a stale legacy Host flag.",
-    "Preserves LiveKit media, Party, PK, Beauty, games, wallets, and the existing once-daily claimable reward rule.",
+    "Adds Master-only global device bans across all Nazraa accounts using the same recorded device identifier.",
+    "Revokes matching sessions and prevents sign-in or new-account creation from a banned identifier.",
+    "Prefers the Android app-scoped device ID over older install-only identifiers while preserving LiveKit and existing room features.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
