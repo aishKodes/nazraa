@@ -99,6 +99,24 @@ export async function getLiveRewardDiagnostics(days = 30) {
      WHERE completed_at >= DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)`,
     [bounded],
   );
+  const [countryDecisionRows] = await db().query<(RowDataPacket & {
+    country_code: string;
+    decision_reason: string;
+    decisions: number;
+    awarded_units: number;
+  })[]>(
+    `SELECT COALESCE(NULLIF(user.country_code, ''), 'UNKNOWN') country_code,
+            decision_row.decision_reason,
+            COUNT(*) decisions,
+            SUM(decision_row.eligible = TRUE AND decision_row.reward_diamonds > 0) awarded_units
+     FROM live_hour_reward_decisions decision_row
+     INNER JOIN application_users user
+       ON user.id = decision_row.host_application_user_id
+     WHERE decision_row.decided_at >= DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL ? DAY)
+     GROUP BY COALESCE(NULLIF(user.country_code, ''), 'UNKNOWN'), decision_row.decision_reason
+     ORDER BY country_code, decision_row.decision_reason`,
+    [bounded],
+  );
   const session = sessionRows[0];
   const reward = rewardRows[0];
   return {
@@ -121,6 +139,14 @@ export async function getLiveRewardDiagnostics(days = 30) {
     unclaimedRewardUnits: Number(reward?.unclaimed_units ?? 0),
     inconsistentSessionCandidates: Number(session?.candidate_sessions_without_decision ?? 0),
     qaNonFinancialRuns: Number(qaRows[0]?.runs ?? 0),
+    // Aggregate-only country/reason counts let Master audit reports of
+    // missing rewards without disclosing a Host, room, or financial ledger.
+    countryDecisionReasons: countryDecisionRows.map((row) => ({
+      countryCode: String(row.country_code),
+      reason: String(row.decision_reason),
+      decisions: Number(row.decisions),
+      awardedUnits: Number(row.awarded_units),
+    })),
   };
 }
 

@@ -3453,6 +3453,12 @@ async function main() {
     assert.ok(diagnostic.expectedRewardUnits >= 1, "diagnostic must count immutable eligible reward decisions");
     assert.equal(diagnostic.missingRewardUnits, 0, "fresh eligible decisions must have matching claimable entitlements");
     assert.equal(diagnostic.qaNonFinancialRuns, 1, "diagnostic must count the isolated QA crossing without exposing a user");
+    assert.ok(
+      diagnostic.countryDecisionReasons.some((row) =>
+        row.countryCode === "BD" && row.reason === "ELIGIBLE" && row.awardedUnits >= 1
+      ),
+      "the Bangladesh Host's reward must be visible in aggregate Master diagnostics",
+    );
     const faceStartOutcomes = await import("@/lib/observability/face-live-start-outcomes");
     await Promise.all([
       faceStartOutcomes.recordFaceLiveStartOutcome("SUCCESS"),
