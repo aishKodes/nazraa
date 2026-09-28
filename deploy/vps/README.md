@@ -37,6 +37,14 @@ Do not run `npm run migrate` or switch Flutter traffic against an unverified
 copy. Stop writes on the old path before a final export/import if change-data
 capture is unavailable. Keep only one authoritative writable database.
 
+For the staging snapshot, transfer the checksum-verified `.sql.gz` to a
+root-readable private VPS backup directory, start only the `mysql` and `redis`
+services, then run `restore-staging.sh` as root with the absolute backup path
+and expected SHA-256. The script refuses a nonempty target and does not alter
+the old shared database. If import fails partway, replace the isolated staging
+database through an explicit recovery procedure; do not rerun it into a
+partially imported schema.
+
 The compose file intentionally includes no public database or Redis port,
 and does not change `rtc.pixtra.site` or `turn.rtc.pixtra.site`. The API binds
 only to the VPS loopback address for private SSH-tunnel QA. The `edge` Caddy
