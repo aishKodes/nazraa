@@ -21,6 +21,9 @@ Google, encryption, and DB credentials. Set `DB_NAME`, `DB_USER`, and
 `DB_PASSWORD` to the imported VPS database. `mysql.env` supplies the same
 database/user/password plus a distinct `MYSQL_ROOT_PASSWORD`. `caddy.env`
 contains `ACME_EMAIL` for certificate notices.
+The API service fixes `MEDIA_PROVIDER=LIVEKIT` in Compose so an omitted value
+cannot silently fall back to ZEGO. Do not expose the API until the existing
+LiveKit URL/API key/secret and encrypted-document key are present and verified.
 The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
 1 GiB maximum for Redis, a 16-connection API pool, and a 150-connection MySQL
 ceiling. These are initial caps, not measured production tuning. Override via
