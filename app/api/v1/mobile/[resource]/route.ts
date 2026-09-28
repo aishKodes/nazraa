@@ -106,6 +106,10 @@ import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-featu
 import { verifyGooglePlayCoinPurchase } from "@/lib/db/repositories/mobile-play-billing";
 import { traceMobileRequest } from "@/lib/observability/mobile-latency-context";
 import {
+  publishRoomRealtimeEvent,
+  type RoomRealtimeTopic,
+} from "@/lib/services/room-realtime-events";
+import {
   persistMobileLatency,
   persistRoomJoinLatency,
   shouldPersistMobileLatency,
@@ -148,6 +152,11 @@ function scheduleMixerSync(roomCode: string, useZego: boolean) {
       /* Strict paid-routing viewers remain pending; room APIs stay available. */
     }
   });
+}
+
+function notifyRoom(roomCode: string, topic: RoomRealtimeTopic) {
+  if (!process.env.REDIS_URL) return;
+  after(() => publishRoomRealtimeEvent(roomCode, topic));
 }
 
 function scheduleRoomJoinMaintenance(roomCode: string, useZego: boolean) {
@@ -525,6 +534,7 @@ export async function POST(
           })
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
+        notifyRoom(parsed.roomCode, "seat");
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
@@ -987,6 +997,7 @@ export async function POST(
             );
           }
           const result = await createRoom(identity, parsed);
+          notifyRoom(parsed.roomCode, "presence");
           // The Host will confirm publishing in its first presence heartbeat. A
           // best-effort sync here is still useful for room types whose publisher
           // signal is already present, and never delays room creation.
@@ -1024,6 +1035,7 @@ export async function POST(
               }
             : undefined,
         );
+        notifyRoom(parsed.roomCode, "presence");
         // Face passive playback needs only this compact, authorization-backed
         // media snapshot. Returning it from the join request eliminates the
         // second cold Vercel-to-MySQL request before HLS can start. Party and
@@ -1040,6 +1052,7 @@ export async function POST(
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
         const result = await leaveLiveRoom(identity, parsed.roomCode);
+        notifyRoom(parsed.roomCode, "presence");
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
@@ -1175,6 +1188,7 @@ export async function POST(
           })
           .parse(body);
         const result = await setRoomAdmin(identity, parsed);
+        notifyRoom(parsed.roomCode, "seat");
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
@@ -1187,6 +1201,7 @@ export async function POST(
           })
           .parse(body);
         const result = await kickRoomMember(identity, parsed);
+        notifyRoom(parsed.roomCode, "presence");
         // The database transaction is authoritative. When this is a staged
         // LiveKit room, immediately disconnect the still-connected peer too;
         // a failed media RPC cannot reopen the room-block loophole.
@@ -1206,7 +1221,9 @@ export async function POST(
             targetPublicId: z.string().regex(/^\d+$/),
           })
           .parse(body);
-        return NextResponse.json(await unblockRoomMember(identity, parsed));
+        const result = await unblockRoomMember(identity, parsed);
+        notifyRoom(parsed.roomCode, "presence");
+        return NextResponse.json(result);
       }
       if (resource === "room-microphone") {
         const parsed = z
@@ -1217,6 +1234,7 @@ export async function POST(
           })
           .parse(body);
         const result = await setRoomMemberMuted(identity, parsed);
+        notifyRoom(parsed.roomCode, "seat");
         if (mediaProviderFor(identity) === "LIVEKIT") {
           await new LiveKitRoomAdmin().setParticipantAudioMuted(
             parsed.roomCode,
@@ -1238,7 +1256,9 @@ export async function POST(
               .regex(/^[a-z0-9_-]{2,40}$/),
           })
           .parse(body);
-        return NextResponse.json(await sendRoomInteraction(identity, parsed), {
+        const result = await sendRoomInteraction(identity, parsed);
+        notifyRoom(parsed.roomCode, "chat");
+        return NextResponse.json(result, {
           status: 201,
         });
       }
@@ -1258,6 +1278,8 @@ export async function POST(
       if (resource === "pk-start") {
         const parsed = z.object({ sessionId: z.string().uuid() }).parse(body);
         const result = await activatePkSession(identity, parsed.sessionId);
+        notifyRoom(result.sourceRoomCode, "pk");
+        notifyRoom(result.targetRoomCode, "pk");
         scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
         scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
@@ -1267,6 +1289,8 @@ export async function POST(
           .object({ sessionId: z.string().uuid(), accept: z.boolean() })
           .parse(body);
         const result = await respondPkSession(identity, parsed);
+        notifyRoom(result.sourceRoomCode, "pk");
+        notifyRoom(result.targetRoomCode, "pk");
         scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
         scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
@@ -1280,6 +1304,8 @@ export async function POST(
           })
           .parse(body);
         const result = await closePkSession(identity, parsed);
+        notifyRoom(result.sourceRoomCode, "pk");
+        notifyRoom(result.targetRoomCode, "pk");
         scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
         scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
@@ -1314,7 +1340,9 @@ export async function POST(
             resetTopDp: z.boolean().default(false),
           })
           .parse(body);
-        return NextResponse.json(await updateRoomSettings(identity, parsed));
+        const result = await updateRoomSettings(identity, parsed);
+        notifyRoom(parsed.roomCode, "settings");
+        return NextResponse.json(result);
       }
       if (resource === "room-chat") {
         await assertCurrentPoliciesAccepted(identity);
@@ -1325,7 +1353,9 @@ export async function POST(
             clientMessageId: z.string().uuid().optional(),
           })
           .parse(body);
-        return NextResponse.json(await sendRoomChat(identity, parsed), {
+        const result = await sendRoomChat(identity, parsed);
+        notifyRoom(parsed.roomCode, "chat");
+        return NextResponse.json(result, {
           status: 201,
         });
       }
@@ -1333,18 +1363,17 @@ export async function POST(
         const parsed = z
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
-        return NextResponse.json(
-          await clearRoomChat(identity, parsed.roomCode),
-        );
+        const result = await clearRoomChat(identity, parsed.roomCode);
+        notifyRoom(parsed.roomCode, "chat");
+        return NextResponse.json(result);
       }
       if (resource === "live-cohost-request") {
         const parsed = z
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
-        return NextResponse.json(
-          await requestLiveCoHost(identity, parsed.roomCode),
-          { status: 201 },
-        );
+        const result = await requestLiveCoHost(identity, parsed.roomCode);
+        notifyRoom(parsed.roomCode, "seat");
+        return NextResponse.json(result, { status: 201 });
       }
       if (resource === "live-cohost-response") {
         const parsed = z
@@ -1355,6 +1384,7 @@ export async function POST(
           })
           .parse(body);
         const result = await respondLiveCoHost(identity, parsed);
+        notifyRoom(parsed.roomCode, "seat");
         // The database transaction above owns the authorization decision.
         // Apply the matching LiveKit permission to a currently connected
         // guest immediately; the client receives a permission event and only
@@ -1390,6 +1420,7 @@ export async function POST(
           })
           .parse(body);
         const result = await endLiveCoHost(identity, parsed);
+        notifyRoom(parsed.roomCode, "seat");
         if (mediaProviderFor(identity) === "LIVEKIT") {
           // Demotion must revoke the connected participant's microphone
           // immediately, not merely prevent a later token refresh.
@@ -1408,6 +1439,7 @@ export async function POST(
           .object({ roomCode: z.string().trim().min(3).max(80) })
           .parse(body);
         const result = await finalizeLiveSession(identity, parsed.roomCode);
+        notifyRoom(parsed.roomCode, "room-ended");
         scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
         return NextResponse.json(result);
       }
@@ -1423,7 +1455,9 @@ export async function POST(
             quantity: z.number().int().min(1).max(99),
           })
           .parse(body);
-        return NextResponse.json(await sendGift(identity, parsed));
+        const result = await sendGift(identity, parsed);
+        notifyRoom(parsed.roomCode, "gift");
+        return NextResponse.json(result);
       }
       if (resource === "game-wallet") {
         return errorResponse(
