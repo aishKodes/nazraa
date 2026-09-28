@@ -12,7 +12,10 @@ copying or production routing has occurred.
   `nazraaops` SSH, UFW and fail2ban were installed for staging. Only empty
   MySQL/Redis containers were started; no API, edge, worker or mobile traffic
   was routed to the VPS. SSH subsequently began accepting TCP without sending
-  a banner, so staging restore is paused pending maintenance recovery. The
+  a banner. A Hostinger hPanel reboot completed, but the same pre-authentication
+  banner timeout persisted. The hPanel serial console reaches the Ubuntu login
+  prompt; diagnosis needs an authenticated root console session. Staging
+  restore is paused pending maintenance recovery. The
   production Vercel and shared-DB path remains unaffected.
 
 - Current Vercel project: `vedanath/nazraa`.
@@ -76,6 +79,13 @@ copying or production routing has occurred.
 | Scheduled work | Vercel cron calls `/api/cron/monthly-host-reset` daily at 18:35 UTC; some maintenance runs in request `after(...)` | Replace cron only after VPS worker idempotency and production verification |
 | Assets | Multiple backend response/SQL URLs hardcode `nazraa.vercel.app` | Make output origin configurable before direct mobile cutover; old links must remain valid |
 | Secrets | Vercel Production stores DB, session, document-encryption, LiveKit, Google OAuth, cron and legacy ZEGO variables | Copy only needed values through secure server-side channel; never log or commit them |
+
+The Vercel environment-variable dashboard marks the current
+`DOCUMENT_ENCRYPTION_KEY` and `SESSION_SECRET` as **Secret** (not revealable in
+the displayed settings), and `vercel env pull` returned redaction placeholders.
+Neither key may be silently replaced: doing so would respectively strand
+historical encrypted documents or invalidate existing sessions. Secret parity
+is a separate cutover gate, not something a successful database import proves.
 
 The Vercel `vercel-build` command currently runs `npm run migrate` before
 `next build`. Do not push this migration branch to the linked GitHub repository
