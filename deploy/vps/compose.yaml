@@ -2,7 +2,8 @@ name: nazraa
 
 services:
   mysql:
-    image: mysql:8.4
+    # Match the authoritative Hostinger source engine during migration.
+    image: mariadb:11.8.9
     restart: unless-stopped
     env_file: ./config/mysql.env
     command:
@@ -14,11 +15,11 @@ services:
       - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL_SIZE:-8G}
       - --max-connections=${MYSQL_MAX_CONNECTIONS:-150}
     volumes:
-      - ./mysql/data:/var/lib/mysql
-      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./mariadb/data:/var/lib/mysql
+      - ./mariadb/conf.d:/etc/mysql/conf.d:ro
     networks: [private]
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 --silent"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -99,7 +100,6 @@ services:
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
-      - "443:443/udp"
     volumes:
       - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/data:/data

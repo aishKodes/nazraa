@@ -8,8 +8,12 @@ copying or production routing has occurred.
 - Hostinger now shows a running KVM 8 VPS (8 vCPU, 32 GiB RAM, 400 GiB disk)
   in India–Mumbai at `187.126.115.185`, VPS ID `2017514`, hostname
   `srv2017514.hstgr.cloud`. The installed OS is Ubuntu 26.04 LTS, not the
-  previously requested 24.04 LTS. Verify package compatibility before
-  hardening; no VPS application services have been installed yet.
+  previously requested 24.04 LTS. Docker Engine/Compose, key-only
+  `nazraaops` SSH, UFW and fail2ban were installed for staging. Only empty
+  MySQL/Redis containers were started; no API, edge, worker or mobile traffic
+  was routed to the VPS. SSH subsequently began accepting TCP without sending
+  a banner, so staging restore is paused pending maintenance recovery. The
+  production Vercel and shared-DB path remains unaffected.
 
 - Current Vercel project: `vedanath/nazraa`.
 - Production alias: `https://nazraa.vercel.app` (the only domain shown in
@@ -19,16 +23,31 @@ copying or production routing has occurred.
 - Vercel region in `vercel.json`: `bom1`.
 - Existing MySQL remains on Hostinger shared hosting. A read-only connection
   from this Mac timed out (`ETIMEDOUT`); do not interpret this as a production
-  DB outage. Live Vercel serves traffic. Production DB migration/version,
-  row counts, financial totals, size, and backup status remain **unverified**
-  until connected from an allowed network or Hostinger's database tools.
+  DB outage. Live Vercel serves traffic. Hostinger phpMyAdmin SSO subsequently
+  confirmed the authoritative `u784105579_nazra` database uses **MariaDB
+  11.8.9**, not MySQL 8, with 123 tables, approximately 2.8 GiB allocated,
+  93 applied migrations through `0092_master_global_device_bans.sql`.
+  A read-only aggregate at source time `2026-09-28 18:05:29.090` reported
+  1,984 application users, 3,978 wallet rows, 70,331 ledger transactions,
+  28,163 game bets, 2,113 private documents and 13,682 room photo assets.
+  Wallet available totals were 137,241,078 Coins and 11,522,339 Diamonds;
+  both reserved totals were zero. These are a **moving pre-freeze baseline**,
+  not final cutover totals. The source remains writable and authoritative.
+  Hostinger's 2026-09-27 23:42 database snapshot is saved to a private
+  off-host file (`source-20260927.sql.gz`, 2,466,981,942 bytes). Gzip integrity
+  passed and the dump contains 123 `CREATE TABLE` statements. SHA-256:
+  `d71de76199169c0adbfd3e29a874985eb68bd31b0dbbcb98148691e6085ea1dd`.
+  It is a **staging snapshot only**; target import and a fresh write-frozen
+  final export remain pending.
 - A fresh empty-schema replay on local MySQL 9.6 with
   `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
   mismatch. The project's integration test created a database with
   `utf8mb4_unicode_ci` and successfully replayed migrations `0001`–`0092`.
-  VPS staging therefore defaults to `utf8mb4_unicode_ci`. This still does
-  **not** establish whether a full production SQL dump imports on target
-  MySQL 8.4; test that exact dump rather than recreating the schema.
+  VPS staging therefore defaults to `utf8mb4_unicode_ci`. Because the actual
+  source is MariaDB 11.8.9, staging is configured to use the same MariaDB
+  version with a **separate** data volume, preserving the disposable empty
+  MySQL 8.4 volume until the restore is verified. The target dump import and
+  full reconciliation remain an explicit gate.
 - Existing Oracle LiveKit/TURN endpoints and DNS are outside this migration.
 - Current DNS A lookup: `api.nazraa.pixtra.site`, `ws.nazraa.pixtra.site`
   and `nazraa.pixtra.site` have no A answer yet; `rtc.pixtra.site` and

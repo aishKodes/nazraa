@@ -10,8 +10,11 @@ Place the repository at `/opt/nazraa/app`, this compose file at
 `/opt/nazraa/compose.yaml`, and the Caddyfile at
 `/opt/nazraa/config/Caddyfile`. Create root-owned `0600` files
 `/opt/nazraa/config/app.env`, `mysql.env`, and `caddy.env` from the current
-production configuration; never commit or print their values. The MySQL and
-Redis services have no published host ports.
+production configuration; never commit or print their values. The MariaDB
+(Compose service name `mysql` for app compatibility) and Redis services have
+no published host ports. The source is MariaDB 11.8.9, so staging pins the
+same version and uses a separate data directory from the earlier empty MySQL
+8.4 experiment. Never mount data files across those engines.
 
 `app.env` must contain the existing server-only production auth, LiveKit,
 Google, encryption, and DB credentials. Set `DB_NAME`, `DB_USER`, and

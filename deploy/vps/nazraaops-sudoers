@@ -1,0 +1,3 @@
+# The dedicated key-only operations account is the unattended recovery path.
+# Keep this file root-owned 0440; never grant SSH password login.
+nazraaops ALL=(ALL) NOPASSWD:ALL
