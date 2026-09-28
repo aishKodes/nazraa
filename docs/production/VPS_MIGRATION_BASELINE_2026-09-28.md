@@ -9,9 +9,9 @@ copying or production routing has occurred.
   in India–Mumbai at `187.126.115.185`, VPS ID `2017514`, hostname
   `srv2017514.hstgr.cloud`. The installed OS is Ubuntu 26.04 LTS, not the
   previously requested 24.04 LTS. Docker Engine/Compose, key-only
-  `nazraaops` SSH, UFW and fail2ban were installed for staging. Only empty
-  MySQL/Redis containers were started; no API, edge, worker or mobile traffic
-  was routed to the VPS. SSH subsequently began accepting TCP without sending
+  `nazraaops` SSH, UFW and fail2ban were installed for staging. Isolated
+  database and Redis containers were started; no API, edge, worker or mobile
+  traffic was routed to the VPS. SSH subsequently began accepting TCP without sending
   a banner. A Hostinger hPanel reboot completed, but the same pre-authentication
   banner timeout persisted. The hPanel serial console reaches the Ubuntu login
   prompt. A root console login succeeded after owner-supplied authentication.
@@ -19,8 +19,9 @@ copying or production routing has occurred.
   and fail2ban has zero banned addresses. A packet trace of the Mac's SSH
   attempt shows the VPS repeatedly sending the 42-byte SSH banner without an
   acknowledgement from the Mac; this localizes the failure to the return
-  network path, not `sshd` or the authorized key. A temporary alternate-port
-  diagnostic is pending. Staging restore remains paused. The
+  network path, not `sshd` or the authorized key. IPv6 is not an alternative
+  from the Mac because its current network has no IPv6 route. A temporary
+  alternate-port diagnostic is pending. The
   production Vercel and shared-DB path remains unaffected.
 
 - Current Vercel project: `vedanath/nazraa`.
@@ -45,8 +46,18 @@ copying or production routing has occurred.
   off-host file (`source-20260927.sql.gz`, 2,466,981,942 bytes). Gzip integrity
   passed and the dump contains 123 `CREATE TABLE` statements. SHA-256:
   `d71de76199169c0adbfd3e29a874985eb68bd31b0dbbcb98148691e6085ea1dd`.
-  It is a **staging snapshot only**; target import and a fresh write-frozen
-  final export remain pending.
+  The same private snapshot was downloaded directly to the VPS with mode 0600;
+  its SHA-256 matched the off-host copy. It was imported into an isolated
+  MariaDB 11.8.9 container using a separate data directory. The import exited
+  0 and contains 123 tables and 93 applied migrations. Snapshot counts are
+  1,945 application users, 3,900 wallet rows, 68,012 ledger transactions and
+  27,294 shared-game bets. Snapshot wallet available totals are 138,208,058
+  Coins and 9,664,698 Diamonds; reserved totals are zero. These are older
+  than the moving production baseline above, as expected. The original empty
+  MySQL 8.4 staging volume was preserved. `CHECK TABLE` returned `OK` for
+  wallet balances, ledger transactions and shared-game bets. This is a
+  **staging snapshot only**;
+  a fresh write-frozen final export and reconciliation remain pending.
 - A fresh empty-schema replay on local MySQL 9.6 with
   `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
   mismatch. The project's integration test created a database with
@@ -54,8 +65,8 @@ copying or production routing has occurred.
   VPS staging therefore defaults to `utf8mb4_unicode_ci`. Because the actual
   source is MariaDB 11.8.9, staging is configured to use the same MariaDB
   version with a **separate** data volume, preserving the disposable empty
-  MySQL 8.4 volume until the restore is verified. The target dump import and
-  full reconciliation remain an explicit gate.
+  MySQL 8.4 volume. Import compatibility is verified; full source/target
+  reconciliation at final freeze remains an explicit gate.
 - Existing Oracle LiveKit/TURN endpoints and DNS are outside this migration.
 - Current DNS A lookup: `api.nazraa.pixtra.site`, `ws.nazraa.pixtra.site`
   and `nazraa.pixtra.site` have no A answer yet; `rtc.pixtra.site` and
