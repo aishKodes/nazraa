@@ -70,6 +70,12 @@ copying or production routing has occurred.
   TCP 3000 listens on VPS loopback only; database and Redis have no published
   host ports. This is **private API smoke QA**, not authenticated contract or
   production traffic validation.
+- An isolated synthetic QA user and one-day bearer session were added **only
+  to the staging copy**. Its authenticated `/api/v1/mobile/profile` request
+  returned HTTP 200 and the expected `access`, `policy`, and `profile` keys;
+  no real user credential or production account was used. Consequently, live
+  staging counts now include this one test row and must not be mistaken for
+  original snapshot counts or final production reconciliation.
 - A private loopback-only `nazraa-realtime-staging` process connected to Redis
   and returned HTTP 200 on `/health`. An unauthenticated WebSocket upgrade was
   rejected with HTTP 401. It reported zero restarts. Authenticated room
