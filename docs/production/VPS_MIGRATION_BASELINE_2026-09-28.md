@@ -14,8 +14,13 @@ copying or production routing has occurred.
   was routed to the VPS. SSH subsequently began accepting TCP without sending
   a banner. A Hostinger hPanel reboot completed, but the same pre-authentication
   banner timeout persisted. The hPanel serial console reaches the Ubuntu login
-  prompt; diagnosis needs an authenticated root console session. Staging
-  restore is paused pending maintenance recovery. The
+  prompt. A root console login succeeded after owner-supplied authentication.
+  `ssh.service` is active, its loopback banner succeeds, UFW allows TCP 22,
+  and fail2ban has zero banned addresses. A packet trace of the Mac's SSH
+  attempt shows the VPS repeatedly sending the 42-byte SSH banner without an
+  acknowledgement from the Mac; this localizes the failure to the return
+  network path, not `sshd` or the authorized key. A temporary alternate-port
+  diagnostic is pending. Staging restore remains paused. The
   production Vercel and shared-DB path remains unaffected.
 
 - Current Vercel project: `vedanath/nazraa`.
