@@ -70,6 +70,11 @@ copying or production routing has occurred.
   TCP 3000 listens on VPS loopback only; database and Redis have no published
   host ports. This is **private API smoke QA**, not authenticated contract or
   production traffic validation.
+- A private loopback-only `nazraa-realtime-staging` process connected to Redis
+  and returned HTTP 200 on `/health`. An unauthenticated WebSocket upgrade was
+  rejected with HTTP 401. It reported zero restarts. Authenticated room
+  subscription, ordered delivery, reconnect and Flutter client behavior still
+  need end-to-end testing before any public WSS route is enabled.
 - A fresh empty-schema replay on local MySQL 9.6 with
   `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
   mismatch. The project's integration test created a database with
