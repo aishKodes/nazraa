@@ -24,6 +24,15 @@ contains `ACME_EMAIL` for certificate notices.
 The API service fixes `MEDIA_PROVIDER=LIVEKIT` in Compose so an omitted value
 cannot silently fall back to ZEGO. Do not expose the API until the existing
 LiveKit URL/API key/secret and encrypted-document key are present and verified.
+Vercel marks the current encryption key and other critical values as
+non-readable Secrets. Never substitute a new document key: old encrypted
+records would become unreadable. If the owner has no original secure copy,
+use only the separately reviewed temporary encrypted handoff. Its VPS-side
+`import-encrypted-secrets.mjs` accepts root-owned 0600 X25519 private-key,
+encrypted-envelope and `app.env` files; it refuses overwrites and emits no
+values. Remove the temporary Vercel route/token promptly after import and
+verify decrypting a real historical document only in an authorized private QA
+flow before public cutover.
 The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
 1 GiB maximum for Redis, a 16-connection API pool, and a 150-connection MySQL
 ceiling. These are initial caps, not measured production tuning. Override via
