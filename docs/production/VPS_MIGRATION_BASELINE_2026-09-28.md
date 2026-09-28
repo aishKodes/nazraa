@@ -5,10 +5,11 @@ copying or production routing has occurred.
 
 ## Protected rollback point
 
-- Purchase target changed by the owner from KVM 8 / 12 months to KVM 4 /
-  one month on 2026-09-28. Hostinger currently shows multiple VPS orders
-  as `Payment processing`, but no paid/provisioned VPS is visible yet. Do not
-  retry payment blindly or treat a processing order as a usable server.
+- Hostinger now shows a running KVM 8 VPS (8 vCPU, 32 GiB RAM, 400 GiB disk)
+  in India–Mumbai at `187.126.115.185`, VPS ID `2017514`, hostname
+  `srv2017514.hstgr.cloud`. The installed OS is Ubuntu 26.04 LTS, not the
+  previously requested 24.04 LTS. Verify package compatibility before
+  hardening; no VPS application services have been installed yet.
 
 - Current Vercel project: `vedanath/nazraa`.
 - Production alias: `https://nazraa.vercel.app` (the only domain shown in

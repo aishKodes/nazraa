@@ -11,8 +11,8 @@ services:
       - --default-time-zone=+00:00
       - --slow-query-log=ON
       - --long-query-time=0.5
-      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL_SIZE:-4G}
-      - --max-connections=${MYSQL_MAX_CONNECTIONS:-100}
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL_SIZE:-8G}
+      - --max-connections=${MYSQL_MAX_CONNECTIONS:-150}
     volumes:
       - ./mysql/data:/var/lib/mysql
       - ./mysql/conf.d:/etc/mysql/conf.d:ro
@@ -26,7 +26,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "${REDIS_MAXMEMORY:-512mb}", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "${REDIS_MAXMEMORY:-1gb}", "--maxmemory-policy", "allkeys-lru"]
     networks: [private]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -45,7 +45,7 @@ services:
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_SSL: "false"
-      DB_POOL_LIMIT: "${DB_POOL_LIMIT:-10}"
+      DB_POOL_LIMIT: "${DB_POOL_LIMIT:-16}"
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: "3000"

@@ -18,8 +18,8 @@ Google, encryption, and DB credentials. Set `DB_NAME`, `DB_USER`, and
 `DB_PASSWORD` to the imported VPS database. `mysql.env` supplies the same
 database/user/password plus a distinct `MYSQL_ROOT_PASSWORD`. `caddy.env`
 contains `ACME_EMAIL` for certificate notices.
-The KVM 4 staging defaults reserve 4 GiB for the MySQL buffer pool, 512 MiB
-maximum for Redis, a 10-connection API pool, and a 100-connection MySQL
+The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
+1 GiB maximum for Redis, a 16-connection API pool, and a 150-connection MySQL
 ceiling. These are initial caps, not measured production tuning. Override via
 `MYSQL_BUFFER_POOL_SIZE`, `REDIS_MAXMEMORY`, `DB_POOL_LIMIT`, and
 `MYSQL_MAX_CONNECTIONS` only after measuring actual VPS memory/concurrency.
