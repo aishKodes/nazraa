@@ -21,12 +21,13 @@ copying or production routing has occurred.
   DB outage. Live Vercel serves traffic. Production DB migration/version,
   row counts, financial totals, size, and backup status remain **unverified**
   until connected from an allowed network or Hostinger's database tools.
-- A fresh empty-schema replay on local MySQL 9.6 stopped at migration `0029`:
-  migration `0028` changes the database default collation, while `0029`
-  creates a foreign key to an older `application_users.id` with a different
-  collation. This does **not** establish whether a full production SQL dump
-  imports on target MySQL 8.4; test that exact dump. Do not run all historical
-  migrations against an empty VPS database in lieu of restoring the source.
+- A fresh empty-schema replay on local MySQL 9.6 with
+  `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
+  mismatch. The project's integration test created a database with
+  `utf8mb4_unicode_ci` and successfully replayed migrations `0001`–`0092`.
+  VPS staging therefore defaults to `utf8mb4_unicode_ci`. This still does
+  **not** establish whether a full production SQL dump imports on target
+  MySQL 8.4; test that exact dump rather than recreating the schema.
 - Existing Oracle LiveKit/TURN endpoints and DNS are outside this migration.
 - Current DNS A lookup: `api.nazraa.pixtra.site`, `ws.nazraa.pixtra.site`
   and `nazraa.pixtra.site` have no A answer yet; `rtc.pixtra.site` and
