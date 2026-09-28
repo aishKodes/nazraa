@@ -75,6 +75,12 @@ copying or production routing has occurred.
   rejected with HTTP 401. It reported zero restarts. Authenticated room
   subscription, ordered delivery, reconnect and Flutter client behavior still
   need end-to-end testing before any public WSS route is enabled.
+- From the VPS itself, 25 warm sequential public-config requests measured
+  p50/p95 2.1/5.8 ms against VPS loopback and 23.3/46.1 ms against the current
+  Vercel URL, all HTTP 200. This measures a **server-origin path only**; it
+  excludes India handset→VPS TLS, authenticated hot paths, concurrent load and
+  the newer writes absent from the staging snapshot. It is not sufficient by
+  itself to justify mobile cutover.
 - A fresh empty-schema replay on local MySQL 9.6 with
   `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
   mismatch. The project's integration test created a database with
