@@ -4,6 +4,7 @@ import { WebSocket, WebSocketServer } from "ws";
 
 const redisUrl = process.env.REDIS_URL;
 const internalSecret = process.env.REALTIME_INTERNAL_SECRET;
+const apiOrigin = process.env.REALTIME_API_ORIGIN || "http://api:3000";
 if (!redisUrl || !internalSecret || internalSecret.length < 32) {
   throw new Error("Private realtime dependencies are not configured.");
 }
@@ -80,7 +81,7 @@ async function detach(socket) {
 }
 
 async function authorize(token, roomCode) {
-  const response = await fetch("http://api:3000/api/internal/realtime/authorize", {
+  const response = await fetch(`${apiOrigin}/api/internal/realtime/authorize`, {
     method: "POST",
     headers: {
       authorization: token,
