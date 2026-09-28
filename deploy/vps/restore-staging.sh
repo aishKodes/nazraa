@@ -11,7 +11,7 @@ if [[ $# -ne 2 || ! $2 =~ ^[0-9a-fA-F]{64}$ ]]; then
 fi
 
 backup_path=$1
-expected_sha=${2,,}
+expected_sha=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
 stack_dir=/opt/nazraa
 
 if [[ ! -f $backup_path || ! -r $backup_path ]]; then
