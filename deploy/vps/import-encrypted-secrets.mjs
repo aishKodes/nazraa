@@ -8,9 +8,9 @@ import {
   hkdfSync,
 } from "node:crypto";
 import { open, readFile, rename, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
-const requiredNames = [
+const appNames = [
   "DOCUMENT_ENCRYPTION_KEY",
   "SESSION_SECRET",
   "LIVEKIT_URL",
@@ -19,11 +19,18 @@ const requiredNames = [
   "GOOGLE_OAUTH_CLIENT_IDS",
   "CRON_SECRET",
 ];
+const sourceNames = [
+  "DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD", "DB_SSL",
+];
+const requiredNames = [...appNames, ...sourceNames];
 
 async function main() {
-  const [, , privateKeyPath, envelopePath, envPath] = process.argv;
-  if (!privateKeyPath || !envelopePath || !envPath || process.getuid?.() !== 0) {
-    throw new Error("Run as root with private-key, envelope, and app.env paths.");
+  const [, , privateKeyPath, envelopePath, envPath, sourceEnvPath] = process.argv;
+  if (!privateKeyPath || !envelopePath || !envPath || !sourceEnvPath || process.getuid?.() !== 0) {
+    throw new Error("Run as root with private-key, envelope, app.env, and source-db.env paths.");
+  }
+  if (dirname(sourceEnvPath) !== dirname(envPath) || basename(sourceEnvPath) !== "source-db.env") {
+    throw new Error("The source credentials must use the separate source-db.env file.");
   }
   const [keyStat, envelopeStat, envStat] = await Promise.all([
     stat(privateKeyPath), stat(envelopePath), stat(envPath),
@@ -73,14 +80,17 @@ async function main() {
   if (!/^wss:\/\//i.test(values.LIVEKIT_URL) || values.SESSION_SECRET.length < 32) {
     throw new Error("Required server configuration is incomplete.");
   }
+  if (!/^\d{1,5}$/.test(values.DB_PORT) || !/^(true|false)$/i.test(values.DB_SSL)) {
+    throw new Error("Invalid source database configuration.");
+  }
 
   const existing = await readFile(envPath, "utf8");
-  for (const name of requiredNames) {
+  for (const name of appNames) {
     if (new RegExp(`^${name}=`, "m").test(existing)) {
       throw new Error("An imported setting already exists; refusing to overwrite it.");
     }
   }
-  const payload = `${existing.trimEnd()}\n${requiredNames.map((name) => `${name}=${values[name]}`).join("\n")}\n`;
+  const payload = `${existing.trimEnd()}\n${appNames.map((name) => `${name}=${values[name]}`).join("\n")}\n`;
   const tempPath = join(dirname(envPath), `.app-env-handoff-${process.pid}`);
   const handle = await open(tempPath, "wx", 0o600);
   try {
@@ -89,8 +99,17 @@ async function main() {
   } finally {
     await handle.close();
   }
+  // Source database credentials must never enter app.env; otherwise a future
+  // Compose restart could accidentally reconnect Nazraa to the old writer.
+  const sourceHandle = await open(sourceEnvPath, "wx", 0o600);
+  try {
+    await sourceHandle.writeFile(`${sourceNames.map((name) => `${name}=${values[name]}`).join("\n")}\n`);
+    await sourceHandle.sync();
+  } finally {
+    await sourceHandle.close();
+  }
   await rename(tempPath, envPath);
-  console.log(`Imported ${requiredNames.length} named server-side settings without printing values.`);
+  console.log(`Imported ${appNames.length} runtime and ${sourceNames.length} source-only settings without printing values.`);
 }
 
 main().catch(() => {

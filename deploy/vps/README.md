@@ -29,8 +29,11 @@ non-readable Secrets. Never substitute a new document key: old encrypted
 records would become unreadable. If the owner has no original secure copy,
 use only the separately reviewed temporary encrypted handoff. Its VPS-side
 `import-encrypted-secrets.mjs` accepts root-owned 0600 X25519 private-key,
-encrypted-envelope and `app.env` files; it refuses overwrites and emits no
-values. Remove the temporary Vercel route/token promptly after import and
+encrypted-envelope and `app.env` files. It stores old shared-hosting DB
+credentials separately in root-only `source-db.env`, never in the VPS runtime
+`app.env`; it refuses overwrites and emits no values. Use the source file only
+for a read/export connection during final write-frozen synchronization. Remove
+the temporary Vercel route/token promptly after import and
 verify decrypting a real historical document only in an authorized private QA
 flow before public cutover.
 The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
