@@ -1,0 +1,30 @@
+{
+    email {$ACME_EMAIL}
+}
+
+# Obtain and validate real TLS on the two new names without exposing the
+# writable staging copy of production data to arbitrary Internet clients.
+# Replace this with Caddyfile only after the final one-writer cutover gates.
+api.nazraa.pixtra.site {
+    @qa remote_ip {$QA_CLIENT_CIDR}
+    handle @qa {
+        @private path /api/internal/*
+        handle @private {
+            respond "Not found" 404
+        }
+        reverse_proxy api:3000
+    }
+    handle {
+        respond "Not found" 404
+    }
+}
+
+ws.nazraa.pixtra.site {
+    @qa remote_ip {$QA_CLIENT_CIDR}
+    handle @qa {
+        reverse_proxy realtime:3100
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

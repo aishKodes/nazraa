@@ -4,7 +4,7 @@
 
 api.nazraa.pixtra.site {
     encode zstd gzip
-    @private path /api/internal/health /api/internal/realtime/authorize
+    @private path /api/internal/*
     handle @private {
         respond "Not found" 404
     }
