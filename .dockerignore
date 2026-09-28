@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env*
+*.pem
+*.key
+coverage
+docs
+db
+scripts
+deploy/vps/compose.yaml
+deploy/vps/Caddyfile
+deploy/vps/README.md

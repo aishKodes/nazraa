@@ -1,0 +1,20 @@
+{
+    email {$ACME_EMAIL}
+}
+
+api.nazraa.pixtra.site {
+    encode zstd gzip
+    @health path /api/internal/health
+    handle @health {
+        respond "Not found" 404
+    }
+    reverse_proxy api:3000
+}
+
+nazraa.pixtra.site {
+    encode zstd gzip
+    reverse_proxy api:3000
+}
+
+# ws.nazraa.pixtra.site is intentionally absent until authenticated
+# WebSocket/Redis delivery passes staging tests. Do not publish a dead endpoint.
