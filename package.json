@@ -18,7 +18,8 @@
     "bootstrap:master": "tsx scripts/bootstrap-master.ts",
     "provision:master": "tsx scripts/provision-master.ts",
     "provision:play-reviewers": "tsx scripts/provision-play-reviewers.ts",
-    "migrate": "tsx scripts/migrate.ts"
+    "migrate": "tsx scripts/migrate.ts",
+    "migration:compare-db": "tsx scripts/compare-databases.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

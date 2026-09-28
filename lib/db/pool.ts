@@ -40,13 +40,12 @@ function databaseConfig(): PoolOptions {
     // `? = 'PARTY'` fail with ER_CANT_AGGREGATE_2COLLATIONS.
     charset: "utf8mb4_general_ci",
     waitForConnections: true,
-    // Each Vercel isolate has its own pool while Hostinger has one shared
-    // database connection budget. Keeping one live, keep-alive connection per
-    // warm isolate avoids a TCP/MySQL login burst for every mobile request;
-    // allowing two connections per isolate did not improve these short
-    // queries, but did multiply connection attempts during a scale-out.
-    connectionLimit: 1,
-    maxIdle: 1,
+    // Vercel isolates must retain the existing one-connection default. A
+    // persistent VPS process can opt into a bounded pool after measuring its
+    // local MySQL connection budget. Never let a generic deployment silently
+    // multiply the old shared-host connection pressure.
+    connectionLimit: boundedNumber(process.env.DB_POOL_LIMIT, 1, 1, 20),
+    maxIdle: boundedNumber(process.env.DB_POOL_LIMIT, 1, 1, 20),
     // Five seconds was short enough to turn ordinary navigation into a fresh
     // remote MySQL connection. Keep the single socket warm for a bounded
     // period instead. TCP keep-alive still lets mysql2 detect a provider-side
