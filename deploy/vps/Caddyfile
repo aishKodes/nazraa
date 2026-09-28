@@ -4,11 +4,16 @@
 
 api.nazraa.pixtra.site {
     encode zstd gzip
-    @health path /api/internal/health
-    handle @health {
+    @private path /api/internal/health /api/internal/realtime/authorize
+    handle @private {
         respond "Not found" 404
     }
     reverse_proxy api:3000
+}
+
+ws.nazraa.pixtra.site {
+    encode zstd gzip
+    reverse_proxy realtime:3100
 }
 
 nazraa.pixtra.site {
@@ -16,5 +21,5 @@ nazraa.pixtra.site {
     reverse_proxy api:3000
 }
 
-# ws.nazraa.pixtra.site is intentionally absent until authenticated
-# WebSocket/Redis delivery passes staging tests. Do not publish a dead endpoint.
+# The WebSocket hostname is defined for staging, but the Compose edge profile
+# must remain disabled until authentication and event delivery pass QA.

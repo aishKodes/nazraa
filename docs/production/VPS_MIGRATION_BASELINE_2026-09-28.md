@@ -5,6 +5,11 @@ copying or production routing has occurred.
 
 ## Protected rollback point
 
+- Purchase target changed by the owner from KVM 8 / 12 months to KVM 4 /
+  one month on 2026-09-28. Hostinger currently shows multiple VPS orders
+  as `Payment processing`, but no paid/provisioned VPS is visible yet. Do not
+  retry payment blindly or treat a processing order as a usable server.
+
 - Current Vercel project: `vedanath/nazraa`.
 - Production alias: `https://nazraa.vercel.app` (the only domain shown in
   Vercel's project-domain list).

@@ -11,8 +11,8 @@ services:
       - --default-time-zone=+00:00
       - --slow-query-log=ON
       - --long-query-time=0.5
-      - --innodb-buffer-pool-size=8G
-      - --max-connections=150
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL_SIZE:-4G}
+      - --max-connections=${MYSQL_MAX_CONNECTIONS:-100}
     volumes:
       - ./mysql/data:/var/lib/mysql
       - ./mysql/conf.d:/etc/mysql/conf.d:ro
@@ -26,7 +26,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "1gb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--maxmemory", "${REDIS_MAXMEMORY:-512mb}", "--maxmemory-policy", "allkeys-lru"]
     networks: [private]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -45,7 +45,7 @@ services:
       DB_HOST: mysql
       DB_PORT: "3306"
       DB_SSL: "false"
-      DB_POOL_LIMIT: "16"
+      DB_POOL_LIMIT: "${DB_POOL_LIMIT:-10}"
       REDIS_URL: redis://redis:6379
       NODE_ENV: production
       PORT: "3000"
@@ -71,6 +71,26 @@ services:
       api: { condition: service_healthy }
     networks: [private]
 
+  realtime:
+    image: nazraa-api:staging
+    profiles: [edge]
+    restart: unless-stopped
+    command: ["node", "realtime.mjs"]
+    env_file: ./config/app.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      api: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:3100:3100"
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
   caddy:
     image: caddy:2
     profiles: [edge]
@@ -86,6 +106,7 @@ services:
       - ./caddy/config:/config
     depends_on:
       api: { condition: service_healthy }
+      realtime: { condition: service_healthy }
     networks: [private]
 
 networks:
