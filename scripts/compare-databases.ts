@@ -1,7 +1,36 @@
 import "dotenv/config";
+import { createHash } from "node:crypto";
 import mysql, { type RowDataPacket } from "mysql2/promise";
 
 type Side = "SOURCE" | "TARGET";
+
+// These tables carry balances, financial events, payouts, or reward claims.
+// Comparing every ordered row catches offsetting changes that aggregate sums
+// and table counts alone would miss. The report contains hashes, not user data.
+const criticalTables = [
+  "wallet_balances",
+  "ledger_transactions",
+  "live_room_gift_events",
+  "gift_idempotency_requests",
+  "game_shared_bet_requests",
+  "game_shared_bets",
+  "game_shared_settlements",
+  "game_round_results",
+  "game_wallet_events",
+  "game_daily_winner_contributions",
+  "game_daily_winner_summaries",
+  "live_hour_reward_decisions",
+  "live_reward_entitlements",
+  "live_daily_reward_awards",
+  "daily_reward_claims",
+  "diamond_coin_exchanges",
+  "coin_purchase_requests",
+  "google_play_coin_purchases",
+  "withdrawal_requests",
+  "withdrawal_status_history",
+  "pk_host_streak_events",
+  "rocket_rewards",
+] as const;
 
 function connectionConfig(side: Side) {
   const prefix = `${side}_DB_`;
@@ -36,6 +65,24 @@ async function snapshot(connection: mysql.Connection) {
     );
     counts[row.TABLE_NAME] = String(count.count);
   }
+  const rowHashes: Record<string, string> = {};
+  for (const table of criticalTables) {
+    if (!(table in counts)) continue;
+    const hash = createHash("sha256");
+    let afterId = "";
+    for (;;) {
+      // Table identifiers are fixed in this source file. All of these tables
+      // have an indexed CHAR(36) primary key named id.
+      const [rows] = await connection.query<RowDataPacket[]>(
+        `SELECT * FROM \`${table}\` WHERE id > ? ORDER BY id LIMIT 1000`,
+        [afterId],
+      );
+      for (const row of rows) hash.update(JSON.stringify(row)).update("\n");
+      if (rows.length === 0) break;
+      afterId = String(rows[rows.length - 1].id);
+    }
+    rowHashes[table] = hash.digest("hex");
+  }
   const [migrations] = await connection.query<(RowDataPacket & { name: string })[]>(
     "SELECT name FROM control_schema_migrations ORDER BY name",
   );
@@ -55,6 +102,7 @@ async function snapshot(connection: mysql.Connection) {
   );
   return {
     tableCounts: counts,
+    criticalRowHashes: rowHashes,
     migrationNames: migrations.map((row) => row.name),
     wallet: normalize(wallet),
     ledger: normalize(ledger),
@@ -69,7 +117,7 @@ async function main() {
   const target = await mysql.createConnection(connectionConfig("TARGET"));
   try {
     const [before, after] = await Promise.all([snapshot(source), snapshot(target)]);
-    const sections = ["tableCounts", "migrationNames", "wallet", "ledger"] as const;
+    const sections = ["tableCounts", "migrationNames", "wallet", "ledger", "criticalRowHashes"] as const;
     const mismatches = sections.filter((section) =>
       JSON.stringify(before[section]) !== JSON.stringify(after[section]),
     );
@@ -81,6 +129,9 @@ async function main() {
       sourceMigrations: before.migrationNames.length,
       targetMigrations: after.migrationNames.length,
       mismatchedSections: mismatches,
+      mismatchedCriticalTables: criticalTables.filter((table) =>
+        before.criticalRowHashes[table] !== after.criticalRowHashes[table]
+      ),
       // Aggregate financial totals are included for an operator to inspect,
       // but no user records or credentials are ever printed.
       sourceWallet: before.wallet,
