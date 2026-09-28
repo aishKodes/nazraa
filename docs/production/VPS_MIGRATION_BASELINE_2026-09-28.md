@@ -99,9 +99,14 @@ copying or production routing has occurred.
 The Vercel environment-variable dashboard marks the current
 `DOCUMENT_ENCRYPTION_KEY` and `SESSION_SECRET` as **Secret** (not revealable in
 the displayed settings), and `vercel env pull` returned redaction placeholders.
-Neither key may be silently replaced: doing so would respectively strand
-historical encrypted documents or invalidate existing sessions. Secret parity
-is a separate cutover gate, not something a successful database import proves.
+Vercel's [sensitive-variable documentation](https://vercel.com/docs/environment-variables/sensitive-environment-variables) confirms these values are
+non-readable after creation. The document key must not be silently replaced:
+that would strand historical encrypted documents and private text. The session
+key signs only eight-hour Control web cookies in the current code; changing it
+would require Control operators to log in again, but does not invalidate the
+database-backed mobile bearer sessions. Secret parity or an audited document
+re-encryption path remains a separate cutover gate, not something a successful
+database import proves.
 
 The Vercel `vercel-build` command currently runs `npm run migrate` before
 `next build`. Do not push this migration branch to the linked GitHub repository

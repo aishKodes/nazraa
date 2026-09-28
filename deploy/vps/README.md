@@ -45,6 +45,15 @@ the old shared database. If import fails partway, replace the isolated staging
 database through an explicit recovery procedure; do not rerun it into a
 partially imported schema.
 
+The first verified import on 2026-09-28 used a temporary container named
+`nazraa-mariadb-staging` on the same private Docker network because SSH file
+transfer was unavailable. It mounts `/opt/nazraa/mariadb/data`. **Stop that
+temporary container before starting the Compose `mysql` service. Never run
+two MariaDB processes against this data directory.** The original empty MySQL
+8.4 container mounts a different directory and must not be used for the
+MariaDB source snapshot. Do not rerun `restore-staging.sh` against the already
+populated data directory.
+
 The compose file intentionally includes no public database or Redis port,
 and does not change `rtc.pixtra.site` or `turn.rtc.pixtra.site`. The API binds
 only to the VPS loopback address for private SSH-tunnel QA. The `edge` Caddy
