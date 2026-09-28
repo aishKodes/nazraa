@@ -2966,10 +2966,15 @@ async function main() {
     const rankingUsers = await Promise.all(
       Array.from({ length: 21 }, (_, index) => user(`QA Ranking ${index + 1}`)),
     );
-    const [businessDayRows] = await root.query<(RowDataPacket & { business_date: string })[]>(
-      "SELECT DATE_FORMAT(DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 330 MINUTE), '%Y-%m-%d') business_date",
-    );
-    const rankingBusinessDate = String(businessDayRows[0].business_date);
+    const rankingDateParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: (await liveBusiness.loadFaceLiveRules()).timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const rankingDatePart = (type: Intl.DateTimeFormatPartTypes) =>
+      rankingDateParts.find((part) => part.type === type)?.value;
+    const rankingBusinessDate = `${rankingDatePart("year")}-${rankingDatePart("month")}-${rankingDatePart("day")}`;
     const rankingAmounts = [2000, 4000, 8000, 12000, ...Array.from({ length: 17 }, (_, index) => 1000 - index)];
     for (let index = 0; index < rankingUsers.length; index += 1) {
       const amount = rankingAmounts[index];

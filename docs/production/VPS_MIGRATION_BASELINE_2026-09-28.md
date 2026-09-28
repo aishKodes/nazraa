@@ -55,9 +55,21 @@ copying or production routing has occurred.
   Coins and 9,664,698 Diamonds; reserved totals are zero. These are older
   than the moving production baseline above, as expected. The original empty
   MySQL 8.4 staging volume was preserved. `CHECK TABLE` returned `OK` for
-  wallet balances, ledger transactions and shared-game bets. This is a
+  wallet balances, ledger transactions and shared-game bets. The MariaDB
+  container was restarted and all 93 migration rows remained available. This is a
   **staging snapshot only**;
   a fresh write-frozen final export and reconciliation remain pending.
+- The existing VPS application source built into private image
+  `nazraa-api:staging` without running migrations. A loopback-only container
+  connected to the isolated MariaDB copy and private Redis; `/api/internal/health`
+  and `/api/v1/config` both returned HTTP 200, while an unauthenticated mobile
+  profile request returned HTTP 401. The public config response had the same
+  top-level keys as Vercel (`banners`, `gifts`, `notifications`, `settings`).
+  The API container reported zero restarts. A no-load resource snapshot showed
+  approximately 53 MiB API, 2.23 GiB MariaDB and 16 MiB Redis memory use.
+  TCP 3000 listens on VPS loopback only; database and Redis have no published
+  host ports. This is **private API smoke QA**, not authenticated contract or
+  production traffic validation.
 - A fresh empty-schema replay on local MySQL 9.6 with
   `utf8mb4_general_ci` stopped at migration `0029` on an FK collation
   mismatch. The project's integration test created a database with
