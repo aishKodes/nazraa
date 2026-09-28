@@ -49,6 +49,13 @@ async function main() {
     const masterAccount = await accounts.accountByManagementId("100001");
     assert.ok(masterAccount);
     const master = await accounts.scopeFor(masterAccount);
+    // Migration 0063 can only seed this setting when a Master already exists.
+    // The isolated QA database creates its Master afterward, so seed an
+    // always-open test schedule before exercising Live role enforcement.
+    await root.execute(
+      "INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.live_rules', JSON_OBJECT('timezone', 'Asia/Kolkata', 'startTime', '00:00', 'endTime', '23:59', 'agencyAuthorizationRequired', TRUE), ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)",
+      [master.account.id],
+    );
     const scopes = new Map<Role, Scope>([["MASTER", master]]);
     async function create(role: Role, parent: Scope, label: string = role, creator = master) {
       const result = await admin.createPlatformAccount({ scope: creator, role, fullName: `QA ${label}`, countryCode: "IN", requestedParentId: parent.account.id, password, documents: [] });
