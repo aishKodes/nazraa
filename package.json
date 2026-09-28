@@ -20,7 +20,8 @@
     "provision:play-reviewers": "tsx scripts/provision-play-reviewers.ts",
     "migrate": "tsx scripts/migrate.ts",
     "migration:compare-db": "tsx scripts/compare-databases.ts",
-    "test:vps-origin": "tsx scripts/verify-vps-origin.ts"
+    "test:vps-origin": "tsx scripts/verify-vps-origin.ts",
+    "test:realtime-publisher": "tsx scripts/verify-room-realtime.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
