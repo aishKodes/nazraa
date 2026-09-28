@@ -23,10 +23,18 @@ copying or production routing has occurred.
   imports on target MySQL 8.4; test that exact dump. Do not run all historical
   migrations against an empty VPS database in lieu of restoring the source.
 - Existing Oracle LiveKit/TURN endpoints and DNS are outside this migration.
+- Current DNS A lookup: `api.nazraa.pixtra.site`, `ws.nazraa.pixtra.site`
+  and `nazraa.pixtra.site` have no A answer yet; `rtc.pixtra.site` and
+  `turn.rtc.pixtra.site` both answer `129.154.246.135`. Do not alter the
+  Oracle records.
 - Current downloadable mobile release is `2.4.65+7377`. Its production
   `AppEnvironment.apiBaseUrl` defaults to `https://nazraa.vercel.app`.
   `NAZRAA_API_BASE_URL` is a build-time Dart define, so an existing APK cannot
   switch directly to a new VPS hostname through backend config alone.
+- A 20-request sequential GET sample of the public
+  `/api/v1/config` endpoint from this Mac measured p50 **235 ms**, p95
+  **292 ms**, min 208 ms, max 754 ms. This is a narrow network baseline, **not**
+  authenticated room/game latency and not an India-wide user p95.
 
 ## Application inventory
 
@@ -42,6 +50,12 @@ copying or production routing has occurred.
 | Scheduled work | Vercel cron calls `/api/cron/monthly-host-reset` daily at 18:35 UTC; some maintenance runs in request `after(...)` | Replace cron only after VPS worker idempotency and production verification |
 | Assets | Multiple backend response/SQL URLs hardcode `nazraa.vercel.app` | Make output origin configurable before direct mobile cutover; old links must remain valid |
 | Secrets | Vercel Production stores DB, session, document-encryption, LiveKit, Google OAuth, cron and legacy ZEGO variables | Copy only needed values through secure server-side channel; never log or commit them |
+
+The Vercel `vercel-build` command currently runs `npm run migrate` before
+`next build`. Do not push this migration branch to the linked GitHub repository
+until preview deployment behavior and DB credentials are isolated; an
+automatic preview deployment could otherwise reach the shared production DB.
+The VPS Dockerfile uses `npm run build` and never runs migrations implicitly.
 
 ## Migration safety gates
 

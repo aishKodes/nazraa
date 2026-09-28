@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
@@ -161,7 +162,7 @@ function mobileAvatarUrl(row: RowDataPacket, prefix = "") {
   const publicId = row[`${prefix}public_id`];
   const uploadedAt = row[`${prefix}avatar_updated_at`];
   if (publicId != null && uploadedAt != null) {
-    return `https://nazraa.vercel.app/api/v1/mobile/avatar/${publicId}?v=${new Date(uploadedAt as string | Date).getTime()}`;
+    return `${publicApiOrigin()}/api/v1/mobile/avatar/${publicId}?v=${new Date(uploadedAt as string | Date).getTime()}`;
   }
   return row[`${prefix}avatar_url`] ?? null;
 }
@@ -282,8 +283,8 @@ function mapActiveRoom(
     // LIVE is a retired legacy database value. Older records are exposed as
     // Face Live so no client can recover the removed video-call room type.
     seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : "face", isActive: true,
-    photoUrl: row.room_photo_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.room_photo_asset_id}`,
-    faceBackgroundUrl: row.face_background_asset_id == null ? null : `https://nazraa.vercel.app/api/v1/assets/rooms/${row.face_background_asset_id}`,
+    photoUrl: row.room_photo_asset_id == null ? null : `${publicApiOrigin()}/api/v1/assets/rooms/${row.room_photo_asset_id}`,
+    faceBackgroundUrl: row.face_background_asset_id == null ? null : `${publicApiOrigin()}/api/v1/assets/rooms/${row.face_background_asset_id}`,
     passwordRequired: row.password_hash != null,
     chatLocked: Boolean(row.chat_locked), interactionsEnabled: Boolean(row.interactions_enabled),
     themeEnabled: Boolean(row.theme_enabled),
@@ -550,7 +551,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     profile: {
       id: String(profile.public_id), name: profile.full_name,
       avatarUrl: completion.profileAvatarVersion
-        ? `https://nazraa.vercel.app/api/v1/mobile/avatar/${profile.public_id}?v=${completion.profileAvatarVersion}`
+        ? `${publicApiOrigin()}/api/v1/mobile/avatar/${profile.public_id}?v=${completion.profileAvatarVersion}`
         : profile.avatar_url,
       country: profile.country_code ?? "", language: profile.language_code, bio: profile.bio,
       gender: profile.gender?.toString().toLowerCase() ?? null, dateOfBirth: profile.date_of_birth,
@@ -609,7 +610,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     followedUserIds: followUserRows[0].map((row) => String(row.public_id)),
     followedAgencyIds: followAgencyRows[0].map((row) => String(row.public_id)),
     faceVerificationStatus: String(profile.face_verification_status).toLowerCase(),
-    agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
+    agency: currentAgency ? { id: String(currentAgency.public_id), code: String(currentAgency.public_id), logoUrl: `${publicApiOrigin()}/api/v1/assets/agencies/${currentAgency.public_id}`, name: String(currentAgency.full_name), country: currentAgency.country_code ?? "", ownerUserId: currentAgency.owner_public_id == null ? "0" : String(currentAgency.owner_public_id), ownerName: currentAgency.owner_name == null ? null : String(currentAgency.owner_name), isOwner: completion.agencyManagement.isOwner, status: String(currentAgency.status), hosts: completion.agencyManagement.hosts, joinRequests: completion.agencyManagement.joinRequests, targetProgress: 0, estimatedEarnings: Number(currentAgency.estimated_earnings), totalLiveMinutes: Number(currentAgency.total_live_minutes), hostCount: Number(currentAgency.host_count) } : null,
     hostProfile: currentHost ? { id: String(currentHost.id), status: String(currentHost.status).toLowerCase(), agencyName: currentHost.agency_name ?? "Independent", level: anchorProgress(Number(currentHost.anchor_income_points), Number(currentHost.anchor_level_number)).level, liveMinutes: Number(currentHost.live_minutes_30d), validDays: Number(currentHost.sessions_30d), requiredDays: 15, targetProgress: Math.min(1, Number(currentHost.live_minutes_30d) / 1800), giftEarnings: Number(currentHost.gifts_value_30d), diamonds } : null,
     hostRewardRules: [...new Map(hostRewardRuleRows[0].map((row) => [String(row.room_type), {
       roomType: String(row.room_type).toLowerCase(),

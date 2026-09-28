@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
@@ -67,7 +68,7 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
     db().query<RowDataPacket[]>(
       `SELECT host.id, host.public_id, host.full_name,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', host.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', host.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE host.avatar_url END avatar_url,
               COALESCE(wallet.available_balance, 0) available_diamonds,
               COALESCE(wallet.reserved_balance, 0) pending_diamonds,

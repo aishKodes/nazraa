@@ -20,6 +20,10 @@ database/user/password plus a distinct `MYSQL_ROOT_PASSWORD`. `caddy.env`
 contains `ACME_EMAIL` for certificate notices.
 The persistent API process starts with a 16-connection pool against a
 150-connection MySQL ceiling; measure real concurrency before adding replicas.
+After the VPS API domain passes TLS and asset-route QA, set
+`NAZRAA_PUBLIC_API_ORIGIN=https://api.nazraa.pixtra.site` in `app.env` so new
+backend-generated avatar, Gift and room asset URLs point at the VPS. The
+default remains Vercel for existing production deployments.
 
 Before exposing Caddy, validate a restored **copy** of the production
 database, migration version, financial row counts, and wallet/ledger totals.

@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomUUID } from "node:crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
@@ -32,7 +33,7 @@ export async function agencyApplicationsForUser(identity: MobileIdentity) {
     ]);
     return [
       ...joins[0].map((row) => ({ id: String(row.id), type: "join", status: String(row.status).toLowerCase(), agencyId: String(row.agency_public_id), agencyName: String(row.agency_name), reviewReason: row.review_reason, createdAt: row.created_at })),
-      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${row.id}`, reviewReason: row.review_reason, parent: row.parent_public_id == null ? null : { id: String(row.parent_public_id), name: String(row.parent_name), role: row.parent_role === "BD" ? "BD" : "Admin" }, createdAt: row.created_at })),
+      ...creations[0].map((row) => ({ id: String(row.id), type: "create", status: String(row.status).toLowerCase(), agencyId: row.agency_public_id == null ? null : String(row.agency_public_id), agencyName: String(row.agency_name), logoUrl: `${publicApiOrigin()}/api/v1/assets/agencies/${row.id}`, reviewReason: row.review_reason, parent: row.parent_public_id == null ? null : { id: String(row.parent_public_id), name: String(row.parent_name), role: row.parent_role === "BD" ? "BD" : "Admin" }, createdAt: row.created_at })),
     ].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
   } catch (error) {
     // Keeps mobile bootstrap available while a production migration rolls out.
@@ -71,7 +72,7 @@ export async function searchAgency(rawQuery: string) {
       return {
         id: String(agency.public_id),
         name: String(agency.full_name),
-        logoUrl: `https://nazraa.vercel.app/api/v1/assets/agencies/${agency.public_id}`,
+        logoUrl: `${publicApiOrigin()}/api/v1/assets/agencies/${agency.public_id}`,
         country: agency.country_code ?? "",
         status: eligible ? "ACTIVE" : "UNAVAILABLE",
         statusMessage: eligible
@@ -178,7 +179,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
               user.anchor_level_number, user.vip_tier, user.is_host, host.status, host.live_minutes_30d,
               host.sessions_30d, host.gifts_value_30d,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM application_users user
        INNER JOIN host_profiles host ON host.application_user_id = user.id AND host.agency_account_id = ?
@@ -191,7 +192,7 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
       `SELECT application.id, application.created_at, user.public_id, user.full_name, user.country_code,
               user.language_code, user.level_number, user.anchor_level_number, user.vip_tier, user.is_host,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM agency_membership_applications application
        INNER JOIN application_users user ON user.id = application.application_user_id AND user.account_status = 'ACTIVE'
@@ -344,7 +345,7 @@ export async function discoveryPosts(identity?: MobileIdentity, after?: string) 
     const [rows] = await db().query<RowDataPacket[]>(
       `SELECT post.id, post.caption, post.status, post.created_at, asset.id asset_id,
               user.public_id, user.full_name, user.country_code,
-              CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000)) ELSE user.avatar_url END avatar_url,
+              CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000)) ELSE user.avatar_url END avatar_url,
               user.level_number, user.anchor_level_number anchor_level, user.vip_tier, user.is_host
        FROM discovery_posts post
        LEFT JOIN discovery_post_assets asset ON asset.id = post.asset_id
@@ -362,7 +363,7 @@ export async function discoveryPosts(identity?: MobileIdentity, after?: string) 
     );
     return rows.map((row) => ({
       id: String(row.id), type: row.asset_id ? "photo" : "text", caption: String(row.caption),
-      mediaUrl: row.asset_id ? `https://nazraa.vercel.app/api/v1/assets/discovery/${row.asset_id}` : null,
+      mediaUrl: row.asset_id ? `${publicApiOrigin()}/api/v1/assets/discovery/${row.asset_id}` : null,
       createdAt: row.created_at, moderationStatus: String(row.status).toLowerCase().replace("_", ""),
       author: { id: String(row.public_id), name: String(row.full_name), avatarUrl: row.avatar_url, country: row.country_code ?? "", level: Number(row.level_number), anchorLevel: Number(row.anchor_level), vip: Number(row.vip_tier), role: row.is_host ? "host" : "user" },
     }));
@@ -445,7 +446,7 @@ export async function searchPrivateMessageRecipients(identity: MobileIdentity, r
             user.level_number, user.anchor_level_number, user.vip_tier, user.is_host,
             user.bio,
             CASE WHEN avatar.updated_at IS NOT NULL
-              THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id,
+              THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id,
                           '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
               ELSE user.avatar_url END avatar_url
      FROM application_users user
@@ -491,7 +492,7 @@ export async function socialDirectory(
             (SELECT COUNT(*) FROM user_follows followers WHERE followers.followed_application_user_id = person.id) followers,
             (SELECT COUNT(*) FROM user_follows following WHERE following.follower_application_user_id = person.id) following,
             CASE WHEN avatar.updated_at IS NOT NULL
-              THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', person.public_id,
+              THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', person.public_id,
                           '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
               ELSE person.avatar_url END avatar_url
      FROM user_follows follow_link

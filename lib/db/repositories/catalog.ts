@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
@@ -58,9 +59,9 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
   const assetId = input.image ? randomUUID() : null;
   const animationAssetId = input.animation ? randomUUID() : null;
   const soundAssetId = input.sound ? randomUUID() : null;
-  const visualUrl = assetId ? `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}` : null;
-  const animationKey = animationAssetId && input.animation ? `https://nazraa.vercel.app/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}` : null;
-  const soundUrl = soundAssetId && input.sound ? `https://nazraa.vercel.app/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}` : null;
+  const visualUrl = assetId ? `${publicApiOrigin()}/api/v1/assets/gifts/${assetId}` : null;
+  const animationKey = animationAssetId && input.animation ? `${publicApiOrigin()}/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}` : null;
+  const soundUrl = soundAssetId && input.sound ? `${publicApiOrigin()}/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}` : null;
   const config = {
     accent: accentValue(input.accentHex),
     ...input.effectConfig,
@@ -96,18 +97,18 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
     let assetType = input.removeAnimation ? (visualUrl ? "STATIC_IMAGE" : "NONE") : String(previousConfig.assetType ?? (animationKey ? "LOTTIE" : visualUrl ? "STATIC_IMAGE" : "NONE"));
     if (input.artworkMode === "IMAGE" && input.image) {
       const assetId = randomUUID();
-      visualUrl = `https://nazraa.vercel.app/api/v1/assets/gifts/${assetId}`;
+      visualUrl = `${publicApiOrigin()}/api/v1/assets/gifts/${assetId}`;
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     }
     if (input.animation) {
       const animationAssetId = randomUUID();
-      animationKey = `https://nazraa.vercel.app/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}`;
+      animationKey = `${publicApiOrigin()}/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}`;
       assetType = input.animation.assetType;
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id]);
     }
     if (input.sound) {
       const soundAssetId = randomUUID();
-      soundUrl = `https://nazraa.vercel.app/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}`;
+      soundUrl = `${publicApiOrigin()}/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}`;
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id]);
     }
     if (input.artworkMode === "IMAGE" && !visualUrl) throw new Error("Upload a gift picture.");
@@ -145,7 +146,7 @@ export async function listBanners(page = 1) {
 export async function createBanner(input: { scope: Scope; placement: string; title: string; subtitle?: string; image: PreparedPublicImage; actionType: string; actionTarget?: string; startsAt?: string; endsAt?: string; priority: number; enabled: boolean }) {
   const id = randomUUID();
   const assetId = randomUUID();
-  const imageUrl = `https://nazraa.vercel.app/api/v1/assets/banners/${assetId}`;
+  const imageUrl = `${publicApiOrigin()}/api/v1/assets/banners/${assetId}`;
   await auditedMutation({ scope: input.scope, action: "banner.create", module: "banners", targetType: "banner", targetId: id, reason: "Created scheduled banner", run: async (connection) => {
     await connection.execute("INSERT INTO banner_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     await connection.execute("INSERT INTO banners (id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.placement, input.title, input.subtitle || null, imageUrl, input.actionType, input.actionTarget || null, input.startsAt || null, input.endsAt || null, input.priority, input.enabled, input.scope.account.id]);
@@ -427,7 +428,7 @@ export async function saveRoomFeatureSettings(input: {
       let uploadedUrl: string | undefined;
       if (input.interactionAsset && input.interactionAssetKey) {
         const assetId = randomUUID();
-        uploadedUrl = `https://nazraa.vercel.app/api/v1/assets/interactions/${assetId}`;
+        uploadedUrl = `${publicApiOrigin()}/api/v1/assets/interactions/${assetId}`;
         await connection.execute(
           "INSERT INTO room_interaction_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)",
           [assetId, input.interactionAsset.mimeType, input.interactionAsset.data, input.interactionAsset.byteSize, input.interactionAsset.originalName, input.scope.account.id],

@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
@@ -1098,7 +1099,7 @@ export async function updateMobileProfile(
   return {
     updated: true,
     avatarUrl: avatar
-      ? `https://nazraa.vercel.app/api/v1/mobile/avatar/${identity.publicId}?v=${Date.now()}`
+      ? `${publicApiOrigin()}/api/v1/mobile/avatar/${identity.publicId}?v=${Date.now()}`
       : undefined,
   };
 }
@@ -1948,7 +1949,7 @@ export async function refreshPkBattleState(
     const [rows] = await db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, ranked.total_coins,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
          FROM (
            SELECT event.sender_application_user_id,
@@ -2454,7 +2455,7 @@ export async function refreshRoomPresence(
     const [coHostRequests] = await connection.query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, request.status, request.requested_at,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM live_cohost_requests request
        INNER JOIN application_users user ON user.id = request.requester_application_user_id
@@ -2525,7 +2526,7 @@ export async function refreshRoomPresence(
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM live_room_messages message
        INNER JOIN application_users user ON user.id = message.sender_application_user_id
@@ -2547,7 +2548,7 @@ export async function refreshRoomPresence(
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url,
               COALESCE(gifts.received_value, 0) received_gift_value
        FROM live_room_members member
@@ -2588,14 +2589,14 @@ export async function refreshRoomPresence(
               sender.level_number sender_level,
               sender.anchor_level_number sender_anchor_level,
               CASE WHEN sender_avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', sender.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(sender_avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', sender.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(sender_avatar.updated_at) * 1000))
                 ELSE sender.avatar_url END sender_avatar_url,
               receiver.public_id receiver_public_id, receiver.full_name receiver_name, receiver.vip_tier receiver_vip,
               receiver.country_code receiver_country, receiver.language_code receiver_language,
               receiver.level_number receiver_level,
               receiver.anchor_level_number receiver_anchor_level,
               CASE WHEN receiver_avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
                 ELSE receiver.avatar_url END receiver_avatar_url
        FROM live_room_gift_events event
        INNER JOIN gift_catalog gift ON gift.id = event.gift_catalog_id
@@ -2625,7 +2626,7 @@ export async function refreshRoomPresence(
               user.level_number consumption_level,
               user.anchor_level_number anchor_level,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM ledger_transactions ledger
        INNER JOIN application_users user ON user.id = ledger.destination_id
@@ -2640,7 +2641,7 @@ export async function refreshRoomPresence(
               user.level_number consumption_level,
               user.anchor_level_number anchor_level,
               CASE WHEN avatar.updated_at IS NOT NULL
-                THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url
        FROM rocket_cycles cycle
        INNER JOIN rocket_contributions contribution ON contribution.rocket_cycle_id = cycle.id
@@ -2740,7 +2741,7 @@ export async function refreshRoomPresence(
         `SELECT ranked.room_id, user.public_id, user.full_name,
                 ranked.total_coins,
                 CASE WHEN avatar.updated_at IS NOT NULL
-                  THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                  THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                   ELSE user.avatar_url END avatar_url
          FROM (
            SELECT event.room_id, event.sender_application_user_id,
@@ -2757,7 +2758,7 @@ export async function refreshRoomPresence(
          SELECT ranked.room_id, user.public_id, user.full_name,
                 ranked.total_coins,
                 CASE WHEN avatar.updated_at IS NOT NULL
-                  THEN CONCAT('https://nazraa.vercel.app/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
+                  THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                   ELSE user.avatar_url END avatar_url
          FROM (
            SELECT event.room_id, event.sender_application_user_id,
@@ -4812,7 +4813,7 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
           avatarUrl:
             row.avatar_updated_at == null
               ? row.avatar_url
-              : `https://nazraa.vercel.app/api/v1/mobile/avatar/${row.public_id}?v=${new Date(row.avatar_updated_at as Date).getTime()}`,
+              : `${publicApiOrigin()}/api/v1/mobile/avatar/${row.public_id}?v=${new Date(row.avatar_updated_at as Date).getTime()}`,
           country: row.country_code ?? "",
           language: row.language_code ?? "",
           level: Number(row.level_number ?? 1),
@@ -4839,7 +4840,7 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
         logoUrl:
           row.logo_id == null
             ? null
-            : `https://nazraa.vercel.app/api/v1/assets/agencies/${row.public_id}`,
+            : `${publicApiOrigin()}/api/v1/assets/agencies/${row.public_id}`,
         ownerUserId: "0",
         status: "ACTIVE",
         hosts: [],

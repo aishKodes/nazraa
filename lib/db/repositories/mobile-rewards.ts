@@ -1,4 +1,5 @@
 import "server-only";
+import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomUUID } from "crypto";
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
@@ -33,7 +34,7 @@ function avatarUrl(row: RowDataPacket, prefix = "") {
   const publicId = row[`${prefix}public_id`];
   const uploadedAt = row[`${prefix}avatar_updated_at`];
   if (publicId != null && uploadedAt != null) {
-    return `https://nazraa.vercel.app/api/v1/mobile/avatar/${publicId}?v=${new Date(uploadedAt as string | Date).getTime()}`;
+    return `${publicApiOrigin()}/api/v1/mobile/avatar/${publicId}?v=${new Date(uploadedAt as string | Date).getTime()}`;
   }
   return row[`${prefix}avatar_url`] ?? null;
 }
