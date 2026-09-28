@@ -68,18 +68,23 @@ async function snapshot(connection: mysql.Connection) {
   const rowHashes: Record<string, string> = {};
   for (const table of criticalTables) {
     if (!(table in counts)) continue;
+    const [primaryKey] = await connection.query<(RowDataPacket & { COLUMN_NAME: string })[]>(
+      "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
+      [table],
+    );
+    if (primaryKey.length === 0) throw new Error(`Critical table ${table} has no primary key.`);
+    const orderBy = primaryKey.map((column) => `\`${column.COLUMN_NAME.replaceAll("`", "``")}\``).join(", ");
     const hash = createHash("sha256");
-    let afterId = "";
+    let offset = 0;
     for (;;) {
-      // Table identifiers are fixed in this source file. All of these tables
-      // have an indexed CHAR(36) primary key named id.
+      // Table identifiers are fixed in this source file; primary-key column
+      // identifiers come from information_schema. A page bounds JS memory.
       const [rows] = await connection.query<RowDataPacket[]>(
-        `SELECT * FROM \`${table}\` WHERE id > ? ORDER BY id LIMIT 1000`,
-        [afterId],
+        `SELECT * FROM \`${table}\` ORDER BY ${orderBy} LIMIT 1000 OFFSET ${offset}`,
       );
       for (const row of rows) hash.update(JSON.stringify(row)).update("\n");
-      if (rows.length === 0) break;
-      afterId = String(rows[rows.length - 1].id);
+      if (rows.length < 1000) break;
+      offset += rows.length;
     }
     rowHashes[table] = hash.digest("hex");
   }
