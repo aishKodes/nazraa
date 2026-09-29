@@ -29,6 +29,14 @@ try {
   assert.equal(proxy(request("/api/v1/config")).status, 503);
   assert.notEqual(proxy(request("/api/internal/health")).status, 503);
   assert.notEqual(proxy(request("/download")).status, 503);
+  for (const path of ["/login", "/dashboard", "/dashboard/rooms?status=ACTIVE"]) {
+    const response = proxy(request(path));
+    assert.equal(response.status, 307);
+    assert.equal(
+      response.headers.get("location"),
+      `https://api.nazraa.pixtra.site${path}`,
+    );
+  }
   process.env.NAZRAA_LEGACY_BRIDGE = "1";
   for (const [path, method] of [
     ["/api/v1/mobile/rooms?roomId=42", "POST"],
