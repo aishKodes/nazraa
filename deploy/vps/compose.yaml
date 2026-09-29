@@ -36,7 +36,7 @@ services:
       retries: 5
 
   api:
-    image: nazraa-api:staging
+    image: nazraa-api:production-candidate
     build:
       context: ./app
       dockerfile: deploy/vps/Dockerfile
@@ -68,7 +68,7 @@ services:
       retries: 5
 
   worker:
-    image: nazraa-api:staging
+    image: nazraa-api:production-candidate
     profiles: [cutover]
     restart: unless-stopped
     command: ["node", "worker.mjs"]
@@ -78,13 +78,14 @@ services:
     networks: [private]
 
   realtime:
-    image: nazraa-api:staging
+    image: nazraa-api:production-candidate
     profiles: [edge]
     restart: unless-stopped
     command: ["node", "realtime.mjs"]
     env_file: ./config/app.env
     environment:
       REDIS_URL: redis://redis:6379
+      REALTIME_API_ORIGIN: http://api:3000
     depends_on:
       api: { condition: service_healthy }
       redis: { condition: service_healthy }
