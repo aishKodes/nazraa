@@ -102,6 +102,13 @@ export async function mobileEffectManifest() {
         fallbackVisualUrl: previewUrl,
         soundUrl: configuredSound,
         assetVersion: String(config.assetVersion ?? primary?.checksum_sha256 ?? row.updated_at),
+        // Keep the rollout gate explicit in the wire schema.  Spreading the
+        // untyped JSON config alone makes this field invisible to typed
+        // consumers even though Control persists it.
+        minimumAppVersion:
+          typeof config.minimumAppVersion === "string"
+            ? config.minimumAppVersion
+            : null,
         assetChecksum: primary?.checksum_sha256 ?? config.assetChecksum ?? null,
         assetByteSize: primary?.byte_size ?? config.assetByteSize ?? null,
         previewChecksum: preview?.checksum_sha256 ?? config.previewChecksum ?? null,
