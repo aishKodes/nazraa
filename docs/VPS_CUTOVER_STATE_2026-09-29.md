@@ -108,7 +108,7 @@
   even with `IPQoS=none`. Server `sshd` is active on IPv4/IPv6 port 22 and
   logs the Mac connection closing. Do not assume a working key-based Mac SSH
   path or risk the production firewall for this unresolved client/edge issue.
-- Prepared at source revision `227df32` but not yet deployed: shared-game
+- Prepared at source revision `e1da611` but not yet deployed: shared-game
   maturation moves from every `GET game-state` refresh to the private VPS
   worker at a non-overlapping 750 ms cadence. The mobile request still keeps
   its small idempotent settlement safety check before a new bet, while normal
