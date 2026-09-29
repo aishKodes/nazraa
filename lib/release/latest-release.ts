@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.66";
-const releaseBuild = 7378;
+const releaseVersion = "2.4.70";
+const releaseBuild = 7382;
 const releaseApkUrl =
-  "https://github.com/aishKodes/nazraa/releases/download/v2.4.66/Nazraa-Live-2.4.66-7378-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.70/Nazraa-Live-2.4.70-7382-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 301_539_993,
-  sha256: "3800a05fbd279d6ef9451e196140f5b16f083814a3a0c99541124939d9e177d5",
-  releaseDate: "2026-09-29",
+  apkSizeBytes: 307_316_902,
+  sha256: "1706f336ca4e759ab8973e9ac8aeff05423047031f059a9c075f2381529243a2",
+  releaseDate: "2026-09-30",
   releaseNotes: [
-    "Connects directly to Nazraa's new Mumbai API and real-time room service.",
-    "Keeps LiveKit Face and Party media, wallet, gifts, games, and moderation on the existing authoritative account model.",
-    "Improves room request routing while retaining the same Android package and release signing identity.",
+    "Uses Nazraa's production LiveKit media route for new Face and Party rooms.",
+    "Adds transparent animated WebP and Lottie premium effects with a game-safe compact fallback.",
+    "Adds server-verified Live History while retaining the existing wallet, gifts, games, and moderation records.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
