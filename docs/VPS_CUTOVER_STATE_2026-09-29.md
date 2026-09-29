@@ -3,8 +3,8 @@
 This is an operational checkpoint, **not** evidence that production has moved.
 The Vercel API and Hostinger shared database remain the sole live write path;
 Oracle LiveKit is unchanged. Do not promote the prepared write-freeze until
-the restricted public TLS edge, authenticated realtime delivery, mobile build,
-and backup destination have passed QA.
+authenticated realtime delivery, mobile build, and the off-VPS backup
+destination have passed QA.
 
 ## Staged VPS
 
@@ -46,10 +46,27 @@ and backup destination have passed QA.
 - Build the mobile release with `NAZRAA_API_BASE_URL=https://api.nazraa.pixtra.site`
   and `NAZRAA_REALTIME_URL=wss://ws.nazraa.pixtra.site/realtime` **only after**
   the domains and TLS are verified. Existing APKs still call Vercel.
-- `deploy/vps/Caddyfile.qa` restricts the staging edge to the QA client's IP.
-  Do not expose the writable staging database through the unrestricted
-  `Caddyfile`. `api.nazraa.pixtra.site` and `ws.nazraa.pixtra.site` are not yet
-  in DNS; no production traffic has moved.
+- The new `api.nazraa.pixtra.site` and `ws.nazraa.pixtra.site` A records both
+  resolve to `187.126.115.185`; unrelated DNS remains untouched. Caddy
+  obtained valid Let's Encrypt certificates for both names on 2026-09-29.
+- `nazraa-caddy-qa` runs only the restricted `Caddyfile.qa`, allowing the
+  approved `203.110.247.52/32` QA client. QA API and WebSocket health returned
+  HTTP 200 with valid TLS; a non-QA source on the VPS received HTTP 404 for
+  both. The internal authorization route returned 404 at the public edge.
+  An unauthenticated WSS upgrade returned 401; a valid-format but unauthorized
+  room subscription closed with 1008.
+- The first manually launched WebSocket container lacked a resolvable API
+  origin. It was stopped and replaced by `nazraa-realtime-qa2` with an explicit
+  `REALTIME_API_ORIGIN`; its internal authorization link returns 403 for an
+  invalid token. Authorized room-event delivery is **not yet proven** over the
+  public QA edge. Do not call realtime complete based on health alone.
+- The patched/pruned `nazraa-api:secure-pruned` image built on the VPS with
+  Next.js 16.3.6 and Sharp 0.35.5. Local build/integration checks passed and
+  the production dependency audit found no known advisories. The public QA API
+  remains the existing candidate container; Vercel remains production.
+- A 30-sample warm request from the India QA client to the public config route
+  measured Vercel p50/p95 65.0/74.2 ms and QA VPS 69.0/72.5 ms. This route
+  may be cached and is **not** a hot room or financial path speed comparison.
 
 ## Required cutover order
 
