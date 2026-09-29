@@ -1,12 +1,12 @@
-# Nazraa VPS staging stack
+# Nazraa production VPS stack
 
-This stack is **not** a production cutover by itself. It stages the existing
-Next.js API/control app beside private MySQL and Redis. Do not publish
-`ws.nazraa.pixtra.site` until authenticated realtime delivery passes QA.
-The worker currently replaces only the existing daily Vercel reset check;
-enable it against the authoritative DB only after cutover.
+Production cutover completed on 2026-09-29. The Next.js API, WebSocket
+transport, scheduler, private MariaDB, and Redis run on the KVM8. OCI LiveKit
+remains the media provider. The VPS worker runs the existing monthly Host reset
+check and periodic stale-room cleanup; mobile Home bootstrap must not perform
+that cleanup. Do not point this stack back at the frozen shared-host database.
 
-Place the repository at `/opt/nazraa/app`, this compose file at
+Place the authoritative repository at `/opt/nazraa/app-next`, this compose file at
 `/opt/nazraa/compose.yaml`, and the Caddyfile at
 `/opt/nazraa/config/Caddyfile`. Create root-owned `0600` files
 `/opt/nazraa/config/app.env`, `mysql.env`, and `caddy.env` from the current
@@ -36,7 +36,7 @@ for a read/export connection during final write-frozen synchronization. Remove
 the temporary Vercel route/token promptly after import and
 verify decrypting a real historical document only in an authorized private QA
 flow before public cutover.
-The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
+The KVM 8 defaults reserve 8 GiB for the MySQL buffer pool,
 1 GiB maximum for Redis, a 16-connection API pool, and a 150-connection MySQL
 ceiling. These are initial caps, not measured production tuning. Override via
 `MYSQL_BUFFER_POOL_SIZE`, `REDIS_MAXMEMORY`, `DB_POOL_LIMIT`, and

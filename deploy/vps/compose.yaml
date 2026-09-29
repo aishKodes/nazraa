@@ -38,7 +38,9 @@ services:
   api:
     image: nazraa-api:production-candidate
     build:
-      context: ./app
+      # The authoritative checked-out source on the production VPS. Never
+      # rebuild from the older pre-cutover /opt/nazraa/app snapshot.
+      context: ./app-next
       dockerfile: deploy/vps/Dockerfile
     restart: unless-stopped
     env_file: ./config/app.env

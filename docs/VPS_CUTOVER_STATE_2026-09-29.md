@@ -1,10 +1,61 @@
 # Nazraa VPS cutover state — 2026-09-29
 
-This is an operational checkpoint, **not** evidence that production has moved.
-The Vercel API and Hostinger shared database remain the sole live write path;
-Oracle LiveKit is unchanged. Do not promote the prepared write-freeze until
-the signed mobile artifact, final writer fence, final import, and financial
-reconciliation have passed QA.
+## Current production state (updated after cutover)
+
+- The authoritative mobile API is `https://api.nazraa.pixtra.site`; the
+  authenticated room WebSocket is `wss://ws.nazraa.pixtra.site/realtime`.
+  Both resolve to Hostinger KVM8 `187.126.115.185` with valid HTTPS/WSS.
+  OCI LiveKit/TURN remains unchanged.
+- The sole writable database is local MariaDB schema
+  `nazraa_final_20260929_070033`. The final write-frozen source import
+  contained 123 tables; the financial comparator reported `MATCH`, exit 0,
+  with no mismatched sections. The old shared-host database must stay frozen.
+- Production containers `api`, `realtime`, `worker`, `mysql`, `redis`, and
+  `caddy` are running. The API and WebSocket health checks passed. The VPS
+  worker, not Vercel, owns the monthly reset and stale-room maintenance.
+- The Vercel production deployment has `NAZRAA_CUTOVER_FREEZE=1`. Legacy
+  `/api/v1/*` and `/api/public/*` requests from older APKs are temporarily
+  bridged to the VPS, and the signed LiveKit webhook path is bridged to the
+  VPS. Vercel cron and other write paths remain fenced. This bridge is a
+  compatibility path, **not** a second write authority or a DB fallback.
+- Signed mobile release `2.4.66+7378` calls the VPS API/WebSocket directly.
+  SHA-256 APK `3800a05fbd279d6ef9451e196140f5b16f083814a3a0c99541124939d9e177d5`;
+  AAB `b99eb240cbc991590d2a4b7f01345520fea434c060432916ba9e3256c177fe4c`.
+  Both are published at the GitHub `v2.4.66` release; the public `/download`
+  page and remote `latestVersion` point to the new APK. The remote minimum
+  version remains `2.1.0`, so older installations are not yet forced to
+  upgrade and still incur the Vercel bridge hop.
+- Frozen final snapshot: `/opt/nazraa/backups/source-final-20260929_070033.sql.gz`,
+  SHA-256 `7e459fc29d775748fec88c37b03451b81a5500bdd78abebb3e00bb6b7aec2a44`.
+  A private OCI Mumbai bucket holds that snapshot and the first post-cutover
+  nightly backup. The nightly backup was downloaded, checksum-checked, and
+  restored into an isolated 123-table schema. `nazraa-backup.timer` is active.
+  Secrets and backup credentials are root-only on the VPS, not in Git.
+- On the exact release APK, Android 16 emulator login/Home, Party room, and
+  Face passive viewer/video were observed. Host publishing, audio, financial
+  writes, a signed LiveKit webhook event, and a two-account Guest/speaker flow
+  have **not** yet been verified end to end on this release; do not label them
+  PASS on the basis of container health.
+- One source-of-truth issue remains for older APKs: the Vercel bridge adds
+  latency. A 30-sample warm India-client public-config test measured direct
+  VPS p50/p95/p99 45/50/52 ms versus legacy bridge 111/264/277 ms. This is
+  an end-to-end public read test, not a Gift/bet/room performance claim.
+- Source checkout for future image builds is `/opt/nazraa/app-next`.
+  `/opt/nazraa/app` is an older non-Git snapshot; never run a Compose build
+  from it. The production Compose build context must point at `app-next`.
+  The pre-maintenance API image is tagged
+  `nazraa-api:rollback-20260929-0745`. Code rollback must keep the **current**
+  local production database; never redirect to the stale shared DB.
+
+## Historical pre-cutover checkpoint
+
+The text below records an earlier state and is preserved for audit. It is
+**not** the current deployment status.
+
+At that checkpoint, Vercel API and Hostinger shared database were the live
+write path; Oracle LiveKit was unchanged. The prepared write-freeze was not
+yet promoted because the signed artifact, final writer fence, final import,
+and financial reconciliation were pending.
 
 ## Staged VPS
 
