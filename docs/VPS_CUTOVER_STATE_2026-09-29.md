@@ -79,8 +79,11 @@ destination have passed QA.
 - A guarded `deploy/vps/backup-to-oci.sh` is prepared but **not installed or
   scheduled**. It requires a confirmed final authoritative schema, a private
   OCI Mumbai bucket, root-only OCI credentials, checksum-verified uploads, and
-  successful object HEAD. No offsite backup has been made yet; a real
-  upload/download/isolated restore test is still required before cutover.
+  successful object HEAD. `deploy/vps/verify-oci-restore.sh` is also prepared
+  for a checksum-checked import into an isolated schema; it never switches the
+  application DB pointer. Neither script has yet run against OCI. No offsite
+  backup has been made; a real upload/download/isolated restore test is still
+  required before cutover.
 - Local branch checks on 2026-09-29: `test:core-mobile`, `test:roles`,
   `test:vps-origin`, `test:integration`, and TypeScript typecheck passed.
   ESLint reported no errors (two existing image-optimization warnings).

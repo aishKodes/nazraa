@@ -56,7 +56,7 @@ fi
 install -d -m 0700 "$backup_dir"
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 tag=${NAZRAA_BACKUP_TAG:-nightly}
-if [[ ! $tag =~ ^[a-z0-9-]{1,24}$ ]]; then
+if [[ $tag != nightly && $tag != predeploy ]]; then
   echo 'Invalid backup tag.' >&2
   exit 2
 fi
