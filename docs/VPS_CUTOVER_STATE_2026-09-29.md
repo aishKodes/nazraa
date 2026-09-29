@@ -46,6 +46,40 @@
   The pre-maintenance API image is tagged
   `nazraa-api:rollback-20260929-0745`. Code rollback must keep the **current**
   local production database; never redirect to the stale shared DB.
+- Post-cutover API work at commits `934076f`, `a09cf8b`, and `e82e524`
+  moved stale-room cleanup out of every Home bootstrap into the authenticated
+  VPS worker (60-second cadence), bounded the Home people/role join to the
+  recent 80 users before joining platform roles, and skipped ZEGO mixer calls
+  in global LiveKit discovery. TypeScript, Next.js build, and the complete
+  core-mobile regression script passed. The new API/worker image is healthy;
+  the maintenance route returns 401 without the worker secret and 200 with it.
+  The previous code image remains tagged for rollback. No APK rebuild was
+  needed for these server-only fixes.
+- The slow-query log showed the old Home people lookup examining about
+  405,384 rows to return 80, six times. EXPLAIN confirmed a full scan of
+  202 platform accounts for each of approximately 1,946 active users. The
+  bounded derived-table plan restricts that join to 80 users (at most about
+  16,160 account probes with the current account count). This is a plan
+  reduction, not a measured end-to-end Home latency claim.
+- At one post-cutover observation, MySQL had 17 connections, maximum 18 of
+  the configured 150; 1 running query. The VPS had 9.5 GiB memory used,
+  21 GiB available, and 46/387 GiB disk used. A later idle Docker sample
+  showed API 3.4% CPU/174.5 MiB and MariaDB 2.2% CPU/8.22 GiB; these are
+  instantaneous samples, not capacity/load-test results.
+- Sampled API aggregate counters on the production schema showed 49
+  `GET:bootstrap` observations averaging 160.4 ms (maximum 388), 16
+  `POST:room-join` averaging 9.3 ms (maximum 27), 161
+  `POST:room-presence` averaging 26.0 ms (maximum 183), and seven
+  `POST:game-bets` averaging 56.6 ms (maximum 71). These counters mix
+  pre/post-fix observations and lack cohort labels; no before/after p95 or
+  client shell timing should be inferred from them.
+- Remaining performance architecture gap: the released Flutter build still
+  has a 5-second heartbeat timer. It requests full presence approximately
+  every 45 seconds when WebSocket is connected (10–15 seconds disconnected),
+  and Redis `ROOM_CHANGED` invalidations still trigger coalesced full SQL
+  snapshots. Shared games still fetch SQL-backed state about every 900 ms
+  while visible. This is **not** yet the requested pure Redis-delta/WS game
+  transport, despite removing the old full-presence-every-five-seconds path.
 
 ## Historical pre-cutover checkpoint
 
