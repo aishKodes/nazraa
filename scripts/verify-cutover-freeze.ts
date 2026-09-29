@@ -4,12 +4,14 @@ import { proxy } from "../proxy";
 
 const previous = process.env.NAZRAA_CUTOVER_FREEZE;
 const previousBridge = process.env.NAZRAA_LEGACY_BRIDGE;
+const previousWebhookBridge = process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE;
 try {
   const request = (path: string, method = "GET") =>
     new NextRequest(`https://nazraa.vercel.app${path}`, { method });
 
   delete process.env.NAZRAA_CUTOVER_FREEZE;
   delete process.env.NAZRAA_LEGACY_BRIDGE;
+  delete process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE;
   assert.notEqual(proxy(request("/api/v1/mobile/rooms", "POST")).status, 503);
 
   process.env.NAZRAA_CUTOVER_FREEZE = "1";
@@ -50,10 +52,21 @@ try {
   ]) {
     assert.equal(proxy(request(path, method)).status, 503);
   }
+  process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE = "1";
+  const webhook = proxy(request("/api/internal/livekit/webhook", "POST"));
+  assert.equal(webhook.status, 200);
+  assert.equal(
+    webhook.headers.get("x-middleware-rewrite"),
+    "https://api.nazraa.pixtra.site/api/internal/livekit/webhook",
+  );
+  assert.equal(proxy(request("/api/internal/livekit/webhook", "GET")).status, 503);
+  assert.equal(proxy(request("/api/cron/monthly-host-reset", "GET")).status, 503);
   console.log("PASS cutover fence and explicit legacy public-API bridge route to one authority");
 } finally {
   if (previous === undefined) delete process.env.NAZRAA_CUTOVER_FREEZE;
   else process.env.NAZRAA_CUTOVER_FREEZE = previous;
   if (previousBridge === undefined) delete process.env.NAZRAA_LEGACY_BRIDGE;
   else process.env.NAZRAA_LEGACY_BRIDGE = previousBridge;
+  if (previousWebhookBridge === undefined) delete process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE;
+  else process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE = previousWebhookBridge;
 }
