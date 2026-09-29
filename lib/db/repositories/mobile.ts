@@ -4,6 +4,7 @@ import type { RowDataPacket } from "mysql2";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
 import type { PreparedDocument } from "@/lib/security/documents";
+import { currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 
 type PublicMobileConfig = {
   gifts: RowDataPacket[];
@@ -97,8 +98,15 @@ export async function publicMobileConfig() {
     const [notifications] = notificationResult;
     const [settings] = settingResult;
     return {
-      gifts,
-      banners,
+      gifts: gifts.map((gift) => ({
+        ...gift,
+        visualUrl: currentPublicAssetUrl(gift.visualUrl as string | null),
+        animationKey: currentPublicAssetUrl(gift.animationKey as string | null),
+      })),
+      banners: banners.map((banner) => ({
+        ...banner,
+        imageUrl: currentPublicAssetUrl(banner.imageUrl as string | null),
+      })),
       notifications,
       settings: Object.fromEntries(
         settings.map((item) => [

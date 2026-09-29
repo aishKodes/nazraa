@@ -16,3 +16,16 @@ export function publicApiOrigin(): string {
   }
   return url.origin;
 }
+
+/**
+ * Existing catalog rows retain the URL minted before the VPS cutover. Keep
+ * those durable records untouched and redirect only our own asset endpoints
+ * in API responses; legal/policy links still belong to the public website.
+ */
+export function currentPublicAssetUrl(value: string | null): string | null {
+  if (!value) return value;
+  const legacy = "https://nazraa.vercel.app";
+  if (!value.startsWith(`${legacy}/api/v1/assets/`) &&
+      !value.startsWith(`${legacy}/api/v1/mobile/avatar/`)) return value;
+  return `${publicApiOrigin()}${value.slice(legacy.length)}`;
+}

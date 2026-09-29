@@ -4,7 +4,10 @@ export function buildSteps(env) {
   if (bridged && !frozen) {
     throw new Error("Legacy API bridge requires the old database write fence.");
   }
-  return frozen
+  // Preview deployments must never run migrations or reviewer provisioning
+  // against the production database. They also intentionally lack DB secrets.
+  const buildOnly = frozen || env.VERCEL_ENV === "preview";
+  return buildOnly
     ? [["npx", ["next", "build"]]]
     : [
         ["npm", ["run", "migrate"]],

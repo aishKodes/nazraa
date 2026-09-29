@@ -12,5 +12,8 @@ assert.deepEqual(buildSteps({}), [
 assert.deepEqual(buildSteps({ NAZRAA_CUTOVER_FREEZE: "1", NAZRAA_LEGACY_BRIDGE: "1" }), [
   ["npx", ["next", "build"]],
 ]);
+assert.deepEqual(buildSteps({ VERCEL_ENV: "preview" }), [
+  ["npx", ["next", "build"]],
+]);
 assert.throws(() => buildSteps({ NAZRAA_LEGACY_BRIDGE: "1" }));
 console.log("PASS frozen Vercel build skips migrations and reviewer provisioning");
