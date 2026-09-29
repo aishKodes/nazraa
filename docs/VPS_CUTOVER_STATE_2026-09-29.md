@@ -18,6 +18,10 @@
   bridged to the VPS, and the signed LiveKit webhook path is bridged to the
   VPS. Vercel cron and other write paths remain fenced. This bridge is a
   compatibility path, **not** a second write authority or a DB fallback.
+  Old Vercel `/login` and `/dashboard/*` GETs now redirect to the VPS Control
+  origin, so operators cannot mistake stale read-only Control pages for
+  production. The VPS login returned 200; an unauthenticated dashboard
+  request redirected to that login. Public `/download` stays on Vercel.
 - Signed mobile release `2.4.66+7378` calls the VPS API/WebSocket directly.
   SHA-256 APK `3800a05fbd279d6ef9451e196140f5b16f083814a3a0c99541124939d9e177d5`;
   AAB `b99eb240cbc991590d2a4b7f01345520fea434c060432916ba9e3256c177fe4c`.
