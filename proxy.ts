@@ -12,7 +12,20 @@ export function proxy(request: NextRequest) {
   }
   const path = request.nextUrl.pathname;
   const isApi = path.startsWith("/api/");
-  if (path === "/api/v1/config" || path === "/api/internal/health") {
+  // Existing signed APKs still use nazraa.vercel.app. During cutover, forward
+  // only their public mobile API to the *one* new authority. Keep cron,
+  // provider webhooks, Control APIs and server actions fenced on Vercel.
+  // The bridge is a separate switch so a failed parity check can leave the
+  // old runtime in maintenance without accidentally writing the stale DB.
+  const bridgeReady = process.env.NAZRAA_LEGACY_BRIDGE === "1";
+  const bridgeable = path.startsWith("/api/v1/") || path.startsWith("/api/public/");
+  if (bridgeReady && bridgeable) {
+    const destination = new URL(request.nextUrl.pathname + request.nextUrl.search, "https://api.nazraa.pixtra.site");
+    const response = NextResponse.rewrite(destination);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  }
+  if (path === "/api/internal/health") {
     return NextResponse.next();
   }
   // Control actions are Next Server Actions posted to page paths, not /api.

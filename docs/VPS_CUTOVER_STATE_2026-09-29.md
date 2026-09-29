@@ -108,14 +108,20 @@ destination have passed QA.
 
 The branch now includes a dormant Vercel `proxy.ts` fence. It activates only
 with `NAZRAA_CUTOVER_FREEZE=1`, returns a sanitized 503/retry response for
-all old `/api` routes except static config/health and for non-GET page
-requests (including Control Server Actions). It blocks the Vercel cron and
-LiveKit webhook too. The blanket API fence is deliberate because some game
-GET routes perform settlement writes. Unit verification passed. **It has not
-been deployed or enabled in production.** A legacy-client bridge to the new
-authoritative API must be proven before retiring the old APK, otherwise old
-clients will see maintenance until they update; do not silently reopen writes
-against the stale shared database.
+all old `/api` routes except internal health and for non-GET page requests
+(including Control Server Actions). It blocks the Vercel cron and LiveKit
+webhook too. The blanket API fence is deliberate because some game GET routes
+perform settlement writes. A separately gated `NAZRAA_LEGACY_BRIDGE=1` rewrites
+only `/api/v1/*` and `/api/public/*` to the fixed QA/VPS API hostname, leaving
+Control, cron, webhooks and old Server Actions fenced. Local production-build
+smoke tests returned the same 18,883-byte public config through the bridge and
+direct QA API (both HTTP 200); invalid sign-in JSON forwarded as HTTP 400;
+old cron, webhook and Control POST stayed HTTP 503. The full proxy unit test,
+TypeScript check, build, and Caddy production-file dry-run passed. **Neither
+switch has been deployed or enabled on Vercel.** At cutover, test authenticated
+legacy mobile requests, request bodies, image upload size limits, auth headers,
+and response parity against the final authority before opening the bridge to
+all users. Never reopen writes against the stale shared database.
 
 The production Caddy configuration has been corrected to admit exactly the
 `/api/internal/livekit/webhook` path on the API hostname while keeping every
