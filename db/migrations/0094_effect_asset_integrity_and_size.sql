@@ -27,7 +27,10 @@ SET @nazraa_gift_size_check = (
 );
 SET @nazraa_sql = IF(@nazraa_gift_size_check IS NULL,
   'SELECT 1',
-  CONCAT('ALTER TABLE gift_assets DROP CHECK `', REPLACE(@nazraa_gift_size_check, '`', '``'), '`'));
+  -- MariaDB uses DROP CONSTRAINT for CHECK constraints (unlike MySQL's
+  -- DROP CHECK syntax). Production runs MariaDB, so use the portable
+  -- constraint form rather than relying on a MySQL-only migration path.
+  CONCAT('ALTER TABLE gift_assets DROP CONSTRAINT `', REPLACE(@nazraa_gift_size_check, '`', '``'), '`'));
 PREPARE nazraa_stmt FROM @nazraa_sql; EXECUTE nazraa_stmt; DEALLOCATE PREPARE nazraa_stmt;
 
 ALTER TABLE gift_assets
