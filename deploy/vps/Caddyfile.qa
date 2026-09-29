@@ -8,7 +8,7 @@ api.nazraa.pixtra.site {
         handle @private {
             respond "Not found" 404
         }
-        reverse_proxy nazraa-api-candidate:3000
+        reverse_proxy api:3000
     }
     handle {
         respond "Not found" 404
@@ -18,7 +18,7 @@ api.nazraa.pixtra.site {
 ws.nazraa.pixtra.site {
     @qa remote_ip {$QA_CLIENT_CIDR}
     handle @qa {
-        reverse_proxy nazraa-realtime-qa2:3100
+        reverse_proxy realtime:3100
     }
     handle {
         respond "Not found" 404
