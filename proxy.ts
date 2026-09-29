@@ -17,7 +17,17 @@ export function proxy(request: NextRequest) {
     response.headers.set("Cache-Control", "no-store");
     return response;
   }
-
+  // The existing LiveKit VM still posts signed media evidence to this
+  // hostname. Forward that one POST unchanged until its server-side webhook
+  // destination can be moved; signature validation happens at the VPS API.
+  if (
+    process.env.NAZRAA_LIVEKIT_WEBHOOK_BRIDGE === "1" &&
+    path === "/api/internal/livekit/webhook" &&
+    request.method === "POST"
+  ) {
+    const destination = new URL(path, "https://api.nazraa.pixtra.site");
+    return NextResponse.rewrite(destination);
+  }
   if (path === "/api/internal/health") return NextResponse.next();
   // Control Server Actions post to page paths and must also be fenced.
   if (!isApi && (request.method === "GET" || request.method === "HEAD")) {
