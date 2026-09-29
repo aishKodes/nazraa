@@ -27,6 +27,10 @@ and backup destination have passed QA.
 - Online read-only snapshot: `/opt/nazraa/backups/source-fresh-20260929.sql.gz`
   (SHA-256 `1bd1381d9f938a821d93076c1f984ea9f111ca21dfadfd97c93c77e963d55db5`).
 - Imported separately as `nazraa_fresh` within staging MariaDB.
+- A guarded final-import script now requires explicit confirmation of the
+  source write freeze, a SHA-256 match, a valid gzip dump, and a **new empty**
+  `nazraa_final_YYYYMMDD_HHMMSS` schema. It does not change the application
+  database pointer or enable writes; those require subsequent reconciliation.
 - Preliminary comparison found 123 tables and 93 migrations on both sides,
   exact table counts, wallet and ledger aggregates, and ordered row hashes for
   22 critical financial tables. Logs are in `/opt/nazraa/backups/`.
