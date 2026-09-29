@@ -1,0 +1,21 @@
+[Unit]
+Description=Nazraa encrypted offsite production database backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=NAZRAA_BACKUP_PRODUCTION_CONFIRMED=1
+Environment=NAZRAA_BACKUP_DB_CONTAINER=nazraa-mysql-1
+Environment=NAZRAA_BACKUP_DB_NAME=nazraa_final_20260929_070033
+Environment=NAZRAA_BACKUP_OCI_BUCKET=nazraa-prod-backups-mumbai-20260929
+Environment=OCI_CLI_CONFIG_FILE=/opt/nazraa/config/oci/config
+ExecStart=/bin/bash /opt/nazraa/app-next/deploy/vps/backup-to-oci.sh
+Nice=15
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/nazraa/backups
+

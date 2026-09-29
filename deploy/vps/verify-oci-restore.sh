@@ -71,7 +71,7 @@ if [[ ! $expected_sha =~ ^[0-9a-fA-F]{64}$ || $actual_sha != "${expected_sha,,}"
   exit 1
 fi
 gzip -t "$backup"
-if gzip -dc "$backup" | awk '
+if gzip -dc "$backup" | LC_ALL=C awk '
   toupper($0) ~ /^[[:space:]]*(CREATE[[:space:]]+DATABASE|USE[[:space:]]+[`[:alnum:]_])/ { bad=1 }
   END { exit bad ? 0 : 1 }
 '; then
