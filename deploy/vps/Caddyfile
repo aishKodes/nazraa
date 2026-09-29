@@ -21,16 +21,5 @@ ws.nazraa.pixtra.site {
     reverse_proxy realtime:3100
 }
 
-nazraa.pixtra.site {
-    encode zstd gzip
-    @private path /api/internal/*
-    handle @private {
-        respond "Not found" 404
-    }
-    handle {
-        reverse_proxy api:3000
-    }
-}
-
-# The WebSocket hostname is defined for staging, but the Compose edge profile
-# must remain disabled until authentication and event delivery pass QA.
+# The public marketing/download site remains on its existing Vercel hostname.
+# Add a dedicated frontend hostname only after its DNS and TLS are verified.
