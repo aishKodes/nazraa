@@ -16,13 +16,13 @@ fi
 backup_path=$1
 expected_sha=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
 target_schema=$3
-db_container=${NAZRAA_MARIADB_CONTAINER:-nazraa-mariadb-staging}
+db_container=${NAZRAA_MARIADB_CONTAINER:-nazraa-mysql-1}
 
 if [[ $backup_path != /opt/nazraa/backups/* || ! -f $backup_path || ! -r $backup_path ]]; then
   echo 'Final backup must be a readable file under /opt/nazraa/backups.' >&2
   exit 1
 fi
-if [[ $db_container != nazraa-mariadb-staging ]]; then
+if [[ $db_container != nazraa-mysql-1 && $db_container != nazraa-mariadb-staging ]]; then
   echo 'Unexpected database container. Import not started.' >&2
   exit 1
 fi
@@ -36,7 +36,7 @@ gzip -t "$backup_path"
 
 # A dump made with --databases can silently change schema mid-stream. Import
 # only a single-database dump with no CREATE DATABASE or USE statements.
-if gzip -dc "$backup_path" | awk '
+if gzip -dc "$backup_path" | LC_ALL=C awk '
   toupper($0) ~ /^[[:space:]]*(CREATE[[:space:]]+DATABASE|USE[[:space:]]+[`[:alnum:]_])/ { bad=1 }
   END { exit bad ? 0 : 1 }
 '; then
