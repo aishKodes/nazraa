@@ -2,6 +2,7 @@
 // idempotent daily schedule; stale-room cleanup no longer runs in Home.
 const monthlyEndpoint = "http://api:3000/api/cron/monthly-host-reset";
 const roomMaintenanceEndpoint = "http://api:3000/api/cron/room-maintenance";
+const gameMaintenanceEndpoint = "http://api:3000/api/cron/game-maintenance";
 const secret = process.env.CRON_SECRET;
 if (!secret) throw new Error("CRON_SECRET is required for the VPS worker.");
 
@@ -9,6 +10,8 @@ let stopped = false;
 let monthlyTimer;
 let roomMaintenanceTimer;
 let roomMaintenanceInFlight = false;
+let gameMaintenanceTimer;
+let gameMaintenanceInFlight = false;
 
 function nextDelay() {
   const now = new Date();
@@ -59,14 +62,40 @@ function scheduleRoomMaintenance(delay = 60_000) {
   }, delay);
 }
 
+// Shared-game result windows are short. The worker settles each game's
+// matured bets at a bounded cadence so client state reads stay read-oriented.
+// The endpoint is idempotent and the in-flight guard prevents a slow MySQL
+// transaction from stacking timers under load.
+function scheduleGameMaintenance(delay = 750) {
+  if (stopped) return;
+  gameMaintenanceTimer = setTimeout(async () => {
+    if (stopped) return;
+    if (gameMaintenanceInFlight) {
+      scheduleGameMaintenance();
+      return;
+    }
+    gameMaintenanceInFlight = true;
+    try {
+      await run(gameMaintenanceEndpoint);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Game maintenance failed.");
+    } finally {
+      gameMaintenanceInFlight = false;
+      scheduleGameMaintenance();
+    }
+  }, delay);
+}
+
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     stopped = true;
     clearTimeout(monthlyTimer);
     clearTimeout(roomMaintenanceTimer);
+    clearTimeout(gameMaintenanceTimer);
     process.exit(0);
   });
 }
 
 scheduleMonthly();
 scheduleRoomMaintenance(5_000);
+scheduleGameMaintenance(1_000);

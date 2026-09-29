@@ -2769,6 +2769,11 @@ async function main() {
         "UPDATE game_shared_rounds SET betting_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND), drawing_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 SECOND) WHERE id = ?",
         [before.round.id],
       );
+      const maintenance = await product.maintainSharedGameRounds();
+      assert.ok(
+        maintenance.totalSettlements >= 1,
+        `${game} VPS game maintenance must settle the matured round`,
+      );
       let settled = await product.gameSharedRoundState(owner, game);
       // A verification run can cross a real global-round boundary between the
       // optimistic wager and the first state refresh. Re-close the returned
@@ -2780,6 +2785,7 @@ async function main() {
           "UPDATE game_shared_rounds SET betting_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 2 SECOND), drawing_ends_at = DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 1 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 10 SECOND) WHERE id = ?",
           [settled.round.id],
         );
+        await product.maintainSharedGameRounds();
         settled = await product.gameSharedRoundState(owner, game);
       }
       // A genuine 15-second production round may cross into N+1 after the

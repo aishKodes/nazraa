@@ -102,6 +102,24 @@
   people join, and one 7.6 s room-presence update plus a 7.5 s COMMIT. Those
   two write delays need timestamp/lock correlation before attributing them to
   normal traffic; they do not justify an untested index or database rewrite.
+- Maintenance access: Hostinger's authenticated web terminal works. Direct
+  Mac→VPS TCP/22 connects, and a passive `nc` probe receives the OpenSSH
+  banner; the macOS OpenSSH client still times out during banner exchange,
+  even with `IPQoS=none`. Server `sshd` is active on IPv4/IPv6 port 22 and
+  logs the Mac connection closing. Do not assume a working key-based Mac SSH
+  path or risk the production firewall for this unresolved client/edge issue.
+- Prepared at source revision `227df32` but not yet deployed: shared-game
+  maturation moves from every `GET game-state` refresh to the private VPS
+  worker at a non-overlapping 750 ms cadence. The mobile request still keeps
+  its small idempotent settlement safety check before a new bet, while normal
+  state reads become read-oriented. The new private route is authenticated by
+  the existing worker-only cron secret. TypeScript, production build, full
+  core-mobile (including 30 shared-round transitions), and integration tests
+  passed. Deployment is pending restoration of a reliable VPS maintenance
+  terminal; the Hostinger console reports an unresponsive console session even
+  though hPanel reports the VPS running and the public API/WS health endpoints
+  return 200. Do **not** reboot the healthy production VPS merely to deploy
+  this optimization.
 
 ## Historical pre-cutover checkpoint
 

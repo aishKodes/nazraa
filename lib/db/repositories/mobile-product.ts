@@ -1622,8 +1622,15 @@ function createServerGameOutcome(game: string, bets: Record<string, number>, con
   throw new Error("This game is unavailable.");
 }
 
-const sharedRoundGames = new Set([teenPattiGame, "luck77", "greedy_lion", "greedy_king", "bounty_football"]);
 type SharedRoundGame = "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
+const sharedRoundGames: readonly SharedRoundGame[] = [
+  teenPattiGame,
+  "luck77",
+  "greedy_lion",
+  "greedy_king",
+  "bounty_football",
+];
+const sharedRoundGameSet = new Set<string>(sharedRoundGames);
 type SharedRoundRow = RowDataPacket & {
   id: string; game_name: SharedRoundGame; round_number: number;
   betting_starts_at: Date; betting_ends_at: Date; drawing_ends_at: Date; result_ends_at: Date;
@@ -1632,7 +1639,7 @@ type SharedRoundRow = RowDataPacket & {
 };
 
 function sharedGame(value: string): SharedRoundGame {
-  if (!sharedRoundGames.has(value)) throw new Error("This game does not use shared rounds.");
+  if (!sharedRoundGameSet.has(value)) throw new Error("This game does not use shared rounds.");
   return value as SharedRoundGame;
 }
 
@@ -1887,6 +1894,7 @@ async function settleMaturedSharedRounds(
      LIMIT 24`,
     [game, priorityUserId, priorityUserId],
   );
+  let settledCount = 0;
   for (const pair of pairs) {
     await connection.query(
       "SELECT id FROM game_shared_bet_requests WHERE round_id = ? AND application_user_id = ? FOR UPDATE",
@@ -1982,7 +1990,41 @@ async function settleMaturedSharedRounds(
         [randomUUID(), resultId, pair.application_user_id, game, payout, JSON.stringify(fullOutcome)],
       );
     }
+    settledCount++;
   }
+  return settledCount;
+}
+
+/**
+ * The VPS worker owns maturation of shared rounds. This prevents every
+ * visible player's state refresh from competing to settle the same payout.
+ * Each game's wallet/ledger work remains one MySQL transaction and the
+ * settlement table's unique key remains the final duplicate guard.
+ */
+export async function maintainSharedGameRounds() {
+  const settlements: Partial<Record<SharedRoundGame, number>> = {};
+  for (const game of sharedRoundGames) {
+    settlements[game] = await withTransaction(async (connection) => {
+      const [settings, liveRules] = await Promise.all([
+        gameSettings(connection),
+        loadFaceLiveRules(connection),
+      ]);
+      return settleMaturedSharedRounds(
+        connection,
+        game,
+        "",
+        settings,
+        liveRules.timezone,
+      );
+    });
+  }
+  return {
+    settlements,
+    totalSettlements: Object.values(settlements).reduce(
+      (total, count) => total + Number(count ?? 0),
+      0,
+    ),
+  };
 }
 
 async function sharedRoundStatePayload(
@@ -2139,8 +2181,6 @@ export async function gameSharedRoundState(identity: MobileIdentity, gameValue: 
   const game = sharedGame(gameValue);
   return withTransaction(async (connection) => {
     const settings = await gameSettings(connection);
-    const { timezone } = await loadFaceLiveRules(connection);
-    await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
     const now = new Date();
     const config = settings.games[game];
     const round = await ensureSharedRound(connection, game, config, now);
@@ -2249,7 +2289,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
   // Keep Teen Patti compatible with the immediately previous mobile release
   // while current clients use its global shared round. Other shared games have
   // never shipped through this legacy endpoint.
-  if (sharedRoundGames.has(input.game) && input.game !== teenPattiGame) throw new Error("Update Nazraa to play this shared game.");
+  if (sharedRoundGameSet.has(input.game) && input.game !== teenPattiGame) throw new Error("Update Nazraa to play this shared game.");
   const bets = canonicalBets(input.bets);
   return withTransaction(async (connection) => {
     // Lock the existing wallet first for every round. Concurrent retries must
