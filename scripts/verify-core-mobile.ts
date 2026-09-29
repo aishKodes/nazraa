@@ -3690,7 +3690,7 @@ async function main() {
       "SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'",
       [staleRewardHost.userId],
     );
-    await product.mobileBootstrap(staleRewardHost);
+    await product.pruneInactiveRooms();
     const [cleanup] = await root.query<RowDataPacket[]>(
       "SELECT status, reward_coins FROM live_session_accounting WHERE room_id = ?",
       [staleRoomId],

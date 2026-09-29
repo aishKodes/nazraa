@@ -379,11 +379,19 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               account.role platform_role
-       FROM application_users user
+       FROM (
+         SELECT id, external_user_id, public_id, full_name, avatar_url,
+                country_code, language_code, level_number,
+                anchor_level_number, consumption_points,
+                anchor_income_points, vip_tier, is_host, last_active_at
+         FROM application_users
+         WHERE account_status = 'ACTIVE'
+         ORDER BY last_active_at DESC LIMIT 80
+       ) user
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        LEFT JOIN platform_accounts account ON account.status = 'ACTIVE'
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
-       WHERE user.account_status = 'ACTIVE' ORDER BY user.last_active_at DESC LIMIT 80`,
+       ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
     db().query<RowDataPacket[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
     db().query<RowDataPacket[]>(
