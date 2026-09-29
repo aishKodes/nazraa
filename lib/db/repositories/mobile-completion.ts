@@ -212,11 +212,11 @@ function touchRoomMembership(userId: string, roomCode: string) {
   // form a lock cycle with seat, leave, or role transitions. A failed touch
   // simply leaves the existing two-minute server expiry as the safety net.
   // A five-second social poll does not need five-second membership writes;
-  // touching at most every 15 seconds avoids needless row locking while
+  // touching at most every 30 seconds avoids needless durable writes while
   // remaining far inside the two-minute expiry window.
   // This touch is safe to retry after an ambiguous socket reset: its only
   // effect is bringing the same member's last-seen timestamp up to the
-  // database clock, and the 15-second guard prevents a rapid second write.
+  // database clock, and the 30-second guard prevents a rapid second write.
   void withDatabaseReadRetry(() => db().execute(
     `UPDATE live_room_members member
      INNER JOIN live_rooms room ON room.id = member.room_id
@@ -224,7 +224,7 @@ function touchRoomMembership(userId: string, roomCode: string) {
      WHERE room.room_code = ? AND member.application_user_id = ?
        AND member.left_at IS NULL
        AND (member.last_seen_at IS NULL OR
-            member.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 15 SECOND)`,
+            member.last_seen_at < CURRENT_TIMESTAMP(3) - INTERVAL 30 SECOND)`,
     [roomCode, userId],
   )).catch((error) => {
     const now = Date.now();
