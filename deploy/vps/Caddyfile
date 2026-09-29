@@ -1,7 +1,3 @@
-{
-    email {$ACME_EMAIL}
-}
-
 api.nazraa.pixtra.site {
     encode zstd gzip
     # LiveKit must be able to deliver signed publish/disconnect evidence after
