@@ -108,14 +108,14 @@
   even with `IPQoS=none`. Server `sshd` is active on IPv4/IPv6 port 22 and
   logs the Mac connection closing. Do not assume a working key-based Mac SSH
   path or risk the production firewall for this unresolved client/edge issue.
-- Prepared at source revision `e1da611` but not yet deployed: shared-game
-  maturation moves from every `GET game-state` refresh to the private VPS
-  worker at a non-overlapping 750 ms cadence. The mobile request still keeps
-  its small idempotent settlement safety check before a new bet, while normal
-  state reads become read-oriented. The new private route is authenticated by
-  the existing worker-only cron secret. TypeScript, production build, full
-  core-mobile (including 30 shared-round transitions), and integration tests
-  passed. Deployment is pending restoration of a reliable VPS maintenance
+- Deployed at source revision `1f0cd56` (implementation `e1da611`):
+  shared-game maturation now runs in the private VPS worker at a
+  non-overlapping 750 ms cadence instead of every `GET game-state` refresh.
+  The mobile request retains its small idempotent settlement safety check
+  before a new bet, while ordinary state reads are read-oriented. The
+  worker-only route returned HTTP 200 after rollout and API/worker logs were
+  free of new errors. TypeScript, production build, full core-mobile
+  (including 30 shared-round transitions), and integration tests passed.
   terminal; the Hostinger console reports an unresponsive console session even
   though hPanel reports the VPS running and the public API/WS health endpoints
   return 200. Do **not** reboot the healthy production VPS merely to deploy
