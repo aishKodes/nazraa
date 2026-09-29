@@ -18,7 +18,7 @@ api.nazraa.pixtra.site {
 ws.nazraa.pixtra.site {
     @qa remote_ip {$QA_CLIENT_CIDR}
     handle @qa {
-        reverse_proxy nazraa-realtime-staging:3100
+        reverse_proxy nazraa-realtime-qa2:3100
     }
     handle {
         respond "Not found" 404
