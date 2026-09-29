@@ -17,6 +17,19 @@ export function proxy(request: NextRequest) {
   // provider webhooks, Control APIs and server actions fenced on Vercel.
   // The bridge is a separate switch so a failed parity check can leave the
   // old runtime in maintenance without accidentally writing the stale DB.
+  // The VPS now owns Control reads as well as writes. Leaving the old
+  // dashboard readable would show stale balances/moderation state despite
+  // its actions being fenced. Existing operators should sign in on the
+  // authoritative origin; the public marketing/download pages stay here.
+  if (
+    (request.method === "GET" || request.method === "HEAD") &&
+    (path === "/login" || path === "/dashboard" || path.startsWith("/dashboard/"))
+  ) {
+    const destination = new URL(path + request.nextUrl.search, "https://api.nazraa.pixtra.site");
+    const response = NextResponse.redirect(destination, 307);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  }
   const bridgeReady = process.env.NAZRAA_LEGACY_BRIDGE === "1";
   const bridgeable = path.startsWith("/api/v1/") || path.startsWith("/api/public/");
   if (bridgeReady && bridgeable) {
