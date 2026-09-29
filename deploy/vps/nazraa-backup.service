@@ -16,6 +16,4 @@ Nice=15
 IOSchedulingClass=idle
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
-ReadWritePaths=/opt/nazraa/backups
-
+ProtectSystem=full
