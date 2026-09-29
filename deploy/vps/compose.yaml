@@ -102,7 +102,6 @@ services:
     image: caddy:2
     profiles: [edge]
     restart: unless-stopped
-    env_file: ./config/caddy.env
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
