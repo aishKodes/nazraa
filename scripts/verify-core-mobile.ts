@@ -2706,7 +2706,13 @@ async function main() {
             );
           }),
         ]);
-        assert.equal(refreshed.round.id, readableRound.round.id);
+        // A real global clock boundary can create N+1 during this assertion;
+        // that is valid, but the request still must not wait on N's row lock.
+        if (refreshed.round.number === readableRound.round.number) {
+          assert.equal(refreshed.round.id, readableRound.round.id);
+        } else {
+          assert.ok(refreshed.round.number > readableRound.round.number);
+        }
       } finally {
         if (timeout) clearTimeout(timeout);
       }
