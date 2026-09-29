@@ -3,8 +3,8 @@
 This is an operational checkpoint, **not** evidence that production has moved.
 The Vercel API and Hostinger shared database remain the sole live write path;
 Oracle LiveKit is unchanged. Do not promote the prepared write-freeze until
-authenticated realtime delivery, mobile build, and the off-VPS backup
-destination have passed QA.
+the signed mobile artifact, final writer fence, final import, and financial
+reconciliation have passed QA.
 
 ## Staged VPS
 
@@ -85,14 +85,27 @@ destination have passed QA.
 - The current compressed staging snapshot is 2.8 GiB. VPS disk usage is
   23/387 GiB; staging MariaDB uses about 2.3 GiB of 31.3 GiB RAM at idle.
   This is capacity context, not production load evidence.
-- A guarded `deploy/vps/backup-to-oci.sh` is prepared but **not installed or
-  scheduled**. It requires a confirmed final authoritative schema, a private
-  OCI Mumbai bucket, root-only OCI credentials, checksum-verified uploads, and
-  successful object HEAD. `deploy/vps/verify-oci-restore.sh` is also prepared
-  for a checksum-checked import into an isolated schema; it never switches the
-  application DB pointer. Neither script has yet run against OCI. No offsite
-  backup has been made; a real upload/download/isolated restore test is still
-  required before cutover.
+- The owner approved a private OCI Mumbai backup destination. Bucket
+  `nazraa-prod-backups-mumbai-20260929` is Private/Standard with Oracle-managed
+  encryption. Service identity `nazraa-backup-vps` has API-key access only,
+  scoped by policy to reading the bucket and creating/inspecting/reading its
+  objects; it has no object delete or overwrite grant. The signing private key
+  and CLI config remain root-only on the VPS under `/opt/nazraa/config/oci/`.
+  Never copy either into Git or diagnostic output.
+- The 2.8 GiB read-only source snapshot was uploaded to this bucket as
+  `staging/source-fresh-20260929.sql.gz`, downloaded again, and verified against
+  SHA-256 `1bd1381d9f938a821d93076c1f984ea9f111ca21dfadfd97c93c77e963d55db5`.
+  The downloaded object passed gzip validation and imported successfully into
+  a new isolated `nazraa_restorecheck_20260929_121500` schema with 123 tables.
+  No application database pointer changed. This verifies the offsite path,
+  **not** the final post-freeze production backup.
+- OCI multipart creation requires `OBJECT_OVERWRITE` even for a new object.
+  The guarded `deploy/vps/backup-to-oci.sh` therefore uses immutable
+  single-part PUTs with `--no-overwrite` to preserve the narrower credential.
+  It is prepared but **not installed or scheduled** until the final database is
+  authoritative. `deploy/vps/verify-oci-restore.sh` is also prepared for a
+  checksum-checked isolated restore. Run both against a new final schema after
+  cutover and only then schedule nightly backups.
 - Local branch checks on 2026-09-29: `test:core-mobile`, `test:roles`,
   `test:vps-origin`, `test:integration`, and TypeScript typecheck passed.
   ESLint reported no errors (two existing image-optimization warnings).

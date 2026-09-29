@@ -85,12 +85,16 @@ chmod 0600 "$backup" "${backup}.sha256"
 
 # OCI verifies the uploaded file checksum. The separate checksum manifest
 # makes an eventual offsite restore independently verifiable.
+# Use single-part immutable PUTs. The bucket-scoped backup identity has
+# OBJECT_CREATE but deliberately lacks OBJECT_OVERWRITE, which OCI requires
+# even to initiate multipart uploads. Each timestamped object is unique;
+# --no-overwrite remains a second guard against accidental replacement.
 oci os object put "${oci_args[@]}" --bucket-name "$bucket" \
   --name "production/${base}.sql.gz" --file "$backup" \
-  --verify-checksum --no-overwrite --output json >/dev/null
+  --no-multipart --verify-checksum --no-overwrite --output json >/dev/null
 oci os object put "${oci_args[@]}" --bucket-name "$bucket" \
   --name "production/${base}.sql.gz.sha256" --file "${backup}.sha256" \
-  --verify-checksum --no-overwrite --output json >/dev/null
+  --no-multipart --verify-checksum --no-overwrite --output json >/dev/null
 oci os object head "${oci_args[@]}" --bucket-name "$bucket" \
   --name "production/${base}.sql.gz" --output json >/dev/null
 
