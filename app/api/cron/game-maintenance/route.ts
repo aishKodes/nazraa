@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { maintainSharedGameRounds } from "@/lib/db/repositories/mobile-product";
+import { publishSharedGameRealtimeState } from "@/lib/services/game-realtime-events";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "Unauthorized." }, { status: 401 });
   }
   try {
-    return NextResponse.json(await maintainSharedGameRounds(), {
+    const result = await maintainSharedGameRounds();
+    await Promise.all(result.realtime.map(publishSharedGameRealtimeState));
+    return NextResponse.json({
+      settlements: result.settlements,
+      totalSettlements: result.totalSettlements,
+    }, {
       headers: { "Cache-Control": "no-store" },
     });
   } catch {

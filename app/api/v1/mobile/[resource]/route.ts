@@ -109,6 +109,7 @@ import {
   publishRoomRealtimeEvent,
   type RoomRealtimeTopic,
 } from "@/lib/services/room-realtime-events";
+import { publishSharedGameBetInvalidation } from "@/lib/services/game-realtime-events";
 import {
   persistMobileLatency,
   persistRoomJoinLatency,
@@ -1511,7 +1512,9 @@ export async function POST(
             ),
           })
           .parse(body);
-        return NextResponse.json(await placeSharedGameBets(identity, parsed), {
+        const result = await placeSharedGameBets(identity, parsed);
+        after(() => publishSharedGameBetInvalidation(parsed.game));
+        return NextResponse.json(result, {
           status: 201,
         });
       }

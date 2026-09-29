@@ -20,19 +20,32 @@ export async function POST(request: Request) {
   if (!internalKeyMatches(request.headers.get("x-nazraa-internal-key"))) {
     return new NextResponse(null, { status: 404 });
   }
-  let roomCode: string;
+  let roomCode: string | undefined;
+  let game: string | undefined;
   try {
     const body = await request.json();
-    roomCode = String(body?.roomCode ?? "").trim();
+    roomCode = typeof body?.roomCode === "string" ? body.roomCode.trim() : undefined;
+    game = typeof body?.game === "string" ? body.game.trim() : undefined;
   } catch {
     return new NextResponse(null, { status: 400 });
   }
-  if (!/^[A-Za-z0-9_-]{3,80}$/.test(roomCode)) {
+  if (!roomCode && !game) {
     return new NextResponse(null, { status: 400 });
   }
   try {
     const identity = await authenticateMobileRequest(request);
     if (!identity) return new NextResponse(null, { status: 403 });
+    if (game) {
+      if (!new Set(["teen_patti_pro", "luck77", "greedy_lion", "greedy_king", "bounty_football"]).has(game)) {
+        return new NextResponse(null, { status: 400 });
+      }
+      return NextResponse.json({ game, userId: identity.userId }, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+    if (!roomCode || !/^[A-Za-z0-9_-]{3,80}$/.test(roomCode)) {
+      return new NextResponse(null, { status: 400 });
+    }
     const [rows] = await db().query<(RowDataPacket & { room_id: string })[]>(
       `SELECT room.id AS room_id
          FROM live_rooms room

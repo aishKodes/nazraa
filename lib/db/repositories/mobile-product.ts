@@ -33,6 +33,7 @@ import {
   equippedCosmeticLoadoutsByPublicId,
   type CosmeticLoadoutPayload,
 } from "@/lib/db/repositories/mobile-cosmetics";
+import type { SharedGameRealtimeState } from "@/lib/services/game-realtime-events";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -1870,6 +1871,25 @@ function sharedWinningItemId(game: SharedRoundGame, outcome: Record<string, unkn
   return String(outcome.winner ?? "");
 }
 
+function sharedGameRealtimeState(round: SharedRoundRow, now: Date): SharedGameRealtimeState {
+  const phase = sharedPhase(round, now);
+  const reveal = now >= new Date(round.drawing_ends_at);
+  return {
+    game: round.game_name,
+    round: {
+      id: round.id,
+      number: Number(round.round_number),
+      phase: phase.phase,
+      lifecycle: phase.lifecycle,
+      phaseEndsAt: phase.phaseEndsAt.toISOString(),
+      bettingEndsAt: new Date(round.betting_ends_at).toISOString(),
+      resultCommittedAt: new Date(round.result_committed_at ?? round.drawing_ends_at).toISOString(),
+      resultVersion: Number(round.result_version ?? 1),
+    },
+    outcome: reveal ? asObject(round.outcome_json) : null,
+  };
+}
+
 async function settleMaturedSharedRounds(
   connection: PoolConnection,
   game: SharedRoundGame,
@@ -2003,23 +2023,30 @@ async function settleMaturedSharedRounds(
  */
 export async function maintainSharedGameRounds() {
   const settlements: Partial<Record<SharedRoundGame, number>> = {};
+  const realtime: SharedGameRealtimeState[] = [];
   for (const game of sharedRoundGames) {
-    settlements[game] = await withTransaction(async (connection) => {
+    const result = await withTransaction(async (connection) => {
       const [settings, liveRules] = await Promise.all([
         gameSettings(connection),
         loadFaceLiveRules(connection),
       ]);
-      return settleMaturedSharedRounds(
+      const settled = await settleMaturedSharedRounds(
         connection,
         game,
         "",
         settings,
         liveRules.timezone,
       );
+      const now = new Date();
+      const round = await ensureSharedRound(connection, game, settings.games[game], now);
+      return { settled, realtime: sharedGameRealtimeState(round, now) };
     });
+    settlements[game] = result.settled;
+    realtime.push(result.realtime);
   }
   return {
     settlements,
+    realtime,
     totalSettlements: Object.values(settlements).reduce(
       (total, count) => total + Number(count ?? 0),
       0,
