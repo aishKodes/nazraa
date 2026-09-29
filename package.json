@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "vercel-build": "npm run migrate && PLAY_REVIEW_PROVISION_OPTIONAL=true npm run provision:play-reviewers && next build",
+    "vercel-build": "node scripts/vercel-build.mjs",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
