@@ -91,6 +91,18 @@ destination have passed QA.
   `test:realtime-publisher` requires `REDIS_URL` on the private VPS network
   and failed locally because that environment was not supplied; the actual
   private Redis to public QA WSS delivery path passed as described above.
+- A separate short-lived staging account reached the QA HTTPS API. Auth,
+  profile, rooms, and verification-status reads returned 200 with expected
+  response keys; an unauthenticated auth request returned 401. The staging
+  account/session were removed and both remaining counts were zero. The first
+  auth request took 687 ms; later profile/rooms/face reads took 188/73/68 ms
+  respectively. This is not a statistically valid p95 latency benchmark.
+- An Android 16 emulator booted and launched an isolated `.mediaqa` debug APK
+  compiled with the QA API/WSS endpoints. The Nazraa sign-in screen appeared
+  without a startup crash. This does **not** prove logged-in flows: the QA
+  emulator has no authorized Google session, and the signed production APK
+  remains unchanged. The full Flutter test suite passed 213 tests with one
+  pre-existing Profile golden mismatch (0.37% pixels); analysis passed.
 
 ## Required cutover order
 
