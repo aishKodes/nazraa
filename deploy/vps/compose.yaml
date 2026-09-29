@@ -48,6 +48,9 @@ services:
       DB_SSL: "false"
       DB_POOL_LIMIT: "${DB_POOL_LIMIT:-16}"
       REDIS_URL: redis://redis:6379
+      # Client-visible asset links must not point back to the legacy Vercel
+      # origin after the VPS becomes authoritative.
+      NAZRAA_PUBLIC_API_ORIGIN: https://api.nazraa.pixtra.site
       # The production VPS never falls back to frozen ZEGO media.
       MEDIA_PROVIDER: LIVEKIT
       NODE_ENV: production

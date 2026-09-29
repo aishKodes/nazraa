@@ -41,10 +41,11 @@ The purchased KVM 8 staging defaults reserve 8 GiB for the MySQL buffer pool,
 ceiling. These are initial caps, not measured production tuning. Override via
 `MYSQL_BUFFER_POOL_SIZE`, `REDIS_MAXMEMORY`, `DB_POOL_LIMIT`, and
 `MYSQL_MAX_CONNECTIONS` only after measuring actual VPS memory/concurrency.
-After the VPS API domain passes TLS and asset-route QA, set
-`NAZRAA_PUBLIC_API_ORIGIN=https://api.nazraa.pixtra.site` in `app.env` so new
-backend-generated avatar, Gift and room asset URLs point at the VPS. The
-default remains Vercel for existing production deployments.
+The Compose API service pins
+`NAZRAA_PUBLIC_API_ORIGIN=https://api.nazraa.pixtra.site` so new
+backend-generated avatar, Gift and room asset URLs point at the VPS. Verify
+TLS and asset-route QA before activating the public Compose edge. The
+application default remains Vercel for existing production deployments.
 
 Before exposing Caddy, validate a restored **copy** of the production
 database, migration version, financial row counts, and wallet/ledger totals.

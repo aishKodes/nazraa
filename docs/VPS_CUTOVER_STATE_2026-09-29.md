@@ -73,6 +73,15 @@ destination have passed QA.
 - A 30-sample warm request from the India QA client to the public config route
   measured Vercel p50/p95 65.0/74.2 ms and QA VPS 69.0/72.5 ms. This route
   may be cached and is **not** a hot room or financial path speed comparison.
+- The manually started QA API still emits 14 Vercel asset origins in its
+  public config because it did not set `NAZRAA_PUBLIC_API_ORIGIN`. The final
+  Compose API now pins the new HTTPS API origin; verify this in a fresh
+  candidate container before traffic switch. The current QA response is not
+  evidence that post-cutover asset links are ready.
+  An existing public banner asset returned HTTP 200 and exactly 69,526 bytes
+  through both Vercel and the QA VPS asset endpoint; SHA-256 matched
+  (`7e1338050f49239888e8738be6e9650c16ff63a87150d566129092b661f86bdb`).
+  This proves one asset route, not all uploaded media.
 - The current compressed staging snapshot is 2.8 GiB. VPS disk usage is
   23/387 GiB; staging MariaDB uses about 2.3 GiB of 31.3 GiB RAM at idle.
   This is capacity context, not production load evidence.
