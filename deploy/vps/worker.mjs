@@ -1,11 +1,14 @@
-// The current Vercel schedule is 18:35 UTC daily. Its database operation is
-// idempotent. Keep this worker dormant until the new database is authoritative.
-const endpoint = "http://api:3000/api/cron/monthly-host-reset";
+// The VPS is the only production writer. Financial resets retain their
+// idempotent daily schedule; stale-room cleanup no longer runs in Home.
+const monthlyEndpoint = "http://api:3000/api/cron/monthly-host-reset";
+const roomMaintenanceEndpoint = "http://api:3000/api/cron/room-maintenance";
 const secret = process.env.CRON_SECRET;
 if (!secret) throw new Error("CRON_SECRET is required for the VPS worker.");
 
 let stopped = false;
-let timer;
+let monthlyTimer;
+let roomMaintenanceTimer;
+let roomMaintenanceInFlight = false;
 
 function nextDelay() {
   const now = new Date();
@@ -15,24 +18,43 @@ function nextDelay() {
   return next.getTime() - now.getTime();
 }
 
-async function run() {
+async function run(endpoint) {
   const response = await fetch(endpoint, {
     headers: { authorization: `Bearer ${secret}` },
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`Scheduled job returned ${response.status}.`);
-  console.log(`Monthly Host reset check completed at ${new Date().toISOString()}.`);
 }
 
-function schedule(delay = nextDelay()) {
+function scheduleMonthly(delay = nextDelay()) {
   if (stopped) return;
-  timer = setTimeout(async () => {
+  monthlyTimer = setTimeout(async () => {
     try {
-      await run();
-      schedule();
+      await run(monthlyEndpoint);
+      scheduleMonthly();
     } catch (error) {
       console.error(error instanceof Error ? error.message : "Scheduled job failed.");
-      schedule(15 * 60_000);
+      scheduleMonthly(15 * 60_000);
+    }
+  }, delay);
+}
+
+function scheduleRoomMaintenance(delay = 60_000) {
+  if (stopped) return;
+  roomMaintenanceTimer = setTimeout(async () => {
+    if (stopped) return;
+    if (roomMaintenanceInFlight) {
+      scheduleRoomMaintenance();
+      return;
+    }
+    roomMaintenanceInFlight = true;
+    try {
+      await run(roomMaintenanceEndpoint);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Room maintenance failed.");
+    } finally {
+      roomMaintenanceInFlight = false;
+      scheduleRoomMaintenance();
     }
   }, delay);
 }
@@ -40,9 +62,11 @@ function schedule(delay = nextDelay()) {
 for (const signal of ["SIGTERM", "SIGINT"]) {
   process.on(signal, () => {
     stopped = true;
-    clearTimeout(timer);
+    clearTimeout(monthlyTimer);
+    clearTimeout(roomMaintenanceTimer);
     process.exit(0);
   });
 }
 
-schedule();
+scheduleMonthly();
+scheduleRoomMaintenance(5_000);

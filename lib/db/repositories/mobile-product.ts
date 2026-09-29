@@ -167,7 +167,7 @@ function mobileAvatarUrl(row: RowDataPacket, prefix = "") {
   return row[`${prefix}avatar_url`] ?? null;
 }
 
-async function pruneInactiveRooms() {
+export async function pruneInactiveRooms() {
   const [staleFaceRows] = await db().query<(RowDataPacket & { room_code: string })[]>(
     `SELECT room.room_code FROM live_rooms room
      WHERE room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
@@ -318,7 +318,6 @@ export async function activeRoomPage(after?: string) {
 }
 
 async function mobileBootstrapOnce(identity: MobileIdentity) {
-  await pruneInactiveRooms();
   const [
     profileRows,
     walletRows,
