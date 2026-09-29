@@ -76,8 +76,15 @@ destination have passed QA.
 - The current compressed staging snapshot is 2.8 GiB. VPS disk usage is
   23/387 GiB; staging MariaDB uses about 2.3 GiB of 31.3 GiB RAM at idle.
   This is capacity context, not production load evidence.
+- A guarded `deploy/vps/backup-to-oci.sh` is prepared but **not installed or
+  scheduled**. It requires a confirmed final authoritative schema, a private
+  OCI Mumbai bucket, root-only OCI credentials, checksum-verified uploads, and
+  successful object HEAD. No offsite backup has been made yet; a real
+  upload/download/isolated restore test is still required before cutover.
 - Local branch checks on 2026-09-29: `test:core-mobile`, `test:roles`,
-  `test:vps-origin`, and `test:integration` passed. The standalone
+  `test:vps-origin`, `test:integration`, and TypeScript typecheck passed.
+  ESLint reported no errors (two existing image-optimization warnings).
+  The standalone
   `test:realtime-publisher` requires `REDIS_URL` on the private VPS network
   and failed locally because that environment was not supplied; the actual
   private Redis to public QA WSS delivery path passed as described above.
