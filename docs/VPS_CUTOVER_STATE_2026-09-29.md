@@ -84,6 +84,24 @@
   snapshots. Shared games still fetch SQL-backed state about every 900 ms
   while visible. This is **not** yet the requested pure Redis-delta/WS game
   transport, despite removing the old full-presence-every-five-seconds path.
+- At source commit `0fd5120`, the shared-game state path first reads an
+  already-created round without a write or row lock. Previously every visible
+  player's roughly 900 ms refresh repeated `INSERT IGNORE`, outcome generation,
+  and `SELECT FOR UPDATE` on the same round; Greedy outcome generation also
+  locked its progressive pool. A new regression holds the round lock on a
+  separate connection and confirms the existing-round read can complete.
+  The full core-mobile suite (including 30 settlement/history transitions per
+  shared game), TypeScript check, and production Next.js build passed. The API
+  image was rebuilt on the VPS with the prior image retained as
+  `nazraa-api:rollback-20260929-0815`; no database or mobile schema changed.
+  External API config and realtime health returned 200 after rollout. This is
+  a concurrency/lock reduction, not yet a measured game-bet p95 improvement.
+- A temporary MariaDB slow-query diagnostic left `long_query_time` at 0.05 s;
+  it was explicitly restored and verified at the production 0.5 s setting.
+  The sampled log included two one-off full-table backup reads, the old Home
+  people join, and one 7.6 s room-presence update plus a 7.5 s COMMIT. Those
+  two write delays need timestamp/lock correlation before attributing them to
+  normal traffic; they do not justify an untested index or database rewrite.
 
 ## Historical pre-cutover checkpoint
 
