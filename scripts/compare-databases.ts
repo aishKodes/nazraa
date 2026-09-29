@@ -75,16 +75,22 @@ async function snapshot(connection: mysql.Connection) {
     if (primaryKey.length === 0) throw new Error(`Critical table ${table} has no primary key.`);
     const orderBy = primaryKey.map((column) => `\`${column.COLUMN_NAME.replaceAll("`", "``")}\``).join(", ");
     const hash = createHash("sha256");
-    let offset = 0;
+    let cursor: unknown[] | undefined;
     for (;;) {
-      // Table identifiers are fixed in this source file; primary-key column
-      // identifiers come from information_schema. A page bounds JS memory.
+      // Keyset paging preserves the exact primary-key order without OFFSET's
+      // increasingly expensive re-scan as financial history grows. Primary
+      // keys are non-null and the identifiers come from information_schema.
+      const where = cursor
+        ? ` WHERE (${orderBy}) > (${primaryKey.map(() => "?").join(", ")})`
+        : "";
       const [rows] = await connection.query<RowDataPacket[]>(
-        `SELECT * FROM \`${table}\` ORDER BY ${orderBy} LIMIT 1000 OFFSET ${offset}`,
+        `SELECT * FROM \`${table}\`${where} ORDER BY ${orderBy} LIMIT 1000`,
+        cursor,
       );
       for (const row of rows) hash.update(JSON.stringify(row)).update("\n");
       if (rows.length < 1000) break;
-      offset += rows.length;
+      const last = rows[rows.length - 1];
+      cursor = primaryKey.map((column) => last[column.COLUMN_NAME]);
     }
     rowHashes[table] = hash.digest("hex");
   }
