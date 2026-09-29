@@ -58,12 +58,18 @@ destination have passed QA.
 - The first manually launched WebSocket container lacked a resolvable API
   origin. It was stopped and replaced by `nazraa-realtime-qa2` with an explicit
   `REALTIME_API_ORIGIN`; its internal authorization link returns 403 for an
-  invalid token. Authorized room-event delivery is **not yet proven** over the
-  public QA edge. Do not call realtime complete based on health alone.
+  invalid token. A synthetic staging-only account/room then authenticated
+  through the public QA WSS edge: the client received `ROOM_READY`, and a
+  Redis room invalidation arrived as `ROOM_CHANGED` (`seat`). The synthetic
+  room, session, and account were deleted afterward; follow-up counts for all
+  three were zero. This proves the QA transport path, not production traffic
+  or mobile end-to-end behavior.
 - The patched/pruned `nazraa-api:secure-pruned` image built on the VPS with
   Next.js 16.3.6 and Sharp 0.35.5. Local build/integration checks passed and
-  the production dependency audit found no known advisories. The public QA API
-  remains the existing candidate container; Vercel remains production.
+  the production dependency audit found no known advisories. The QA API target
+  `nazraa-api-candidate` now runs this image against the staging database;
+  the previous candidate is stopped as `nazraa-api-prepatch` for rollback.
+  Vercel remains production.
 - A 30-sample warm request from the India QA client to the public config route
   measured Vercel p50/p95 65.0/74.2 ms and QA VPS 69.0/72.5 ms. This route
   may be cached and is **not** a hot room or financial path speed comparison.
@@ -71,7 +77,8 @@ destination have passed QA.
 ## Required cutover order
 
 1. Validate new A records and HTTPS without changing current production DNS.
-2. Prove authorized WebSocket event delivery and API auth/schema parity.
+2. Complete authenticated API auth/schema parity and exact mobile artifact QA;
+   the public QA WebSocket event path has passed with a synthetic room.
 3. Establish encrypted off-VPS backup destination and restore check.
 4. Prepare signed mobile APK/AAB, but do not publish them yet.
 5. Fence old workers and API writes; drain in-flight financial operations.
