@@ -73,6 +73,14 @@ destination have passed QA.
 - A 30-sample warm request from the India QA client to the public config route
   measured Vercel p50/p95 65.0/74.2 ms and QA VPS 69.0/72.5 ms. This route
   may be cached and is **not** a hot room or financial path speed comparison.
+- The current compressed staging snapshot is 2.8 GiB. VPS disk usage is
+  23/387 GiB; staging MariaDB uses about 2.3 GiB of 31.3 GiB RAM at idle.
+  This is capacity context, not production load evidence.
+- Local branch checks on 2026-09-29: `test:core-mobile`, `test:roles`,
+  `test:vps-origin`, and `test:integration` passed. The standalone
+  `test:realtime-publisher` requires `REDIS_URL` on the private VPS network
+  and failed locally because that environment was not supplied; the actual
+  private Redis to public QA WSS delivery path passed as described above.
 
 ## Required cutover order
 
