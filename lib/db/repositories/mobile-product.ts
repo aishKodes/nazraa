@@ -1806,19 +1806,30 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
   const bettingEndsAt = new Date(startsAt.getTime() + timing.betting * 1000);
   const drawingEndsAt = new Date(bettingEndsAt.getTime() + timing.drawing * 1000);
   const resultEndsAt = new Date(drawingEndsAt.getTime() + timing.result * 1000);
-  await connection.execute(
+  // A visible game refreshes about once a second per player. The round is
+  // immutable once opened, so an existing round must not repeat INSERT IGNORE,
+  // outcome generation, and SELECT FOR UPDATE on every read. In particular,
+  // Greedy outcomes lock their progressive pool while being generated.
+  const [existingRows] = await connection.query<SharedRoundRow[]>(
+    "SELECT * FROM game_shared_rounds WHERE game_name = ? AND round_number = ? LIMIT 1",
+    [game, roundNumber],
+  );
+  if (existingRows[0]) return existingRows[0];
+  const [insertResult] = await connection.execute<ResultSetHeader>(
     `INSERT IGNORE INTO game_shared_rounds
       (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_committed_at, result_ends_at, result_version, outcome_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
     [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config))],
   );
   const [rows] = await connection.query<SharedRoundRow[]>(
+    // A locking read sees a concurrently inserted winner even when this
+    // transaction's earlier REPEATABLE READ snapshot did not.
     "SELECT * FROM game_shared_rounds WHERE game_name = ? AND round_number = ? LIMIT 1 FOR UPDATE",
     [game, roundNumber],
   );
   if (!rows[0]) throw new Error("The shared game round could not be opened.");
   const outcome = asObject(rows[0].outcome_json);
-  if ((game === "greedy_lion" || game === "greedy_king") && outcome.specialResult === true) {
+  if (insertResult.affectedRows === 1 && (game === "greedy_lion" || game === "greedy_king") && outcome.specialResult === true) {
     await connection.execute(
       "UPDATE game_progressive_pools SET last_special_round_id = ? WHERE game_name = ?",
       [rows[0].id, game],

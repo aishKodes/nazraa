@@ -2685,6 +2685,34 @@ async function main() {
     );
     const diamondsBeforeGame = (await product.mobileBootstrap(owner)).wallet
       .diamonds;
+    // A second viewer must be able to read an already-created round while a
+    // separate connection holds its row lock. Polling must not serialize all
+    // players behind an unnecessary SELECT FOR UPDATE on the active round.
+    const readableRound = await product.gameSharedRoundState(owner, "greedy_lion");
+    await root.beginTransaction();
+    try {
+      await root.query(
+        "SELECT id FROM game_shared_rounds WHERE id = ? FOR UPDATE",
+        [readableRound.round.id],
+      );
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const refreshed = await Promise.race([
+          product.gameSharedRoundState(owner, "greedy_lion"),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(
+              () => reject(new Error("An existing game round blocked on another viewer's row lock.")),
+              2000,
+            );
+          }),
+        ]);
+        assert.equal(refreshed.round.id, readableRound.round.id);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+    } finally {
+      await root.rollback();
+    }
     async function completeSharedRound(
       game:
         | "teen_patti_pro"
