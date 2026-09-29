@@ -1,6 +1,6 @@
 import "server-only";
-import { publicApiOrigin } from "@/lib/config/public-api-origin";
-import { randomUUID } from "crypto";
+import { publicApiOrigin, publicAssetOrigin } from "@/lib/config/public-api-origin";
+import { createHash, randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
@@ -25,11 +25,22 @@ export type EffectAssetConfigInput = {
   presentationTier: "SMALL" | "MEDIUM" | "PREMIUM" | "ULTRA";
   gameBehavior: "COMPACT" | "SILENT" | "SUPPRESSED";
   modalBehavior: "COMPACT" | "SILENT" | "SUPPRESSED";
+  minimumAppVersion?: string;
 };
 
 function accentValue(value: string | undefined) {
   const clean = (value ?? "#8A5CFF").replace(/^#/, "");
   return Number.parseInt(`ff${clean}`, 16);
+}
+
+function assetChecksum(data: Buffer) {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+function assetUrl(id: string, extension?: string) {
+  return `${publicAssetOrigin()}/api/v1/assets/gifts/${id}${
+    extension ? `.${extension}` : ""
+  }`;
 }
 
 async function auditedMutation(input: { scope: Scope; action: string; module: string; targetType: string; targetId: string; reason: string; run: Parameters<typeof withTransaction>[0] }) {
@@ -59,9 +70,9 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
   const assetId = input.image ? randomUUID() : null;
   const animationAssetId = input.animation ? randomUUID() : null;
   const soundAssetId = input.sound ? randomUUID() : null;
-  const visualUrl = assetId ? `${publicApiOrigin()}/api/v1/assets/gifts/${assetId}` : null;
-  const animationKey = animationAssetId && input.animation ? `${publicApiOrigin()}/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}` : null;
-  const soundUrl = soundAssetId && input.sound ? `${publicApiOrigin()}/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}` : null;
+  const visualUrl = assetId ? assetUrl(assetId) : null;
+  const animationKey = animationAssetId && input.animation ? assetUrl(animationAssetId, input.animation.extension) : null;
+  const soundUrl = soundAssetId && input.sound ? assetUrl(soundAssetId, input.sound.extension) : null;
   const config = {
     accent: accentValue(input.accentHex),
     ...input.effectConfig,
@@ -70,16 +81,26 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
     previewUrl: visualUrl,
     fallbackVisualUrl: visualUrl,
     soundUrl,
+    assetVersion: animationAssetId ?? assetId,
+    assetChecksum: input.animation
+      ? assetChecksum(input.animation.data)
+      : input.image
+        ? assetChecksum(input.image.data)
+        : null,
+    assetByteSize: input.animation?.byteSize ?? input.image?.byteSize ?? null,
+    previewChecksum: input.image ? assetChecksum(input.image.data) : null,
+    soundChecksum: input.sound ? assetChecksum(input.sound.data) : null,
+    soundByteSize: input.sound?.byteSize ?? null,
   };
   await auditedMutation({ scope: input.scope, action: "gift.create", module: "gifts", targetType: "gift", targetId: id, reason: "Created gift catalogue entry", run: async (connection) => {
     if (input.image && assetId) {
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id, assetChecksum(input.image.data)]);
     }
     if (input.animation && animationAssetId) {
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id]);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id, assetChecksum(input.animation.data)]);
     }
     if (input.sound && soundAssetId) {
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id]);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id, assetChecksum(input.sound.data)]);
     }
     await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.catalogType, input.emoji || null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.scope.account.id]);
   } });
@@ -97,19 +118,19 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
     let assetType = input.removeAnimation ? (visualUrl ? "STATIC_IMAGE" : "NONE") : String(previousConfig.assetType ?? (animationKey ? "LOTTIE" : visualUrl ? "STATIC_IMAGE" : "NONE"));
     if (input.artworkMode === "IMAGE" && input.image) {
       const assetId = randomUUID();
-      visualUrl = `${publicApiOrigin()}/api/v1/assets/gifts/${assetId}`;
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
+      visualUrl = assetUrl(assetId);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id, assetChecksum(input.image.data)]);
     }
     if (input.animation) {
       const animationAssetId = randomUUID();
-      animationKey = `${publicApiOrigin()}/api/v1/assets/gifts/${animationAssetId}.${input.animation.extension}`;
+      animationKey = assetUrl(animationAssetId, input.animation.extension);
       assetType = input.animation.assetType;
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id]);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [animationAssetId, input.animation.mimeType, input.animation.data, input.animation.byteSize, input.animation.originalName, input.scope.account.id, assetChecksum(input.animation.data)]);
     }
     if (input.sound) {
       const soundAssetId = randomUUID();
-      soundUrl = `${publicApiOrigin()}/api/v1/assets/gifts/${soundAssetId}.${input.sound.extension}`;
-      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id]);
+      soundUrl = assetUrl(soundAssetId, input.sound.extension);
+      await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id, assetChecksum(input.sound.data)]);
     }
     if (input.artworkMode === "IMAGE" && !visualUrl) throw new Error("Upload a gift picture.");
     if (!animationKey) assetType = visualUrl ? "STATIC_IMAGE" : "NONE";
@@ -122,6 +143,22 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
       previewUrl: visualUrl,
       fallbackVisualUrl: visualUrl,
       soundUrl,
+      assetVersion: animationKey ?? visualUrl,
+      assetChecksum: input.animation
+        ? assetChecksum(input.animation.data)
+        : input.image
+          ? assetChecksum(input.image.data)
+          : previousConfig.assetChecksum ?? null,
+      assetByteSize: input.animation?.byteSize ?? input.image?.byteSize ?? previousConfig.assetByteSize ?? null,
+      previewChecksum: input.image
+        ? assetChecksum(input.image.data)
+        : previousConfig.previewChecksum ?? null,
+      soundChecksum: input.sound
+        ? assetChecksum(input.sound.data)
+        : input.removeSound
+          ? null
+          : previousConfig.soundChecksum ?? null,
+      soundByteSize: input.sound?.byteSize ?? (input.removeSound ? null : previousConfig.soundByteSize ?? null),
     };
     await connection.execute(
       "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, validity_days = ?, vip_tier_eligibility = ?, sort_order = ?, visual_url = ?, animation_key = ?, asset_config = ? WHERE id = ?",

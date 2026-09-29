@@ -297,6 +297,7 @@ const effectFields = {
   presentationTier: z.enum(["SMALL", "MEDIUM", "PREMIUM", "ULTRA"]).default("MEDIUM"),
   gameBehavior: z.enum(["COMPACT", "SILENT", "SUPPRESSED"]).default("COMPACT"),
   modalBehavior: z.enum(["COMPACT", "SILENT", "SUPPRESSED"]).default("COMPACT"),
+  minimumAppVersion: z.string().trim().regex(/^\d+(?:\.\d+){1,3}(?:\+\d+)?$/, "Use a version such as 2.4.66 or leave it blank.").optional().or(z.literal("")),
 };
 
 function effectConfigFrom(input: z.infer<z.ZodObject<typeof effectFields>>): EffectAssetConfigInput {
@@ -313,6 +314,7 @@ function effectConfigFrom(input: z.infer<z.ZodObject<typeof effectFields>>): Eff
     presentationTier: input.presentationTier,
     gameBehavior: input.gameBehavior,
     modalBehavior: input.modalBehavior,
+    minimumAppVersion: input.minimumAppVersion || undefined,
   };
 }
 

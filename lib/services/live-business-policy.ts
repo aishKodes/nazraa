@@ -199,6 +199,15 @@ export function businessDayUtcRange(
   };
 }
 
+/**
+ * Stamps a durable business date at the time a Live or Gift record is created.
+ * This avoids later recalculating history with a possibly changed timezone.
+ */
+export function businessDateFor(timezone: string, at: Date = new Date()) {
+  const parts = zonedParts(at, timezone);
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
 function secondsBetween(from: Date, to: Date) {
   return Math.max(0, Math.ceil((to.getTime() - from.getTime()) / 1000));
 }

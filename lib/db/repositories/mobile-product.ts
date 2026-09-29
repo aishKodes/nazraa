@@ -18,6 +18,7 @@ import {
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import {
+  businessDateFor,
   evaluateFaceLiveSchedule,
   loadFaceLiveRules,
 } from "@/lib/services/live-business-policy";
@@ -816,11 +817,12 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   }
   const passwordHash = input.privacy === "locked" ? await bcrypt.hash(input.password!, 10) : null;
   const createdRoom = await withTransaction(async (connection) => {
+    const liveRules = await loadFaceLiveRules(connection);
     if (roomType === "FACE" && !identity.playReviewerAccessOverride) {
-      const schedule = evaluateFaceLiveSchedule(await loadFaceLiveRules(connection));
+      const schedule = evaluateFaceLiveSchedule(liveRules);
       if (!schedule.allowed) throw new Error(schedule.unavailableMessage);
     } else if (roomType === "FACE" && identity.playReviewerAccessOverride) {
-      const schedule = evaluateFaceLiveSchedule(await loadFaceLiveRules(connection));
+      const schedule = evaluateFaceLiveSchedule(liveRules);
       if (!schedule.allowed) {
         await connection.execute(
           `INSERT INTO audit_logs
@@ -889,8 +891,8 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       [roomId, input.roomCode, identity.userId, userRows[0]?.effective_agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, roomType === "FACE" ? faceBackgroundAssetId : null, input.countryCode ?? null, "ACTIVE"],
     );
     await connection.execute(
-      "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?)",
-      [randomUUID(), roomId, identity.userId, roomType, rewardRuleRows[0].id],
+      "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, business_date, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?)",
+      [randomUUID(), roomId, identity.userId, roomType, businessDateFor(liveRules.timezone), rewardRuleRows[0].id],
     );
     await connection.execute(
       "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', ?, FALSE)",
@@ -905,6 +907,7 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
   return withIdempotentTransaction(async (connection) => {
+    const liveRules = await loadFaceLiveRules(connection);
     await connection.execute(
       `INSERT IGNORE INTO gift_idempotency_requests
         (idempotency_key, application_user_id, room_code, gift_key, recipient_public_id, quantity)
@@ -1024,9 +1027,9 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
     const eventId = randomUUID();
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone)],
     );
     const rocket = await recordRocketGift(connection, {
       roomId: room.id,

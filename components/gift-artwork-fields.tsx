@@ -117,6 +117,7 @@ export function GiftArtworkFields({
     <label>Playback
       <select name="loop" defaultValue={configured("loop", false)}><option value="false">Play once</option><option value="true">Loop within duration</option></select>
     </label>
+    <label>Minimum app version <span>optional, e.g. 2.4.66</span><input name="minimumAppVersion" inputMode="decimal" pattern="\\d+(\\.\\d+){1,3}(\\+\\d+)?" defaultValue={configured("minimumAppVersion", "")} /></label>
     <label>Effect sound <span>optional MP3, OGG or M4A; up to 384 KB</span><input name="effectSound" type="file" accept="audio/mpeg,audio/ogg,audio/mp4,.mp3,.ogg,.m4a" /></label>
     <label>Sound volume <span>0–1</span><input name="soundVolume" type="number" min="0" max="1" step="0.05" required defaultValue={configured("soundVolume", .8)} /></label>
     {typeof config.soundUrl === "string" && config.soundUrl ? <label className="checkbox-row">

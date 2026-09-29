@@ -6,6 +6,8 @@ import {
   MobileAccessDeniedError,
 } from "@/lib/auth/mobile-session";
 import { publicMobileConfig } from "@/lib/db/repositories/mobile";
+import { mobileLiveHistory } from "@/lib/db/repositories/mobile-live-history";
+import { mobileEffectManifest } from "@/lib/db/repositories/mobile-effect-manifest";
 import {
   activeRoomPage,
   createPayoutMethod,
@@ -303,6 +305,26 @@ export async function GET(
       if (resource === "face") {
         return NextResponse.json(await mobileFaceVerificationSnapshot(identity), {
           headers: { "Cache-Control": "private, no-store" },
+        });
+      }
+      if (resource === "live-history") {
+        const before = z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .parse(new URL(request.url).searchParams.get("before") ?? undefined);
+        return NextResponse.json(await mobileLiveHistory(identity, { before }), {
+          headers: { "Cache-Control": "private, no-store" },
+        });
+      }
+      if (resource === "effect-manifest") {
+        return NextResponse.json(await mobileEffectManifest(), {
+          headers: {
+            // The manifest is user-authenticated but contains only public
+            // presentation metadata. Flutter keeps its versioned assets on
+            // disk; this short cache only avoids redundant config reads.
+            "Cache-Control": "private, max-age=60, stale-while-revalidate=300",
+          },
         });
       }
       if (!mediaCriticalResources.has(resource))

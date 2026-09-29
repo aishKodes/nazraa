@@ -85,6 +85,8 @@ async function main() {
       "PASS ZEGO CDN playback auth: server-only Wangsu signature, uppercase expiry, fixed host and stream validation",
     );
     const product = await import("@/lib/db/repositories/mobile-product");
+    const liveHistory = await import("@/lib/db/repositories/mobile-live-history");
+    const effectManifest = await import("@/lib/db/repositories/mobile-effect-manifest");
     const liveBusiness = await import("@/lib/services/live-business-policy");
     const defaultLiveRules = liveBusiness.faceLiveRulesFromSetting({});
     assert.equal(
@@ -421,6 +423,7 @@ async function main() {
       presentationTier: "PREMIUM" as const,
       gameBehavior: "COMPACT" as const,
       modalBehavior: "COMPACT" as const,
+      minimumAppVersion: "2.4.66",
     };
     await catalog.createGift({
       scope: master,
@@ -495,6 +498,18 @@ async function main() {
       [1700, 45, 3],
     );
     assert.equal(replacedRemoteItem?.assetConfig.priority, 500);
+    const remoteManifest = await effectManifest.mobileEffectManifest();
+    const remoteManifestEffect = remoteManifest.effects.find(
+      (effect) => effect.id === "qa_remote_entry",
+    );
+    assert.match(remoteManifest.manifestVersion, /^[a-f0-9]{20}$/);
+    assert.match(
+      String(remoteManifestEffect?.assetConfig.assetChecksum),
+      /^[a-f0-9]{64}$/,
+      "effect manifests must identify the immutable remote bytes",
+    );
+    assert.equal(remoteManifestEffect?.assetConfig.assetByteSize, remotePreviewV2.length);
+    assert.equal(remoteManifestEffect?.assetConfig.minimumAppVersion, "2.4.66");
     await catalog.setGiftActive({
       scope: master,
       id: remoteCatalogId,
@@ -1820,6 +1835,65 @@ async function main() {
     );
     console.log(
       "PASS gifts: active receivers, atomic coin debit/diamond credit, retry idempotency, wallet-specific ledger, room event and per-seat total",
+    );
+
+    // Profile Live History must be a read-only projection of the same durable
+    // ledgers as media/rewards and gifts.  It must never take a user id from a
+    // Flutter request or infer coin values from the Diamond wallet.
+    const historyRoomId = randomUUID();
+    await root.execute(
+      `INSERT INTO live_rooms
+        (id, room_code, host_application_user_id, agency_account_id, room_type,
+         title, category, language_code, privacy, seat_count, theme_index,
+         theme_enabled, country_code, status, ended_at)
+       VALUES (?, ?, ?, ?, 'FACE', 'QA Live History', 'Talk', 'Hindi',
+               'PUBLIC', 0, 0, FALSE, 'IN', 'ENDED', '2026-09-05 10:01:10')`,
+      [
+        historyRoomId,
+        `QALIVEHISTORY${Date.now()}`,
+        owner.userId,
+        qaAgency.accountId,
+      ],
+    );
+    await root.execute(
+      `INSERT INTO live_session_accounting
+        (id, room_id, host_application_user_id, room_type, started_at,
+         ended_at, eligible_seconds_committed, valid_media_seconds,
+         business_date, reward_rule_id, status)
+       SELECT ?, ?, ?, 'FACE', '2026-09-05 10:00:00', '2026-09-05 10:01:10',
+              70, 70, '2026-09-05', id, 'FINALIZED'
+         FROM host_reward_rules
+        WHERE room_type = 'FACE' AND enabled = TRUE
+        ORDER BY effective_from DESC
+        LIMIT 1`,
+      [randomUUID(), historyRoomId, owner.userId],
+    );
+    const ownerLiveHistory = await liveHistory.mobileLiveHistory(owner);
+    assert.equal(ownerLiveHistory.summary.videoSeconds, 70);
+    assert.equal(ownerLiveHistory.summary.validDays, 1);
+    assert.equal(ownerLiveHistory.summary.sendingCoins, giftValue + gift.cost);
+    assert.equal(ownerLiveHistory.summary.receivedCoins, 0);
+    assert.deepEqual(
+      ownerLiveHistory.days.find((day) => day.date === "2026-09-05"),
+      {
+        date: "2026-09-05",
+        eligibleVideoSeconds: 70,
+        validDay: true,
+        sendingCoins: 0,
+        receivedCoins: 0,
+      },
+      "a valid Live day is derived from the server reward threshold only",
+    );
+    const guestLiveHistory = await liveHistory.mobileLiveHistory(guest);
+    assert.equal(guestLiveHistory.summary.videoSeconds, 0);
+    assert.equal(guestLiveHistory.summary.sendingCoins, 0);
+    assert.equal(guestLiveHistory.summary.receivedCoins, giftValue + gift.cost);
+    assert.ok(
+      guestLiveHistory.days.every((day) => day.sendingCoins === 0),
+      "a member cannot retrieve another member's sender history through Live History",
+    );
+    console.log(
+      "PASS Live History: authenticated own durable media/gift ledgers, valid-day threshold, canonical Coin values and no cross-user leakage",
     );
 
     const rocketAdminBefore =
