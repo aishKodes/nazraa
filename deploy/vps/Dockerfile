@@ -8,6 +8,7 @@ WORKDIR /app
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
+RUN npm prune --omit=dev --no-audit --no-fund
 
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
