@@ -123,6 +123,17 @@ legacy mobile requests, request bodies, image upload size limits, auth headers,
 and response parity against the final authority before opening the bridge to
 all users. Never reopen writes against the stale shared database.
 
+The old Vercel `vercel-build` previously always ran `migrate` and reviewer
+provisioning before `next build`, which would violate a frozen old database
+during a bridge deployment. It now selects a build-only path when
+`NAZRAA_CUTOVER_FREEZE=1`, and refuses bridge mode without the fence. The
+normal pre-cutover build retains its prior migration/provisioning behavior.
+Pure plan tests and an actual frozen-mode production build passed locally.
+This remains **unpublished code**, so final operations must also enforce the
+old database write freeze outside Vercel while the new Vercel deployment is
+rolling out; changing an environment variable cannot instantly stop already
+running serverless instances.
+
 The production Caddy configuration has been corrected to admit exactly the
 `/api/internal/livekit/webhook` path on the API hostname while keeping every
 other internal path private. The webhook route verifies the LiveKit signed

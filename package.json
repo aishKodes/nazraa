@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "vercel-build": "npm run migrate && PLAY_REVIEW_PROVISION_OPTIONAL=true npm run provision:play-reviewers && next build",
+    "vercel-build": "node scripts/vercel-build.mjs",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -23,7 +23,8 @@
     "test:vps-origin": "tsx scripts/verify-vps-origin.ts",
     "test:realtime-publisher": "tsx scripts/verify-room-realtime.ts",
     "test:websocket-transport": "node scripts/verify-websocket-transport.mjs",
-    "test:cutover-freeze": "tsx scripts/verify-cutover-freeze.ts"
+    "test:cutover-freeze": "tsx scripts/verify-cutover-freeze.ts",
+    "test:cutover-build": "node scripts/verify-vercel-build-policy.mjs"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
