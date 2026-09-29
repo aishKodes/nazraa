@@ -22,7 +22,8 @@
     "migration:compare-db": "tsx scripts/compare-databases.ts",
     "test:vps-origin": "tsx scripts/verify-vps-origin.ts",
     "test:realtime-publisher": "tsx scripts/verify-room-realtime.ts",
-    "test:websocket-transport": "node scripts/verify-websocket-transport.mjs"
+    "test:websocket-transport": "node scripts/verify-websocket-transport.mjs",
+    "test:cutover-freeze": "tsx scripts/verify-cutover-freeze.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

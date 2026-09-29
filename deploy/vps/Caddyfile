@@ -4,11 +4,20 @@
 
 api.nazraa.pixtra.site {
     encode zstd gzip
+    # LiveKit must be able to deliver signed publish/disconnect evidence after
+    # cutover. The route itself verifies the provider's JWT/body signature;
+    # all other internal API paths remain hidden from the public Internet.
+    @livekit_webhook path /api/internal/livekit/webhook
+    handle @livekit_webhook {
+        reverse_proxy api:3000
+    }
     @private path /api/internal/*
     handle @private {
         respond "Not found" 404
     }
-    reverse_proxy api:3000
+    handle {
+        reverse_proxy api:3000
+    }
 }
 
 ws.nazraa.pixtra.site {
@@ -18,7 +27,13 @@ ws.nazraa.pixtra.site {
 
 nazraa.pixtra.site {
     encode zstd gzip
-    reverse_proxy api:3000
+    @private path /api/internal/*
+    handle @private {
+        respond "Not found" 404
+    }
+    handle {
+        reverse_proxy api:3000
+    }
 }
 
 # The WebSocket hostname is defined for staging, but the Compose edge profile

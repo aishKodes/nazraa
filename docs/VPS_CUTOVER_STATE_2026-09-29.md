@@ -106,6 +106,27 @@ destination have passed QA.
 
 ## Required cutover order
 
+The branch now includes a dormant Vercel `proxy.ts` fence. It activates only
+with `NAZRAA_CUTOVER_FREEZE=1`, returns a sanitized 503/retry response for
+all old `/api` routes except static config/health and for non-GET page
+requests (including Control Server Actions). It blocks the Vercel cron and
+LiveKit webhook too. The blanket API fence is deliberate because some game
+GET routes perform settlement writes. Unit verification passed. **It has not
+been deployed or enabled in production.** A legacy-client bridge to the new
+authoritative API must be proven before retiring the old APK, otherwise old
+clients will see maintenance until they update; do not silently reopen writes
+against the stale shared database.
+
+The production Caddy configuration has been corrected to admit exactly the
+`/api/internal/livekit/webhook` path on the API hostname while keeping every
+other internal path private. The webhook route verifies the LiveKit signed
+JWT/body digest before processing. The future frontend hostname now denies
+all internal paths too. **This configuration is not yet active.** At cutover,
+change the LiveKit webhook destination from Vercel to the new API hostname
+only after the final database is authoritative, and verify signed delivery
+before reopening Host Live writes. The current QA Caddy still denies the
+webhook; production LiveKit and Oracle are untouched.
+
 1. Validate new A records and HTTPS without changing current production DNS.
 2. Complete authenticated API auth/schema parity and exact mobile artifact QA;
    the public QA WebSocket event path has passed with a synthetic room.
