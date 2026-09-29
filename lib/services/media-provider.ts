@@ -6,9 +6,13 @@ import type { MobileIdentity } from "@/lib/auth/mobile-session";
 export type MediaProvider = "ZEGO" | "LIVEKIT";
 
 function configuredProvider(): MediaProvider {
-  return process.env.MEDIA_PROVIDER?.trim().toUpperCase() === "LIVEKIT"
-    ? "LIVEKIT"
-    : "ZEGO";
+  // LiveKit is the production media plane.  Treat an omitted or malformed
+  // deployment value as LiveKit rather than quietly reviving the retired
+  // ZEGO route.  ZEGO remains available only when an isolated local/staging
+  // environment explicitly opts in with MEDIA_PROVIDER=ZEGO.
+  return process.env.MEDIA_PROVIDER?.trim().toUpperCase() === "ZEGO"
+    ? "ZEGO"
+    : "LIVEKIT";
 }
 
 /**

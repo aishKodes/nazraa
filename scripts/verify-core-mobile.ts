@@ -1551,6 +1551,10 @@ async function main() {
       [faceRoomRows[0].id, `qa-task-${randomUUID()}`, `qa-mix-${randomUUID()}`],
     );
     const priorMixerReady = process.env.ZEGO_STREAM_MIXING_READY;
+    const priorMediaProvider = process.env.MEDIA_PROVIDER;
+    // This is a historical ZEGO isolation check.  Production defaults to
+    // LiveKit, so the fixture must opt into the retired adapter explicitly.
+    process.env.MEDIA_PROVIDER = "ZEGO";
     process.env.ZEGO_STREAM_MIXING_READY = "true";
     const pendingPresence = await rooms.refreshRoomPresence(
       guest,
@@ -1592,6 +1596,8 @@ async function main() {
     } finally {
       if (priorMixerReady == null) delete process.env.ZEGO_STREAM_MIXING_READY;
       else process.env.ZEGO_STREAM_MIXING_READY = priorMixerReady;
+      if (priorMediaProvider == null) delete process.env.MEDIA_PROVIDER;
+      else process.env.MEDIA_PROVIDER = priorMediaProvider;
     }
     console.log(
       "PASS Face Live broadcast authority: one Host video/audio publisher, zero-RTC pending/active public stream, accepted audio-only guests, targeted disconnect",
