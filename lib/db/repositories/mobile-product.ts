@@ -22,6 +22,7 @@ import {
   loadFaceLiveRules,
 } from "@/lib/services/live-business-policy";
 import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
+import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
@@ -235,10 +236,12 @@ async function settingsMap() {
 
 async function activeRoomRows(after?: string) {
   const closedFaceRooms = await finalizeClosedFaceLiveSessions();
-  // Presence refresh is the normal mixer-stop path. Discovery also performs
-  // this best-effort sweep so an abandoned broadcast cannot leave a relay
-  // running after the configured close boundary.
-  await Promise.allSettled(closedFaceRooms.map((roomCode) => syncZegoRoomMixer(roomCode)));
+  // Only an actual ZEGO deployment needs a paid mixer-stop operation. In
+  // global LiveKit mode there is no relay to stop; touching the suspended
+  // ZEGO service here made discovery/Home wait on an unrelated media vendor.
+  if (mediaProviderFor() === "ZEGO") {
+    await Promise.allSettled(closedFaceRooms.map((roomCode) => syncZegoRoomMixer(roomCode)));
+  }
   return db().query<RowDataPacket[]>(
       `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
               room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.face_background_asset_id, room.country_code,
