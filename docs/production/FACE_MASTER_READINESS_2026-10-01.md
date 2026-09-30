@@ -78,11 +78,16 @@ background media grace remains 25s. Do not substitute earlier historical rules.
 
 - Flutter analyze: no issues.
 - Latest focused Face/interruption/reconnect/RTC clock/seat/PK suite: **37 PASS**.
-- Full Flutter suite: **234 PASS / 1 FAIL**. Failure is the existing Party
-  `live_room_390x844.png` golden (14.29% pixel difference). No golden was blindly
-  updated or skipped; experimental capture changes were reverted. This visual
-  fixture still needs resolution. Home golden passed before the Party failure;
-  compact/tall layout tests pass. Do not claim the complete golden suite PASS.
+- Full Flutter suite: **235 PASS / 0 FAIL**, including all golden tests.
+  The Party golden expected the obsolete media-configuration banner and omitted
+  retained header/toolbar paint layers. After comparing with the exact APK's
+  real Party screen, the test explicitly repaints the route before capture and
+  only the Party baseline was intentionally corrected. Home and Profile
+  baselines were not changed. Visual fixtures disable unmocked native Firebase
+  registration, avoiding a pending retry timer unrelated to the visual test.
+  These are test-only changes; the already built candidate bytes are unchanged.
+  Logs: `/tmp/nazraa-face-final-flutter-tests.log` and
+  `/tmp/nazraa-face-final-analyze.log`.
 - Backend TypeScript/build, core mobile transaction suite, role suite and
   Control integration suite: PASS. Control integration covers migrations
   0001–0096 and 28 groups.
@@ -123,6 +128,18 @@ Exact APK installation and authenticated Home launch PASS on
 `nazraa_release_qa_20260926` / emulator-5554 (Android 16). Package version is
 confirmed 2.4.76/7388; AndroidRuntime fatal entries observed: zero.
 
+The exact APK also created a controlled temporary Party through the ordinary
+authenticated account and standard UI. Header, seats, toolbar and Host mic-on
+state rendered correctly. This is creation/layout/state evidence, not proof of
+listener audio transport. The Host then used **Close Room**. Production SQL
+confirmed room `NZAHMSC2QGAI0IOXL` is `ENDED`, with zero current members and zero
+active LiveKit media tracks. No gifts, bets or test financial writes were made.
+Screenshots/UI evidence: `/tmp/qa-party-after.png`, `/tmp/qa-party-after.xml`,
+`/tmp/qa-party-end.xml` and `/tmp/qa-party-close.xml`.
+
+The protected `face-live-social` endpoint rejects unauthenticated requests with
+HTTP 401; API internal health remains `ready`.
+
 The current ordinary account `Aish` is not Face-verified. The actual app
 correctly directs it to automatic Face Verification; it cannot validly start
 Face Live. No verification/gender/agency/time-window/financial bypass was
@@ -140,6 +157,7 @@ data was wiped/uninstalled to replace it. A separate stalled medium_phone
 test process was stopped; its account data was not deleted. The current
 authenticated emulator remains available for user sign-in and continuation.
 
-Release next only after completing these real acceptance checks and resolving
-the outstanding visual fixture, then publish the verified candidate and update
-the public download, GitHub assets and remote version together.
+Release next only after completing these real acceptance checks, then publish
+the verified candidate and update the public download, GitHub assets and remote
+version together. The automated/visual release checks are now green; qualified
+Host authentication and real multi-client media acceptance remain outstanding.
