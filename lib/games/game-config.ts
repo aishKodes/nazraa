@@ -51,10 +51,13 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
   winnings_deduction_rate: 0.01,
   games: {
     teen_patti_pro: {
-      enabled: true, maintenance: false, bettingSeconds: 12, drawingSeconds: 4,
+      // The full cycle remains 19 seconds. Shift one second from wagering to
+      // the committed result so the three hands never bleed into the next
+      // round on a delayed device.
+      enabled: true, maintenance: false, bettingSeconds: 11, drawingSeconds: 3,
       targetWinRate: 0.5, targetRtp: 0.95, payoutScalePpm: 1_029_014,
       sideBetPayoutScalePpm: 1_008_049, maximumPayoutMultiplier: 70,
-      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 5, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 100_000], historyLength: 12,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       // Inverse-paytable lane weights make every normal lane return the same
@@ -62,19 +65,28 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [10_741, 10_001, 10_358],
     },
     luck77: {
-      enabled: true, maintenance: false, bettingSeconds: 8, drawingSeconds: 2,
+      // Keep the 13-second cadence but reserve a genuine result hold for the
+      // deterministic wheel rather than cutting the winning fruit short.
+      enabled: true, maintenance: false, bettingSeconds: 7, drawingSeconds: 1,
       targetWinRate: 0.5, targetRtp: 0.95, payoutScalePpm: 1_079_545,
       maximumPayoutMultiplier: 9,
-      resultSeconds: 3, minimumBet: 100, maximumBet: 50_000_000,
+      // The deterministic wheel needs time to decelerate and hold the
+      // winning fruit without making the short game feel slow.
+      resultSeconds: 5, minimumBet: 100, maximumBet: 50_000_000,
       denominations: [100, 500, 1000, 10_000, 50_000], historyLength: 20,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       outcomeWeights: [1, 4, 4],
     },
     greedy_lion: {
-      enabled: true, maintenance: false, bettingSeconds: 16, drawingSeconds: 3,
+      // Preserve the 22-second cycle so a remote timing update cannot change
+      // an in-flight round number. The extra result time is dedicated to the
+      // square-path traversal and exact final landing.
+      enabled: true, maintenance: false, bettingSeconds: 14, drawingSeconds: 3,
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
-      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
+      // Square-path traversal is intentionally visible; keep a dedicated
+      // result hold so it cannot be overwritten by the next round.
+      resultSeconds: 5, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 10_000, 50_000], historyLength: 10,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: true,
       // The references do not establish these probabilities or contribution
@@ -85,10 +97,12 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
       outcomeWeights: [9000, 1000, 1800, 9000, 3000, 9000, 9000, 4500],
     },
     greedy_king: {
-      enabled: true, maintenance: false, bettingSeconds: 24, drawingSeconds: 3,
+      // Preserve the 30-second cadence while making the selector/result
+      // readable on devices that receive the phase event a little late.
+      enabled: true, maintenance: false, bettingSeconds: 22, drawingSeconds: 3,
       targetWinRate: 0.4, targetRtp: 0.95, payoutScalePpm: 987_317,
       maximumPayoutMultiplier: 45,
-      resultSeconds: 3, minimumBet: 500, maximumBet: 50_000_000,
+      resultSeconds: 5, minimumBet: 500, maximumBet: 50_000_000,
       denominations: [500, 1000, 5000, 10_000, 50_000], historyLength: 10,
       bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
       saladWeight: 0, pizzaWeight: 0, poolContributionBps: 0,

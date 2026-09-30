@@ -331,6 +331,8 @@ export async function saveGameSettings(input: {
   targetWinRate: number;
   maximumPayoutMultiplier: number;
   bettingSeconds: number;
+  drawingSeconds: number;
+  resultSeconds: number;
   minimumBet: number;
   maximumBet: number;
   denominations: number[];
@@ -348,6 +350,9 @@ export async function saveGameSettings(input: {
   if (input.targetWinRate < 0 || input.targetWinRate > 1) throw new Error("Target win rate must be between 0 and 1.");
   if (input.maximumPayoutMultiplier < 1 || input.maximumPayoutMultiplier > 1000) throw new Error("Maximum payout multiplier must be between 1 and 1,000.");
   if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");
+  if (input.bettingSeconds + input.drawingSeconds + input.resultSeconds < 1) {
+    throw new Error("A shared game needs a non-zero round duration.");
+  }
   if (!input.denominations.length || input.denominations.some((value) => value < 1 || value > input.maximumBet)) {
     throw new Error("Add at least one valid denomination within the game limit.");
   }
@@ -381,6 +386,8 @@ export async function saveGameSettings(input: {
         targetWinRate: input.targetWinRate,
         maximumPayoutMultiplier: input.maximumPayoutMultiplier,
         bettingSeconds: input.bettingSeconds,
+        drawingSeconds: input.drawingSeconds,
+        resultSeconds: input.resultSeconds,
         minimumBet: input.minimumBet,
         maximumBet: input.maximumBet,
         denominations: [...new Set(input.denominations)].sort((left, right) => left - right),

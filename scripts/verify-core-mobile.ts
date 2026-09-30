@@ -185,11 +185,11 @@ async function main() {
     );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.teen_patti_pro.bettingSeconds,
-      12,
+      11,
     );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.teen_patti_pro.resultSeconds,
-      3,
+      5,
     );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.luck77.targetWinRate,
@@ -197,7 +197,7 @@ async function main() {
     );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.luck77.bettingSeconds,
-      8,
+      7,
     );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.jungle_hunt.targetWinRate,

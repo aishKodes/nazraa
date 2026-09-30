@@ -472,6 +472,8 @@ export async function submitGameSettings(formData: FormData) {
     targetWinRate: z.coerce.number().min(0).max(1),
     maximumPayoutMultiplier: z.coerce.number().min(1).max(1000),
     bettingSeconds: z.coerce.number().int().min(0).max(300),
+    drawingSeconds: z.coerce.number().int().min(0).max(60),
+    resultSeconds: z.coerce.number().int().min(0).max(60),
     minimumBet: z.coerce.number().int().min(1).max(50_000_000),
     maximumBet: z.coerce.number().int().min(1).max(50_000_000),
     denominations: z.string().trim().min(1).max(500),

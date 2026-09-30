@@ -266,6 +266,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               <label>Fixed mathematical RTP<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>Payout scales are server-owned and verified statistically before deployment.</span></label>
               <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" required defaultValue={game.maximumPayoutMultiplier} /><span>Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.</span></label>
               <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
+              <label>Drawing seconds<input name="drawingSeconds" type="number" min="0" max="60" required defaultValue={game.drawingSeconds} /><span>Server locks wagers during this phase.</span></label>
+              <label>Result seconds<input name="resultSeconds" type="number" min="0" max="60" required defaultValue={game.resultSeconds} /><span>Server-owned visible result hold; changes are audited and apply to newly opened rounds.</span></label>
               <label>Minimum bet<input name="minimumBet" type="number" min="1" required defaultValue={game.minimumBet} /></label>
               <label>Maximum per round<input name="maximumBet" type="number" min="1" required defaultValue={game.maximumBet} /></label>
               <label className="span-two">Chip denominations<input name="denominations" required defaultValue={game.denominations.join(", ")} /><span>Comma separated. Existing app buttons refresh from server controls where supported.</span></label>
