@@ -1070,9 +1070,9 @@ export async function updateMobileProfile(
         { maxWidth: 900, maxHeight: 900 },
       )
     : null;
-  await withTransaction(async (connection) => {
-    await connection.execute(
-      `UPDATE application_users SET full_name = ?, bio = ?, gender = COALESCE(gender, ?), country_code = ?, language_code = ?, whatsapp_e164 = ?
+  const profile = await withTransaction(async (connection) => {
+    const [updated] = await connection.execute<ResultSetHeader>(
+      `UPDATE application_users SET full_name = ?, bio = ?, gender = ?, country_code = ?, language_code = ?, whatsapp_e164 = ?
        WHERE id = ?`,
       [
         input.displayName,
@@ -1084,6 +1084,9 @@ export async function updateMobileProfile(
         identity.userId,
       ],
     );
+    if (updated.affectedRows !== 1) {
+      throw new Error("Your profile is unavailable.");
+    }
     if (avatar) {
       await connection.execute(
         `INSERT INTO application_user_avatars (application_user_id, mime_type, image_data, byte_size)
@@ -1095,9 +1098,37 @@ export async function updateMobileProfile(
         [identity.userId],
       );
     }
+    const [rows] = await connection.query<
+      (RowDataPacket & {
+        full_name: string;
+        bio: string | null;
+        gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY";
+        country_code: string | null;
+        language_code: string | null;
+        whatsapp_e164: string | null;
+      })[]
+    >(
+      `SELECT full_name, bio, gender, country_code, language_code, whatsapp_e164
+         FROM application_users WHERE id = ? LIMIT 1`,
+      [identity.userId],
+    );
+    const updatedProfile = rows[0];
+    if (!updatedProfile) throw new Error("Your profile is unavailable.");
+    return updatedProfile;
   });
   return {
     updated: true,
+    // This response is read after the transaction commits.  The mobile
+    // client uses it instead of trusting its submitted profile fields, so a
+    // stale local model cannot overwrite the durable gender update.
+    profile: {
+      displayName: profile.full_name,
+      bio: profile.bio ?? "",
+      gender: profile.gender,
+      countryCode: profile.country_code ?? "",
+      languageCode: profile.language_code ?? "",
+      whatsappE164: profile.whatsapp_e164 ?? "",
+    },
     avatarUrl: avatar
       ? `${publicApiOrigin()}/api/v1/mobile/avatar/${identity.publicId}?v=${Date.now()}`
       : undefined,
