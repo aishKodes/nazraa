@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.72";
-const releaseBuild = 7384;
+const releaseVersion = "2.4.73";
+const releaseBuild = 7385;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.72/Nazraa-Live-2.4.72-7384-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.73/Nazraa-Live-2.4.73-7385-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 307_300_518,
-  sha256: "1b37e46d5b909e5f792cd575c30079a0d0bd1d49d62beb4a56c6367d3eb7f064",
+  apkSizeBytes: 307_316_902,
+  sha256: "cf24e0ec4d64a4a3761116cbbc6253ef13d9ba898776247c371406569d1ab9c0",
   releaseDate: "2026-09-30",
   releaseNotes: [
-    "Starts the Face Live clock from the Host's own verified publishing state, even before viewers enter.",
-    "Makes the active Face Host immediately available as a Gift recipient for the first LiveKit viewer.",
-    "Retains LiveKit media startup and the existing compact-safe room effects behavior.",
+    "Keeps each settled Teen Patti, Luck77 and Greedy result visible until its deterministic animation completes.",
+    "Extends Luck77 result visibility, stabilizes Greedy Lion's square-board selector and keeps Greedy King bet houses inside compact Live panels.",
+    "Loads the Gift catalog independently of Home, with bounded retry and an immediate active-Host recipient.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
