@@ -121,6 +121,10 @@ untimestamped-JAR warnings are not Google Play approval evidence.
   SHA-256 `70a9476ba3fd66717d8f14dd958bb076e8910db38d3e2dcb5e8480d583e3f91f`.
   It excludes signing files, generated ZEGO secrets and production secrets.
   It is a patch-scope snapshot, not a complete standalone Flutter project.
+- Test-only visual correction snapshot:
+  `/Users/aishwaryam/nazra2/dist/Face-master-2.4.76-7388-visual-validation.tgz`
+  SHA-256 `032658043151407d611e361c2b628478c32d1b3860c6edf3d98db7e3cc25d306`.
+  Contains the corrected visual fixture and reviewed Party golden only.
 
 ## Runtime acceptance still required
 
@@ -161,3 +165,5 @@ Release next only after completing these real acceptance checks, then publish
 the verified candidate and update the public download, GitHub assets and remote
 version together. The automated/visual release checks are now green; qualified
 Host authentication and real multi-client media acceptance remain outstanding.
+Native desktop access is currently blocked by the locked Mac. Unlock it and
+sign in to the emulator with a qualified Host without sharing a password in chat.
