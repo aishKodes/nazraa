@@ -85,8 +85,10 @@ async function main() {
       "PASS ZEGO CDN playback auth: server-only Wangsu signature, uppercase expiry, fixed host and stream validation",
     );
     const product = await import("@/lib/db/repositories/mobile-product");
-    const liveHistory = await import("@/lib/db/repositories/mobile-live-history");
-    const effectManifest = await import("@/lib/db/repositories/mobile-effect-manifest");
+    const liveHistory =
+      await import("@/lib/db/repositories/mobile-live-history");
+    const effectManifest =
+      await import("@/lib/db/repositories/mobile-effect-manifest");
     const liveBusiness = await import("@/lib/services/live-business-policy");
     const defaultLiveRules = liveBusiness.faceLiveRulesFromSetting({});
     assert.equal(
@@ -201,10 +203,22 @@ async function main() {
     );
     const legacyTiming = gameConfig.mobileGamesConfig({
       games: {
-        teen_patti_pro: { bettingSeconds: 12, drawingSeconds: 4, resultSeconds: 3 },
+        teen_patti_pro: {
+          bettingSeconds: 12,
+          drawingSeconds: 4,
+          resultSeconds: 3,
+        },
         luck77: { bettingSeconds: 8, drawingSeconds: 2, resultSeconds: 3 },
-        greedy_lion: { bettingSeconds: 16, drawingSeconds: 3, resultSeconds: 3 },
-        greedy_king: { bettingSeconds: 24, drawingSeconds: 3, resultSeconds: 3 },
+        greedy_lion: {
+          bettingSeconds: 16,
+          drawingSeconds: 3,
+          resultSeconds: 3,
+        },
+        greedy_king: {
+          bettingSeconds: 24,
+          drawingSeconds: 3,
+          resultSeconds: 3,
+        },
       },
     });
     assert.deepEqual(
@@ -213,7 +227,11 @@ async function main() {
         legacyTiming.games.luck77,
         legacyTiming.games.greedy_lion,
         legacyTiming.games.greedy_king,
-      ].map(({ bettingSeconds, drawingSeconds, resultSeconds }) => ({ bettingSeconds, drawingSeconds, resultSeconds })),
+      ].map(({ bettingSeconds, drawingSeconds, resultSeconds }) => ({
+        bettingSeconds,
+        drawingSeconds,
+        resultSeconds,
+      })),
       [
         { bettingSeconds: 11, drawingSeconds: 3, resultSeconds: 5 },
         { bettingSeconds: 7, drawingSeconds: 1, resultSeconds: 5 },
@@ -242,7 +260,8 @@ async function main() {
     const social = await import("@/lib/db/repositories/mobile-social");
     const rooms = await import("@/lib/db/repositories/mobile-completion");
     const mediaAuthority = await import("@/lib/services/room-media-authority");
-    const liveKitAuthority = await import("@/lib/services/livekit-room-authority");
+    const liveKitAuthority =
+      await import("@/lib/services/livekit-room-authority");
     const rewards = await import("@/lib/db/repositories/mobile-rewards");
     const cosmetics = await import("@/lib/db/repositories/mobile-cosmetics");
     const catalog = await import("@/lib/db/repositories/catalog");
@@ -428,7 +447,14 @@ async function main() {
     });
     assert.equal(profileUpdate.profile.gender, "MALE");
     const [persistedProfileRows] = await root.query<
-      (RowDataPacket & { full_name: string; bio: string; gender: string; country_code: string; language_code: string; whatsapp_e164: string })[]
+      (RowDataPacket & {
+        full_name: string;
+        bio: string;
+        gender: string;
+        country_code: string;
+        language_code: string;
+        whatsapp_e164: string;
+      })[]
     >(
       "SELECT full_name, bio, gender, country_code, language_code, whatsapp_e164 FROM application_users WHERE id = ?",
       [profileEditor.userId],
@@ -450,6 +476,98 @@ async function main() {
     await root.execute(
       "UPDATE application_users SET agency_account_id = ? WHERE id = ?",
       [qaAgency.accountId, owner.userId],
+    );
+    const fcmPush = await import("@/lib/services/fcm-push-service");
+    const transaction = await import("@/lib/db/transaction");
+    const fcmToken = `fcm_${"a".repeat(72)}`;
+    const fcmInstallation = "android:qa-fcm-installation-0001";
+    await fcmPush.registerMobilePushDevice(guest, {
+      token: fcmToken,
+      installationId: fcmInstallation,
+      appVersion: "2.4.73+7385",
+    });
+    const [encryptedTokenRows] = await root.query<RowDataPacket[]>(
+      "SELECT token_hash, token_encrypted, active FROM mobile_push_devices WHERE application_user_id = ? AND installation_id = ?",
+      [guest.userId, fcmInstallation],
+    );
+    assert.equal(encryptedTokenRows.length, 1);
+    assert.notEqual(
+      Buffer.from(encryptedTokenRows[0].token_encrypted).toString("utf8"),
+      fcmToken,
+      "FCM token storage must never retain the raw token",
+    );
+    await fcmPush.unregisterMobilePushDevice(guest, {
+      installationId: fcmInstallation,
+      token: fcmToken,
+    });
+    const [inactiveTokenRows] = await root.query<RowDataPacket[]>(
+      "SELECT active, invalid_reason FROM mobile_push_devices WHERE application_user_id = ? AND installation_id = ?",
+      [guest.userId, fcmInstallation],
+    );
+    assert.equal(Number(inactiveTokenRows[0].active), 0);
+    assert.equal(inactiveTokenRows[0].invalid_reason, "LOGOUT");
+    await fcmPush.registerMobilePushDevice(guest, {
+      token: fcmToken,
+      installationId: fcmInstallation,
+    });
+    await product.setFollow(guest, "user", owner.publicId, true);
+    const followerPush = await transaction.withTransaction((connection) =>
+      fcmPush.enqueueFollowerLivePush(connection, {
+        liveSessionId: randomUUID(),
+        roomCode: "QAFCM1",
+        hostUserId: owner.userId,
+        hostName: owner.fullName,
+      }),
+    );
+    assert.equal(followerPush.queued, 1);
+    const duplicateFollowerPush = await transaction.withTransaction(
+      (connection) =>
+        fcmPush.enqueueFollowerLivePush(connection, {
+          liveSessionId: "same-live-session-for-push-dedupe",
+          roomCode: "QAFCM1",
+          hostUserId: owner.userId,
+          hostName: owner.fullName,
+        }),
+    );
+    const duplicateFollowerPushRetry = await transaction.withTransaction(
+      (connection) =>
+        fcmPush.enqueueFollowerLivePush(connection, {
+          liveSessionId: "same-live-session-for-push-dedupe",
+          roomCode: "QAFCM1",
+          hostUserId: owner.userId,
+          hostName: owner.fullName,
+        }),
+    );
+    assert.equal(duplicateFollowerPush.duplicate, false);
+    assert.equal(duplicateFollowerPushRetry.duplicate, true);
+    await assert.rejects(
+      fcmPush.queueMasterPush(parentScope, {
+        title: "Not permitted",
+        message: "This must never queue.",
+      }),
+      /Only Master/,
+    );
+    const directMasterPush = await fcmPush.queueMasterPush(master, {
+      title: "QA direct device notification",
+      message: "A secure server-side delivery test.",
+      targetPublicId: guest.publicId,
+      actionTarget: "room/QAFCM1",
+    });
+    const broadcastMasterPush = await fcmPush.queueMasterPush(master, {
+      title: "QA broadcast device notification",
+      message: "A secure server-side fanout test.",
+    });
+    assert.equal(directMasterPush.queued, 1);
+    assert.equal(broadcastMasterPush.queued, 1);
+    const [pushAuditRows] = await root.query<RowDataPacket[]>(
+      `SELECT COUNT(*) queued_jobs, COUNT(DISTINCT campaign_id) campaigns
+       FROM mobile_push_jobs WHERE application_user_id = ?`,
+      [guest.userId],
+    );
+    assert.equal(Number(pushAuditRows[0].queued_jobs), 4);
+    assert.equal(Number(pushAuditRows[0].campaigns), 4);
+    console.log(
+      "PASS FCM lifecycle: encrypted token register/refresh/logout disassociation, one follower push per durable Live session, Master direct/broadcast only, queued audit records and no provider secret in the client",
     );
 
     const remotePreviewV1 = await sharp(randomBytes(128 * 128 * 4), {
@@ -560,7 +678,10 @@ async function main() {
       /^[a-f0-9]{64}$/,
       "effect manifests must identify the immutable remote bytes",
     );
-    assert.equal(remoteManifestEffect?.assetConfig.assetByteSize, remotePreviewV2.length);
+    assert.equal(
+      remoteManifestEffect?.assetConfig.assetByteSize,
+      remotePreviewV2.length,
+    );
     assert.equal(remoteManifestEffect?.assetConfig.minimumAppVersion, "2.4.66");
     await catalog.setGiftActive({
       scope: master,
@@ -1428,7 +1549,10 @@ async function main() {
        WHERE room_id = ? AND application_user_id = ?`,
       [faceGuestRoomId, guest.userId],
     );
-    const staleButPublishing = await rooms.refreshRoomPresence(owner, faceRoomCode);
+    const staleButPublishing = await rooms.refreshRoomPresence(
+      owner,
+      faceRoomCode,
+    );
     assert.equal(
       (await rooms.refreshRoomPresence(guest, faceRoomCode)).mediaRole,
       "audio_guest",
@@ -1454,7 +1578,10 @@ async function main() {
        VALUES (?, ?, ?, 'AUDIO', TRUE, CURRENT_TIMESTAMP(3))`,
       [faceGuestRoomId, guest.userId, "qa-guest-mic-republished"],
     );
-    const staleButTrackActive = await rooms.refreshRoomPresence(owner, faceRoomCode);
+    const staleButTrackActive = await rooms.refreshRoomPresence(
+      owner,
+      faceRoomCode,
+    );
     assert.ok(
       staleButTrackActive.participants?.some(
         (participant: { user: { id: string }; mediaRole: string }) =>
@@ -2377,6 +2504,144 @@ async function main() {
     const targetRoomId = String(
       pkRooms.find((row) => row.room_code === targetLiveCode)?.id,
     );
+
+    // PK is a presentation/match mode inside the same durable Face Live
+    // session.  These time-travelled ledgers exercise the actual presence,
+    // reward-decision and PK lifecycle code without relying on a Flutter
+    // countdown or sleeping for hours. Each scenario has an independent Host
+    // so the one-reward-per-business-day product cap cannot hide a duplicate
+    // completed-hour decision.
+    async function assertPkTimerContinuity(label: string, segments: number[]) {
+      const host = await user(`QA PK Clock ${label}`);
+      await root.execute(
+        "UPDATE application_users SET agency_account_id = ? WHERE id = ?",
+        [qaAgency.accountId, host.userId],
+      );
+      await root.execute(
+        "UPDATE host_profiles SET agency_account_id = ? WHERE application_user_id = ?",
+        [qaAgency.accountId, host.userId],
+      );
+      const roomId = randomUUID();
+      const roomCode = `PKC${Date.now()}${Math.floor(Math.random() * 1_000_000)}`;
+      const accountingId = randomUUID();
+      await root.execute(
+        `INSERT INTO live_rooms
+          (id, room_code, host_application_user_id, agency_account_id, room_type,
+           title, category, language_code, privacy, seat_count, theme_index,
+           theme_enabled, country_code, status)
+         VALUES (?, ?, ?, ?, 'FACE', 'PK continuity', 'PK', 'Hindi', 'PUBLIC',
+                 0, 0, FALSE, 'IN', 'ACTIVE')`,
+        [roomId, roomCode, host.userId, qaAgency.accountId],
+      );
+      await root.execute(
+        "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', 'HOST', FALSE)",
+        [roomId, host.userId],
+      );
+      const totalSeconds = segments.reduce((sum, seconds) => sum + seconds, 0);
+      await root.execute(
+        `INSERT INTO live_session_accounting
+          (id, room_id, host_application_user_id, room_type, started_at,
+           media_publishing, last_media_heartbeat_at, last_media_evidence_at,
+           eligible_seconds_committed, media_segment_seconds, valid_media_seconds,
+           reward_rule_id)
+         SELECT ?, ?, ?, 'FACE', CURRENT_TIMESTAMP(3), TRUE,
+                CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3), ?, ?, ?, id
+         FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE
+         ORDER BY effective_from DESC LIMIT 1`,
+        [
+          accountingId,
+          roomId,
+          host.userId,
+          totalSeconds,
+          totalSeconds,
+          totalSeconds,
+        ],
+      );
+      const session = await rooms.createPkSession(host, {
+        sourceRoomCode: roomCode,
+        targetRoomCode: targetLiveCode,
+        mode: "Classic",
+        durationMinutes: 5,
+      });
+      await rooms.respondPkSession(roomAdmin, {
+        sessionId: session.id,
+        accept: true,
+      });
+      // A temporary media reconnect while PK is active must preserve the
+      // current segment. It cannot close or replace the accounting row.
+      await rooms.refreshRoomPresence(host, roomCode, false);
+      await rooms.refreshRoomPresence(host, roomCode, true);
+      const expectedHours = Math.floor(totalSeconds / 3600);
+      const [duringRows] = await root.query<RowDataPacket[]>(
+        `SELECT id, status, media_segment_seconds, eligible_seconds_committed
+         FROM live_session_accounting WHERE id = ?`,
+        [accountingId],
+      );
+      assert.equal(
+        String(duringRows[0].id),
+        accountingId,
+        `${label}: PK must retain the Live session identity`,
+      );
+      assert.equal(
+        String(duringRows[0].status),
+        "ACTIVE",
+        `${label}: PK/reconnect must not end Face Live`,
+      );
+      assert.ok(
+        Number(duringRows[0].media_segment_seconds) >= totalSeconds,
+        `${label}: PK/reconnect must not reset accrued eligible seconds`,
+      );
+      const [decisionRows] = await root.query<RowDataPacket[]>(
+        "SELECT completed_hour FROM live_hour_reward_decisions WHERE live_session_accounting_id = ? ORDER BY completed_hour",
+        [accountingId],
+      );
+      assert.deepEqual(
+        decisionRows.map((row) => Number(row.completed_hour)),
+        Array.from({ length: expectedHours }, (_, index) => index + 1),
+        `${label}: completed hours must be generated once from the canonical ledger`,
+      );
+      await rooms.closePkSession(host, {
+        sessionId: session.id,
+        completed: false,
+      });
+      await rooms.refreshRoomPresence(host, roomCode, true);
+      const [afterRows] = await root.query<RowDataPacket[]>(
+        "SELECT id, status, media_segment_seconds FROM live_session_accounting WHERE id = ?",
+        [accountingId],
+      );
+      assert.equal(
+        String(afterRows[0].id),
+        accountingId,
+        `${label}: PK exit must retain the same Live session`,
+      );
+      assert.equal(
+        String(afterRows[0].status),
+        "ACTIVE",
+        `${label}: PK exit must not end Face Live`,
+      );
+      const [afterDecisionRows] = await root.query<RowDataPacket[]>(
+        "SELECT completed_hour FROM live_hour_reward_decisions WHERE live_session_accounting_id = ? ORDER BY completed_hour",
+        [accountingId],
+      );
+      assert.equal(
+        afterDecisionRows.length,
+        expectedHours,
+        `${label}: PK end/retry must not duplicate reward decisions`,
+      );
+    }
+    await assertPkTimerContinuity("30-face-plus-30-pk", [1800, 1800]);
+    await assertPkTimerContinuity("30-face-plus-29m59-pk", [1800, 1799]);
+    await assertPkTimerContinuity(
+      "20-face-plus-20-pk-plus-20-face",
+      [1200, 1200, 1200],
+    );
+    await assertPkTimerContinuity("59-face-plus-2-pk", [3540, 120]);
+    await assertPkTimerContinuity("60-face-plus-30-pk", [3600, 1800]);
+    await assertPkTimerContinuity("30-face-plus-90-pk", [1800, 5400]);
+    console.log(
+      "PASS PK reward continuity: canonical Face ledger survives PK entry, reconnect and exit; exact 30+30, 29:59, 20+20+20, 59+2, 60+30 and 30+90 completed-hour boundaries have no reset or duplicate decisions",
+    );
+
     const [giftCatalog] = await root.query<RowDataPacket[]>(
       "SELECT id FROM gift_catalog WHERE gift_key = 'qa_rose' LIMIT 1",
     );
@@ -2598,7 +2863,11 @@ async function main() {
       { sessionId: databaseTimedSession.id, roomCode: sourceLiveCode },
     );
     assert.equal(hostPkBridge.receiveHostAudio, true);
-    assert.equal(guestPkBridge.receiveHostAudio, false);
+    assert.equal(
+      guestPkBridge.receiveHostAudio,
+      true,
+      "every PK room member receives only the opposing main Host microphone",
+    );
     assert.equal(String(guestPkBridge.remoteHostId), roomAdmin.publicId);
     const sourceTeamMessage = `source-team-${randomUUID()}`;
     const targetTeamMessage = `target-team-${randomUUID()}`;
@@ -2617,22 +2886,30 @@ async function main() {
       rooms.refreshRoomPresence(roomAdmin, targetLiveCode, true),
     ]);
     assert.equal(
-      sourceTeamPresence.messages?.some((item) => item.body === sourceTeamMessage),
+      sourceTeamPresence.messages?.some(
+        (item) => item.body === sourceTeamMessage,
+      ),
       true,
       "the local PK team must receive its own private room chat",
     );
     assert.equal(
-      sourceTeamPresence.messages?.some((item) => item.body === targetTeamMessage),
+      sourceTeamPresence.messages?.some(
+        (item) => item.body === targetTeamMessage,
+      ),
       false,
       "the opposing PK team's private chat must never enter this room feed",
     );
     assert.equal(
-      targetTeamPresence.messages?.some((item) => item.body === targetTeamMessage),
+      targetTeamPresence.messages?.some(
+        (item) => item.body === targetTeamMessage,
+      ),
       true,
       "the opposing PK team must receive its own private room chat",
     );
     assert.equal(
-      targetTeamPresence.messages?.some((item) => item.body === sourceTeamMessage),
+      targetTeamPresence.messages?.some(
+        (item) => item.body === sourceTeamMessage,
+      ),
       false,
       "this team's private chat must never cross the PK bridge",
     );
@@ -2847,7 +3124,10 @@ async function main() {
     // A second viewer must be able to read an already-created round while a
     // separate connection holds its row lock. Polling must not serialize all
     // players behind an unnecessary SELECT FOR UPDATE on the active round.
-    const readableRound = await product.gameSharedRoundState(owner, "greedy_lion");
+    const readableRound = await product.gameSharedRoundState(
+      owner,
+      "greedy_lion",
+    );
     await root.beginTransaction();
     try {
       await root.query(
@@ -2860,7 +3140,12 @@ async function main() {
           product.gameSharedRoundState(owner, "greedy_lion"),
           new Promise<never>((_, reject) => {
             timeout = setTimeout(
-              () => reject(new Error("An existing game round blocked on another viewer's row lock.")),
+              () =>
+                reject(
+                  new Error(
+                    "An existing game round blocked on another viewer's row lock.",
+                  ),
+                ),
               2000,
             );
           }),
@@ -2959,7 +3244,7 @@ async function main() {
       ) {
         settled = {
           ...settled,
-          round: {...settled.round, id: before.round.id},
+          round: { ...settled.round, id: before.round.id },
           outcome: settled.latestSettlement.outcome,
           settlement: {
             wager: settled.latestSettlement.wager,
@@ -3139,7 +3424,8 @@ async function main() {
     );
     assert.ok(
       teenLeaderboard.entries.every(
-        (entry) => Number.isInteger(entry.dailyWinnings) && entry.dailyWinnings > 0,
+        (entry) =>
+          Number.isInteger(entry.dailyWinnings) && entry.dailyWinnings > 0,
       ),
       "The public leaderboard never presents a non-winning daily payout",
     );
@@ -3158,8 +3444,14 @@ async function main() {
        LIMIT 20`,
     );
     assert.deepEqual(
-      teenLeaderboard.entries.map((entry) => [entry.publicId, entry.dailyWinnings]),
-      leaderboardProjection.map((entry) => [String(entry.public_id), Number(entry.daily_winnings)]),
+      teenLeaderboard.entries.map((entry) => [
+        entry.publicId,
+        entry.dailyWinnings,
+      ]),
+      leaderboardProjection.map((entry) => [
+        String(entry.public_id),
+        Number(entry.daily_winnings),
+      ]),
       "Daily Top 20 must order each game's real cumulative payouts without scanning bets",
     );
     const rankingUsers = await Promise.all(
@@ -3174,7 +3466,13 @@ async function main() {
     const rankingDatePart = (type: Intl.DateTimeFormatPartTypes) =>
       rankingDateParts.find((part) => part.type === type)?.value;
     const rankingBusinessDate = `${rankingDatePart("year")}-${rankingDatePart("month")}-${rankingDatePart("day")}`;
-    const rankingAmounts = [2000, 4000, 8000, 12000, ...Array.from({ length: 17 }, (_, index) => 1000 - index)];
+    const rankingAmounts = [
+      2000,
+      4000,
+      8000,
+      12000,
+      ...Array.from({ length: 17 }, (_, index) => 1000 - index),
+    ];
     for (let index = 0; index < rankingUsers.length; index += 1) {
       const amount = rankingAmounts[index];
       await root.execute(
@@ -3182,14 +3480,30 @@ async function main() {
            (game_name, business_date, application_user_id, daily_net_profit, daily_winnings,
             total_wager, total_payout, rounds_won)
          VALUES ('greedy_king', ?, ?, ?, ?, 0, ?, 1)`,
-        [rankingBusinessDate, rankingUsers[index].userId, amount, amount, amount],
+        [
+          rankingBusinessDate,
+          rankingUsers[index].userId,
+          amount,
+          amount,
+          amount,
+        ],
       );
     }
-    const rankingBeforeExtraWin = await product.gameRoundLeaderboard("greedy_king", 20, "daily");
-    assert.equal(rankingBeforeExtraWin.entries.length, 20, "Daily ranking must cap real entries at 20");
+    const rankingBeforeExtraWin = await product.gameRoundLeaderboard(
+      "greedy_king",
+      20,
+      "daily",
+    );
+    assert.equal(
+      rankingBeforeExtraWin.entries.length,
+      20,
+      "Daily ranking must cap real entries at 20",
+    );
     assert.deepEqual(
       rankingBeforeExtraWin.entries.slice(0, 4).map((entry) => entry.publicId),
-      [rankingUsers[3], rankingUsers[2], rankingUsers[1], rankingUsers[0]].map((identity) => identity.publicId),
+      [rankingUsers[3], rankingUsers[2], rankingUsers[1], rankingUsers[0]].map(
+        (identity) => identity.publicId,
+      ),
       "Daily ranking must reorder actual cumulative winnings across multiple players",
     );
     await root.execute(
@@ -3198,7 +3512,11 @@ async function main() {
        WHERE game_name = 'greedy_king' AND business_date = ? AND application_user_id = ?`,
       [rankingBusinessDate, rankingUsers[0].userId],
     );
-    const rankingAfterExtraWin = await product.gameRoundLeaderboard("greedy_king", 20, "daily");
+    const rankingAfterExtraWin = await product.gameRoundLeaderboard(
+      "greedy_king",
+      20,
+      "daily",
+    );
     assert.equal(
       rankingAfterExtraWin.entries[0]?.publicId,
       rankingUsers[0].publicId,
@@ -3266,43 +3584,114 @@ async function main() {
       [owner.userId],
     );
     const sharedSoakInputs: ReadonlyArray<{
-      game: "teen_patti_pro" | "luck77" | "bounty_football" | "greedy_king" | "greedy_lion";
+      game:
+        | "teen_patti_pro"
+        | "luck77"
+        | "bounty_football"
+        | "greedy_king"
+        | "greedy_lion";
       bets: Record<string, number>;
     }> = [
-      { game: "teen_patti_pro" as const, bets: { "0": 500, "1": 0, "2": 0, crown: 500 } },
+      {
+        game: "teen_patti_pro" as const,
+        bets: { "0": 500, "1": 0, "2": 0, crown: 500 },
+      },
       { game: "luck77" as const, bets: { watermelon: 500, seven: 0, plum: 0 } },
-      { game: "bounty_football" as const, bets: { "0": 500, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 } },
-      { game: "greedy_king" as const, bets: { "0": 500, "1": 500, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0 } },
-      { game: "greedy_lion" as const, bets: { "0": 500, "1": 500, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0 } },
+      {
+        game: "bounty_football" as const,
+        bets: {
+          "0": 500,
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+        },
+      },
+      {
+        game: "greedy_king" as const,
+        bets: {
+          "0": 500,
+          "1": 500,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+          "8": 0,
+          "9": 0,
+        },
+      },
+      {
+        game: "greedy_lion" as const,
+        bets: {
+          "0": 500,
+          "1": 500,
+          "2": 0,
+          "3": 0,
+          "4": 0,
+          "5": 0,
+          "6": 0,
+          "7": 0,
+        },
+      },
     ];
     for (const definition of sharedSoakInputs) {
       // The earlier feature checks may have already settled the live
       // wall-clock round for this temporary user. Retire that completed QA
       // round first so the first soak iteration cannot attach a second wager
       // to an already-settled round.
-      const existing = await product.gameSharedRoundState(owner, definition.game);
+      const existing = await product.gameSharedRoundState(
+        owner,
+        definition.game,
+      );
       await root.execute(
         "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
         ["9000000000000000000", existing.round.id, definition.game],
       );
       for (let roundIndex = 0; roundIndex < 30; roundIndex += 1) {
-        const settled = await completeSharedRound(definition.game, definition.bets);
+        const settled = await completeSharedRound(
+          definition.game,
+          definition.bets,
+        );
         assert.ok(Number.isSafeInteger(settled.settlement.payout));
         // round_number is unsigned; this reserved high QA range is unique per
         // game and makes the next state call create a fresh current round.
         await root.execute(
           "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
-          [`9000000000000000${String(roundIndex + 1).padStart(3, "0")}`, settled.round.id, definition.game],
+          [
+            `9000000000000000${String(roundIndex + 1).padStart(3, "0")}`,
+            settled.round.id,
+            definition.game,
+          ],
         );
       }
-      const history = await product.gameRoundHistory(owner, definition.game, 10);
-      assert.equal(history.rounds.length, 10, `${definition.game} must retain exactly its latest 10 settled rounds after the soak`);
-      const publicState = await product.gameSharedRoundState(owner, definition.game);
-      const requiredPublicHistory = definition.game === "luck77"
-        ? 20
-        : definition.game === "greedy_king" || definition.game === "greedy_lion"
-          ? 10
-          : null;
+      const history = await product.gameRoundHistory(
+        owner,
+        definition.game,
+        10,
+      );
+      assert.equal(
+        history.rounds.length,
+        10,
+        `${definition.game} must retain exactly its latest 10 settled rounds after the soak`,
+      );
+      const publicState = await product.gameSharedRoundState(
+        owner,
+        definition.game,
+      );
+      const requiredPublicHistory =
+        definition.game === "luck77"
+          ? 20
+          : definition.game === "greedy_king" ||
+              definition.game === "greedy_lion"
+            ? 10
+            : null;
       if (requiredPublicHistory != null) {
         assert.equal(
           publicState.recentResults.length,
@@ -3311,16 +3700,22 @@ async function main() {
         );
       } else {
         assert.ok(
-          publicState.recentResults.length > 0 && publicState.recentResults.length <= 50,
+          publicState.recentResults.length > 0 &&
+            publicState.recentResults.length <= 50,
           `${definition.game} must return a bounded completed public-result history`,
         );
       }
       assert.ok(
-        publicState.recentResults.every((result) => result.roundId && result.settledAt && result.winningItemId),
+        publicState.recentResults.every(
+          (result) =>
+            result.roundId && result.settledAt && result.winningItemId,
+        ),
         `${definition.game} public history must contain only versioned completed results`,
       );
     }
-    console.log("PASS shared games: 30 complete server-authoritative result/settlement/history transitions per shared game");
+    console.log(
+      "PASS shared games: 30 complete server-authoritative result/settlement/history transitions per shared game",
+    );
     const postGameBootstrap = await product.mobileBootstrap(owner);
     assert.equal(
       postGameBootstrap.wallet.diamonds,
@@ -3643,34 +4038,64 @@ async function main() {
        ORDER BY effective_from DESC LIMIT 1`,
       [qaProbeAccountingId, qaProbeRoomId, rewardHost.userId],
     );
-    const diamondsBeforeQaProbe = (await product.mobileBootstrap(rewardHost)).wallet.diamonds;
+    const diamondsBeforeQaProbe = (await product.mobileBootstrap(rewardHost))
+      .wallet.diamonds;
     await rooms.refreshRoomPresence(rewardHost, qaProbeRoomCode, true);
     await rooms.refreshRoomPresence(rewardHost, qaProbeRoomCode, true);
     const [qaRuns] = await root.query<RowDataPacket[]>(
       "SELECT COUNT(*) count FROM live_reward_qa_runs WHERE live_session_accounting_id = ?",
       [qaProbeAccountingId],
     );
-    assert.equal(Number(qaRuns[0].count), 1, "duplicate QA heartbeats must create one non-financial probe record");
-    assert.equal((await product.mobileBootstrap(rewardHost)).wallet.diamonds, diamondsBeforeQaProbe, "QA threshold must never credit Diamonds");
-    const liveDiagnostics = await import("@/lib/db/repositories/live-accounting-diagnostics");
+    assert.equal(
+      Number(qaRuns[0].count),
+      1,
+      "duplicate QA heartbeats must create one non-financial probe record",
+    );
+    assert.equal(
+      (await product.mobileBootstrap(rewardHost)).wallet.diamonds,
+      diamondsBeforeQaProbe,
+      "QA threshold must never credit Diamonds",
+    );
+    const liveDiagnostics =
+      await import("@/lib/db/repositories/live-accounting-diagnostics");
     const diagnostic = await liveDiagnostics.getLiveRewardDiagnostics(1);
-    assert.ok(diagnostic.expectedRewardUnits >= 1, "diagnostic must count immutable eligible reward decisions");
-    assert.equal(diagnostic.missingRewardUnits, 0, "fresh eligible decisions must have matching claimable entitlements");
-    assert.equal(diagnostic.qaNonFinancialRuns, 1, "diagnostic must count the isolated QA crossing without exposing a user");
     assert.ok(
-      diagnostic.countryDecisionReasons.some((row) =>
-        row.countryCode === "BD" && row.reason === "ELIGIBLE" && row.awardedUnits >= 1
+      diagnostic.expectedRewardUnits >= 1,
+      "diagnostic must count immutable eligible reward decisions",
+    );
+    assert.equal(
+      diagnostic.missingRewardUnits,
+      0,
+      "fresh eligible decisions must have matching claimable entitlements",
+    );
+    assert.equal(
+      diagnostic.qaNonFinancialRuns,
+      1,
+      "diagnostic must count the isolated QA crossing without exposing a user",
+    );
+    assert.ok(
+      diagnostic.countryDecisionReasons.some(
+        (row) =>
+          row.countryCode === "BD" &&
+          row.reason === "ELIGIBLE" &&
+          row.awardedUnits >= 1,
       ),
       "the Bangladesh Host's reward must be visible in aggregate Master diagnostics",
     );
-    const faceStartOutcomes = await import("@/lib/observability/face-live-start-outcomes");
+    const faceStartOutcomes =
+      await import("@/lib/observability/face-live-start-outcomes");
     await Promise.all([
       faceStartOutcomes.recordFaceLiveStartOutcome("SUCCESS"),
       faceStartOutcomes.recordFaceLiveStartOutcome("FAILURE", "VERIFICATION"),
       faceStartOutcomes.recordFaceLiveStartOutcome("FAILURE", "DATABASE"),
     ]);
-    const startDiagnostics = await faceStartOutcomes.getFaceLiveStartOutcomeDiagnostics(1);
-    assert.equal(startDiagnostics.attempts, 3, "Face start diagnostics must retain aggregate attempts only");
+    const startDiagnostics =
+      await faceStartOutcomes.getFaceLiveStartOutcomeDiagnostics(1);
+    assert.equal(
+      startDiagnostics.attempts,
+      3,
+      "Face start diagnostics must retain aggregate attempts only",
+    );
     assert.equal(startDiagnostics.successes, 1);
     assert.equal(startDiagnostics.failures, 2);
     assert.deepEqual(
@@ -3681,9 +4106,15 @@ async function main() {
       ],
       "Face start diagnostics must expose only sanitized categories",
     );
-    console.log("PASS accelerated Live reward QA: 60-second dedicated reviewer threshold, duplicate heartbeat dedupe, no entitlement and no wallet credit");
-    console.log("PASS Live reward diagnostics: aggregate expected/generated/missing counts and non-financial QA history");
-    console.log("PASS Face start telemetry: aggregate success/failure categories only, no account or room identifiers");
+    console.log(
+      "PASS accelerated Live reward QA: 60-second dedicated reviewer threshold, duplicate heartbeat dedupe, no entitlement and no wallet credit",
+    );
+    console.log(
+      "PASS Live reward diagnostics: aggregate expected/generated/missing counts and non-financial QA history",
+    );
+    console.log(
+      "PASS Face start telemetry: aggregate success/failure categories only, no account or room identifiers",
+    );
     const rewardId = String(rewardBootstrap.liveRewards[0].id);
     const duplicateClaims = await Promise.all([
       rooms.claimLiveReward(rewardHost, rewardId),

@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2/promise";
 import { withTransaction } from "@/lib/db/transaction";
+import { enqueueFollowerLivePush } from "@/lib/services/fcm-push-service";
 
 export type LiveKitWebhookEvent = {
   id?: unknown;
@@ -16,7 +17,11 @@ export type LiveKitWebhookEvent = {
 
 type NormalizedEvidence = {
   providerEventId: string;
-  eventType: "track_published" | "track_unpublished" | "participant_left" | "participant_joined";
+  eventType:
+    | "track_published"
+    | "track_unpublished"
+    | "participant_left"
+    | "participant_joined";
   roomCode: string;
   participantIdentity: string;
   trackSid: string | null;
@@ -53,7 +58,9 @@ function eventDate(value: unknown) {
   return new Date();
 }
 
-function trackKind(track: LiveKitWebhookEvent["track"]): "AUDIO" | "VIDEO" | null {
+function trackKind(
+  track: LiveKitWebhookEvent["track"],
+): "AUDIO" | "VIDEO" | null {
   // The signed JSON webhook uses enum labels, whereas the SDK's decoded
   // protobuf may expose the TrackType numeric enum (AUDIO=0, VIDEO=1).
   if (track?.type === 0) return "AUDIO";
@@ -73,11 +80,8 @@ export function normalizeLiveKitWebhookEvent(
   const eventType = stringValue(value.event, 64).toLowerCase();
   const roomCode = stringValue(value.room?.name, 80);
   const participantIdentity = stringValue(value.participant?.identity, 128);
-  if (
-    !supportedEvents.has(eventType) ||
-    !roomCode ||
-    !participantIdentity
-  ) return null;
+  if (!supportedEvents.has(eventType) || !roomCode || !participantIdentity)
+    return null;
   const suppliedId = stringValue(value.id, 128);
   // Older server versions omit id. The digest remains deterministic and is
   // constrained to this payload, so retries stay idempotent.
@@ -102,16 +106,20 @@ export function normalizeLiveKitWebhookEvent(
  */
 export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & {
-      room_id: string;
-      room_type: "FACE" | "LIVE" | "PARTY";
-      host_application_user_id: string;
-      host_public_id: string;
-      accounting_id: string | null;
-    })[]>(
+    const [rows] = await connection.query<
+      (RowDataPacket & {
+        room_id: string;
+        room_type: "FACE" | "LIVE" | "PARTY";
+        host_application_user_id: string;
+        host_public_id: string;
+        host_name: string;
+        accounting_id: string | null;
+      })[]
+    >(
       `SELECT room.id room_id, room.room_type,
               room.host_application_user_id host_application_user_id,
-              host.public_id host_public_id, accounting.id accounting_id
+              host.public_id host_public_id, host.full_name host_name,
+              accounting.id accounting_id
        FROM live_rooms room
        INNER JOIN application_users host ON host.id = room.host_application_user_id
        LEFT JOIN live_session_accounting accounting
@@ -129,10 +137,12 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
     // LiveKit webhook is authenticated, but a participant can leave between
     // publication and delivery of its event. In that case it is harmless and
     // must not resurrect a former speaker.
-    const [memberRows] = await connection.query<(RowDataPacket & {
-      application_user_id: string;
-      media_role: string;
-    })[]>(
+    const [memberRows] = await connection.query<
+      (RowDataPacket & {
+        application_user_id: string;
+        media_role: string;
+      })[]
+    >(
       `SELECT member.application_user_id, member.media_role
        FROM live_room_members member
        INNER JOIN application_users user
@@ -152,9 +162,14 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
          track_sid, track_kind, occurred_at, payload_sha256)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        randomUUID(), evidence.providerEventId, room.room_id,
-        member.application_user_id, evidence.eventType,
-        evidence.trackSid, evidence.trackKind, evidence.occurredAt,
+        randomUUID(),
+        evidence.providerEventId,
+        room.room_id,
+        member.application_user_id,
+        evidence.eventType,
+        evidence.trackSid,
+        evidence.trackKind,
+        evidence.occurredAt,
         evidence.payloadSha256,
       ],
     );
@@ -178,8 +193,11 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
            track_kind = VALUES(track_kind), active = VALUES(active),
            last_event_at = VALUES(last_event_at)`,
         [
-          room.room_id, member.application_user_id, evidence.trackSid,
-          evidence.trackKind, evidence.eventType === "track_published",
+          room.room_id,
+          member.application_user_id,
+          evidence.trackSid,
+          evidence.trackKind,
+          evidence.eventType === "track_published",
           evidence.occurredAt,
         ],
       );
@@ -188,9 +206,11 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
     const isHost = room.host_public_id === evidence.participantIdentity;
     if (!isHost && member.media_role === "AUDIO_GUEST") {
       const audioPublished =
-        evidence.eventType === "track_published" && evidence.trackKind === "AUDIO";
+        evidence.eventType === "track_published" &&
+        evidence.trackKind === "AUDIO";
       const audioEnded =
-        evidence.eventType === "track_unpublished" || evidence.eventType === "participant_left";
+        evidence.eventType === "track_unpublished" ||
+        evidence.eventType === "participant_left";
       if (audioPublished || audioEnded) {
         await connection.execute(
           `UPDATE live_room_members
@@ -222,14 +242,22 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
                AND prior.created_at >= COALESCE(request.responded_at, request.requested_at)
            )`,
           [
-            randomUUID(), room.room_id, member.application_user_id,
+            randomUUID(),
+            room.room_id,
+            member.application_user_id,
             room.host_application_user_id,
-            room.room_id, member.application_user_id,
-            room.room_id, member.application_user_id,
+            room.room_id,
+            member.application_user_id,
+            room.room_id,
+            member.application_user_id,
           ],
         );
       }
-      return { applied: true, duplicate: false, reason: audioPublished ? "audio-guest-joined" : "audio-guest-ended" };
+      return {
+        applied: true,
+        duplicate: false,
+        reason: audioPublished ? "audio-guest-joined" : "audio-guest-ended",
+      };
     }
 
     if (!isHost || !room.accounting_id) {
@@ -238,7 +266,9 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
 
     if (room.accounting_id) {
       const wantedKind = room.room_type === "PARTY" ? "AUDIO" : "VIDEO";
-      const [activeTracks] = await connection.query<(RowDataPacket & { count: number })[]>(
+      const [activeTracks] = await connection.query<
+        (RowDataPacket & { count: number })[]
+      >(
         `SELECT COUNT(*) count FROM livekit_active_media_tracks
          WHERE room_id = ? AND application_user_id = ?
            AND active = TRUE AND track_kind = ?`,
@@ -254,6 +284,21 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
          WHERE id = ? AND status = 'ACTIVE'`,
         [publishing, publishing, publishing, room.accounting_id],
       );
+      // A follower alert is created only after a verified host video track is
+      // present. Room creation, token issuance, audience arrival and webhook
+      // retries cannot generate a false or duplicate "is Live" notification.
+      if (
+        evidence.eventType === "track_published" &&
+        evidence.trackKind === "VIDEO" &&
+        publishing
+      ) {
+        await enqueueFollowerLivePush(connection, {
+          liveSessionId: room.accounting_id,
+          roomCode: evidence.roomCode,
+          hostUserId: room.host_application_user_id,
+          hostName: room.host_name,
+        });
+      }
     }
     return { applied: true, duplicate: false, reason: "recorded" };
   });

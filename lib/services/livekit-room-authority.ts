@@ -28,13 +28,15 @@ export async function authorizeLiveKitRoom(
   input: { roomCode: string; canPublish: boolean; ttlSeconds?: number },
 ) {
   return withTransaction(async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & {
-      room_id: string;
-      room_type: "FACE" | "LIVE" | "PARTY";
-      media_role: MediaRole;
-      muted: number;
-      room_status: string;
-    })[]>(
+    const [rows] = await connection.query<
+      (RowDataPacket & {
+        room_id: string;
+        room_type: "FACE" | "LIVE" | "PARTY";
+        media_role: MediaRole;
+        muted: number;
+        room_status: string;
+      })[]
+    >(
       `SELECT room.id room_id, room.room_type, room.status room_status,
               member.media_role, member.muted
        FROM live_rooms room
@@ -47,21 +49,29 @@ export async function authorizeLiveKitRoom(
       [identity.userId, input.roomCode],
     );
     const room = rows[0];
-    if (!room) throw new Error("Join this active room before requesting media access.");
+    if (!room)
+      throw new Error("Join this active room before requesting media access.");
 
-    const isHost = room.media_role === "HOST" || room.media_role === "PARTY_OWNER";
-    const isAudioPublisher = room.media_role === "AUDIO_GUEST" || room.media_role === "RTC_SPEAKER";
+    const isHost =
+      room.media_role === "HOST" || room.media_role === "PARTY_OWNER";
+    const isAudioPublisher =
+      room.media_role === "AUDIO_GUEST" || room.media_role === "RTC_SPEAKER";
     const mayPublish = isHost || isAudioPublisher;
     if (input.canPublish && (!mayPublish || Boolean(room.muted))) {
-      throw new Error(room.room_type === "PARTY"
-        ? "An active speaker role is required before microphone access."
-        : "The host must accept your Audio Request before microphone access.");
+      throw new Error(
+        room.room_type === "PARTY"
+          ? "An active speaker role is required before microphone access."
+          : "The host must accept your Audio Request before microphone access.",
+      );
     }
     if (input.canPublish) {
       const policy = LiveAccessPolicyService.for(identity);
-      const access = room.room_type === "PARTY"
-        ? policy.party
-        : isHost ? policy.face : policy.chat;
+      const access =
+        room.room_type === "PARTY"
+          ? policy.party
+          : isHost
+            ? policy.face
+            : policy.chat;
       if (!access.allowed) throw new Error(access.reason);
     }
 
@@ -85,8 +95,13 @@ export async function authorizeLiveKitRoom(
          publish_mode, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND)`,
       [
-        randomUUID(), room.room_id, identity.userId, identity.sessionId ?? null,
-        room.media_role, publishMode, ttlSeconds,
+        randomUUID(),
+        room.room_id,
+        identity.userId,
+        identity.sessionId ?? null,
+        room.media_role,
+        publishMode,
+        ttlSeconds,
       ],
     );
     return {
@@ -105,25 +120,27 @@ export async function authorizeLiveKitRoom(
  * audience and audio guests; this short-lived bridge permits only the current
  * participant to subscribe to the *opposing host* in the other LiveKit room.
  *
- * The receiving host may also subscribe to the opposing host microphone so
- * they can coordinate.  Spectators receive the opposing camera only.  No
- * guest microphone, data track, camera publishing, or arbitrary room token
- * is granted here.
+ * Every member of each battling room receives the opposing main Host's
+ * camera and microphone.  This is deliberately identity-scoped: no guest
+ * microphone, data track, camera publishing, or arbitrary room token is
+ * granted here.
  */
 export async function authorizeLiveKitPkBridge(
   identity: MobileIdentity,
   input: { sessionId: string; roomCode: string; ttlSeconds?: number },
 ) {
   return withTransaction(async (connection) => {
-    const [sessions] = await connection.query<(RowDataPacket & {
-      status: string;
-      source_room_id: string;
-      source_room_code: string;
-      source_host_public_id: string;
-      target_room_id: string;
-      target_room_code: string;
-      target_host_public_id: string;
-    })[]>(
+    const [sessions] = await connection.query<
+      (RowDataPacket & {
+        status: string;
+        source_room_id: string;
+        source_room_code: string;
+        source_host_public_id: string;
+        target_room_id: string;
+        target_room_code: string;
+        target_host_public_id: string;
+      })[]
+    >(
       `SELECT session.status,
               source.id source_room_id, source.room_code source_room_code,
               source_host.public_id source_host_public_id,
@@ -151,11 +168,13 @@ export async function authorizeLiveKitPkBridge(
     const localRoomId = localIsSource
       ? session.source_room_id
       : session.target_room_id;
-    const [members] = await connection.query<(RowDataPacket & {
-      room_role: string;
-      media_role: MediaRole;
-      muted: number;
-    })[]>(
+    const [members] = await connection.query<
+      (RowDataPacket & {
+        room_role: string;
+        media_role: MediaRole;
+        muted: number;
+      })[]
+    >(
       `SELECT room_role, media_role, muted
        FROM live_room_members
        WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL
@@ -167,15 +186,15 @@ export async function authorizeLiveKitPkBridge(
       throw new Error("Join the active PK room before viewing the battle.");
     }
 
-    const isHost = member.room_role === "OWNER" &&
-      (member.media_role === "HOST" || member.media_role === "PARTY_OWNER");
     const ttlSeconds = Math.max(300, Math.min(900, input.ttlSeconds ?? 600));
     return {
-      roomId: localIsSource ? session.target_room_code : session.source_room_code,
+      roomId: localIsSource
+        ? session.target_room_code
+        : session.source_room_code,
       remoteHostId: localIsSource
         ? session.target_host_public_id
         : session.source_host_public_id,
-      receiveHostAudio: isHost,
+      receiveHostAudio: true,
       ttlSeconds,
     } as const;
   });

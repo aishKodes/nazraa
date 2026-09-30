@@ -67,7 +67,10 @@ import {
   authorizeLiveKitRoom,
 } from "@/lib/services/livekit-room-authority";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
-import { isLiveKitConfigured, mediaProviderFor } from "@/lib/services/media-provider";
+import {
+  isLiveKitConfigured,
+  mediaProviderFor,
+} from "@/lib/services/media-provider";
 import {
   discoveryPosts,
   privateMessagingForUser,
@@ -106,6 +109,10 @@ import { isDatabaseAvailabilityError } from "@/lib/db/pool";
 import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { authorizeRoomRtc } from "@/lib/services/room-media-authority";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
+import {
+  registerMobilePushDevice,
+  unregisterMobilePushDevice,
+} from "@/lib/services/fcm-push-service";
 import { verifyGooglePlayCoinPurchase } from "@/lib/db/repositories/mobile-play-billing";
 import { traceMobileRequest } from "@/lib/observability/mobile-latency-context";
 import {
@@ -165,7 +172,9 @@ function notifyRoom(roomCode: string, topic: RoomRealtimeTopic) {
 
 function scheduleRoomJoinMaintenance(roomCode: string, useZego: boolean) {
   after(async () => {
-    const maintenance: Array<Promise<unknown>> = [refreshLiveRoomAudienceCount(roomCode)];
+    const maintenance: Array<Promise<unknown>> = [
+      refreshLiveRoomAudienceCount(roomCode),
+    ];
     if (useZego) maintenance.push(syncZegoRoomMixer(roomCode));
     await Promise.allSettled(maintenance);
   });
@@ -304,9 +313,12 @@ export async function GET(
         });
       }
       if (resource === "face") {
-        return NextResponse.json(await mobileFaceVerificationSnapshot(identity), {
-          headers: { "Cache-Control": "private, no-store" },
-        });
+        return NextResponse.json(
+          await mobileFaceVerificationSnapshot(identity),
+          {
+            headers: { "Cache-Control": "private, no-store" },
+          },
+        );
       }
       if (resource === "gifts") {
         return NextResponse.json(await mobileGiftCatalogSnapshot(), {
@@ -325,9 +337,12 @@ export async function GET(
           .regex(/^\d{4}-\d{2}-\d{2}$/)
           .optional()
           .parse(new URL(request.url).searchParams.get("before") ?? undefined);
-        return NextResponse.json(await mobileLiveHistory(identity, { before }), {
-          headers: { "Cache-Control": "private, no-store" },
-        });
+        return NextResponse.json(
+          await mobileLiveHistory(identity, { before }),
+          {
+            headers: { "Cache-Control": "private, no-store" },
+          },
+        );
       }
       if (resource === "effect-manifest") {
         return NextResponse.json(await mobileEffectManifest(), {
@@ -487,8 +502,7 @@ export async function GET(
         // every request to the single daily positive-winner view.  This keeps
         // an older APK from surfacing an avoidable request error while it is
         // being replaced by the daily-only UI.
-        z
-          .enum(["round", "daily", "weekly", "monthly"])
+        z.enum(["round", "daily", "weekly", "monthly"])
           .optional()
           .parse(parameters.get("period") ?? undefined);
         const period = "daily" as const;
@@ -570,7 +584,10 @@ export async function POST(
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
         notifyRoom(parsed.roomCode, "seat");
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "private-message-request") {
@@ -813,6 +830,35 @@ export async function POST(
       if (resource === "notifications-read") {
         return NextResponse.json(await markMobileNotificationsRead(identity));
       }
+      if (resource === "mobile-push-device") {
+        const parsed = z
+          .object({
+            action: z.enum(["register", "unregister"]),
+            installationId: z.string().trim().min(8).max(160),
+            token: z.string().trim().min(20).max(4096).optional(),
+            appVersion: z.string().trim().max(64).optional(),
+          })
+          .parse(body);
+        if (parsed.action === "register") {
+          if (!parsed.token)
+            throw new Error(
+              "This device notification registration is invalid.",
+            );
+          return NextResponse.json(
+            await registerMobilePushDevice(identity, {
+              token: parsed.token,
+              installationId: parsed.installationId,
+              appVersion: parsed.appVersion,
+            }),
+          );
+        }
+        return NextResponse.json(
+          await unregisterMobilePushDevice(identity, {
+            installationId: parsed.installationId,
+            token: parsed.token,
+          }),
+        );
+      }
       if (resource === "diamond-exchange") {
         if (!mobileCan(identity, "diamonds.exchange"))
           return errorResponse(new Error("Forbidden."), 403);
@@ -1012,7 +1058,9 @@ export async function POST(
         try {
           await assertCurrentPoliciesAccepted(identity);
           const permission =
-            parsed.kind === "party" ? "rooms.create.party" : "rooms.create.live";
+            parsed.kind === "party"
+              ? "rooms.create.party"
+              : "rooms.create.live";
           if (!mobileCan(identity, permission)) {
             if (faceStart)
               after(() => recordFaceLiveStartOutcome("FAILURE", "ELIGIBILITY"));
@@ -1036,7 +1084,10 @@ export async function POST(
           // The Host will confirm publishing in its first presence heartbeat. A
           // best-effort sync here is still useful for room types whose publisher
           // signal is already present, and never delays room creation.
-          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+          scheduleMixerSync(
+            parsed.roomCode,
+            mediaProviderFor(identity) === "ZEGO",
+          );
           if (faceStart) after(() => recordFaceLiveStartOutcome("SUCCESS"));
           return NextResponse.json(result, { status: 201 });
         } catch (error) {
@@ -1076,10 +1127,16 @@ export async function POST(
         // second cold Vercel-to-MySQL request before HLS can start. Party and
         // all existing callers retain their original response shape/cost.
         if (parsed.includeMediaBootstrap) {
-          scheduleRoomJoinMaintenance(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+          scheduleRoomJoinMaintenance(
+            parsed.roomCode,
+            mediaProviderFor(identity) === "ZEGO",
+          );
           return NextResponse.json(result);
         }
-        scheduleRoomJoinMaintenance(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleRoomJoinMaintenance(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "room-leave") {
@@ -1088,7 +1145,10 @@ export async function POST(
           .parse(body);
         const result = await leaveLiveRoom(identity, parsed.roomCode);
         notifyRoom(parsed.roomCode, "presence");
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "room-presence") {
@@ -1152,7 +1212,10 @@ export async function POST(
           parsed.mediaPublishing === true ||
           (result.active && result.mediaDelivery?.mode === "streamingPending")
         ) {
-          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+          scheduleMixerSync(
+            parsed.roomCode,
+            mediaProviderFor(identity) === "ZEGO",
+          );
         }
         return NextResponse.json(result);
       }
@@ -1174,7 +1237,13 @@ export async function POST(
             liveSessionId: z.string().uuid().nullable().optional(),
             closeReason: z.string().trim().min(3).max(64),
             triggerSource: z.string().trim().min(3).max(96),
-            callerStack: z.string().trim().min(1).max(512).nullable().optional(),
+            callerStack: z
+              .string()
+              .trim()
+              .min(1)
+              .max(512)
+              .nullable()
+              .optional(),
             connectionPhase: z.enum([
               "idle",
               "connecting",
@@ -1208,7 +1277,10 @@ export async function POST(
           result.active &&
           result.mediaDelivery?.mode === "streamingPending"
         ) {
-          scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+          scheduleMixerSync(
+            parsed.roomCode,
+            mediaProviderFor(identity) === "ZEGO",
+          );
         }
         return NextResponse.json(result);
       }
@@ -1224,7 +1296,10 @@ export async function POST(
           .parse(body);
         const result = await setRoomAdmin(identity, parsed);
         notifyRoom(parsed.roomCode, "seat");
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "room-kick") {
@@ -1246,7 +1321,10 @@ export async function POST(
             parsed.targetPublicId,
           );
         }
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "room-blocks") {
@@ -1277,7 +1355,10 @@ export async function POST(
             parsed.muted,
           );
         }
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "room-interactions") {
@@ -1315,8 +1396,14 @@ export async function POST(
         const result = await activatePkSession(identity, parsed.sessionId);
         notifyRoom(result.sourceRoomCode, "pk");
         notifyRoom(result.targetRoomCode, "pk");
-        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
-        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          result.sourceRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
+        scheduleMixerSync(
+          result.targetRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "pk-response") {
@@ -1326,8 +1413,14 @@ export async function POST(
         const result = await respondPkSession(identity, parsed);
         notifyRoom(result.sourceRoomCode, "pk");
         notifyRoom(result.targetRoomCode, "pk");
-        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
-        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          result.sourceRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
+        scheduleMixerSync(
+          result.targetRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "pk-end") {
@@ -1335,14 +1428,22 @@ export async function POST(
           .object({
             sessionId: z.string().uuid(),
             completed: z.boolean(),
-            outcome: z.enum(["MANUAL_CANCEL", "NETWORK_INTERRUPTED"]).optional(),
+            outcome: z
+              .enum(["MANUAL_CANCEL", "NETWORK_INTERRUPTED"])
+              .optional(),
           })
           .parse(body);
         const result = await closePkSession(identity, parsed);
         notifyRoom(result.sourceRoomCode, "pk");
         notifyRoom(result.targetRoomCode, "pk");
-        scheduleMixerSync(result.sourceRoomCode, mediaProviderFor(identity) === "ZEGO");
-        scheduleMixerSync(result.targetRoomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          result.sourceRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
+        scheduleMixerSync(
+          result.targetRoomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "face-presence") {
@@ -1425,11 +1526,12 @@ export async function POST(
         // guest immediately; the client receives a permission event and only
         // then publishes its microphone.
         if (mediaProviderFor(identity) === "LIVEKIT") {
-          const permission = await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(
-            parsed.roomCode,
-            parsed.targetPublicId,
-            parsed.accept,
-          );
+          const permission =
+            await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(
+              parsed.roomCode,
+              parsed.targetPublicId,
+              parsed.accept,
+            );
           // Do not report a successful acceptance when the connected LiveKit
           // participant could not receive its microphone-only grant. Revert
           // the short-lived database transition so the room does not display
@@ -1444,7 +1546,10 @@ export async function POST(
             );
           }
         }
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "live-cohost-end") {
@@ -1466,7 +1571,10 @@ export async function POST(
             false,
           );
         }
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "live-end") {
@@ -1475,7 +1583,10 @@ export async function POST(
           .parse(body);
         const result = await finalizeLiveSession(identity, parsed.roomCode);
         notifyRoom(parsed.roomCode, "room-ended");
-        scheduleMixerSync(parsed.roomCode, mediaProviderFor(identity) === "ZEGO");
+        scheduleMixerSync(
+          parsed.roomCode,
+          mediaProviderFor(identity) === "ZEGO",
+        );
         return NextResponse.json(result);
       }
       if (resource === "gifts") {
@@ -1573,7 +1684,9 @@ export async function POST(
       }
       if (resource === "zego-token") {
         if (mediaProviderFor(identity) !== "ZEGO") {
-          throw new Error("Live media is connecting through the configured provider.");
+          throw new Error(
+            "Live media is connecting through the configured provider.",
+          );
         }
         const parsed = z
           .object({
@@ -1601,8 +1714,13 @@ export async function POST(
         // This endpoint is intentionally unavailable until the deployment is
         // explicitly switched for this identity. It prevents an old/reviewer
         // build from accidentally bypassing the staged provider rollout.
-        if (mediaProviderFor(identity) !== "LIVEKIT" || !isLiveKitConfigured()) {
-          throw new Error("Live media is being prepared. Please retry shortly.");
+        if (
+          mediaProviderFor(identity) !== "LIVEKIT" ||
+          !isLiveKitConfigured()
+        ) {
+          throw new Error(
+            "Live media is being prepared. Please retry shortly.",
+          );
         }
         const parsed = z
           .object({
@@ -1629,8 +1747,13 @@ export async function POST(
         });
       }
       if (resource === "livekit-pk-bridge-token") {
-        if (mediaProviderFor(identity) !== "LIVEKIT" || !isLiveKitConfigured()) {
-          throw new Error("Live media is being prepared. Please retry shortly.");
+        if (
+          mediaProviderFor(identity) !== "LIVEKIT" ||
+          !isLiveKitConfigured()
+        ) {
+          throw new Error(
+            "Live media is being prepared. Please retry shortly.",
+          );
         }
         const parsed = z
           .object({

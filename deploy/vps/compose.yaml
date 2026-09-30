@@ -62,6 +62,11 @@ services:
       redis: { condition: service_healthy }
     ports:
       - "127.0.0.1:3000:3000"
+    # FCM service-account material is a root-owned host file. Only the API
+    # process can read it; the worker requests the authenticated private API
+    # endpoint and never receives a provider credential.
+    volumes:
+      - /etc/nazraa/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro
     networks: [private]
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
