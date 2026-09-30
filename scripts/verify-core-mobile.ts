@@ -417,6 +417,35 @@ async function main() {
     const guest = await user("QA Audience");
     const roomAdmin = await user("QA Room Admin");
     const stranger = await user("QA Other Branch");
+    const profileEditor = await user("QA Profile Editor", "FEMALE");
+    const profileUpdate = await rooms.updateMobileProfile(profileEditor, {
+      displayName: "QA Profile Editor Updated",
+      bio: "Server-authoritative profile update",
+      gender: "MALE",
+      countryCode: "BD",
+      languageCode: "bn",
+      whatsappE164: "+8801712345678",
+    });
+    assert.equal(profileUpdate.profile.gender, "MALE");
+    const [persistedProfileRows] = await root.query<
+      (RowDataPacket & { full_name: string; bio: string; gender: string; country_code: string; language_code: string; whatsapp_e164: string })[]
+    >(
+      "SELECT full_name, bio, gender, country_code, language_code, whatsapp_e164 FROM application_users WHERE id = ?",
+      [profileEditor.userId],
+    );
+    assert.deepEqual(persistedProfileRows[0], {
+      full_name: "QA Profile Editor Updated",
+      bio: "Server-authoritative profile update",
+      gender: "MALE",
+      country_code: "BD",
+      language_code: "bn",
+      whatsapp_e164: "+8801712345678",
+    });
+    assert.equal(
+      (await product.mobileBootstrap(profileEditor)).profile.gender,
+      "male",
+      "bootstrap after an app restart must read the persisted canonical gender",
+    );
     owner.agencyAccountId = qaAgency.accountId;
     await root.execute(
       "UPDATE application_users SET agency_account_id = ? WHERE id = ?",
