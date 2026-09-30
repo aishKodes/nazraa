@@ -9,120 +9,124 @@ import {
 export const metadata: Metadata = {
   title: "Download Nazraa for Android",
   description:
-    "Download the latest official Nazraa Android APK and verify its SHA-256 checksum.",
+    "Download the latest official Nazraa Android APK, review its release notes, and verify its SHA-256 checksum.",
   robots: { index: true, follow: true },
 };
 
+const installSteps = [
+  ["01", "Download the APK", "Use the official button below. Your browser will save the Nazraa APK to Downloads."],
+  ["02", "Open the file", "Tap the finished download and follow Android’s installation prompt."],
+  ["03", "Join Nazraa", "Open Nazraa, sign in or create an account, then find a room that fits your mood."],
+] as const;
+
 export default function DownloadPage() {
   const release = latestPublicRelease;
+  const releaseDate = new Intl.DateTimeFormat("en", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${release.releaseDate}T00:00:00Z`));
+
   return (
     <main className={styles.page}>
       <header className={styles.nav}>
-        <Link href="/" className={styles.brand}>
+        <Link href="/" className={styles.brand} aria-label="Nazraa Live home">
           <img src="/nazraa-logo.jpg" alt="Nazraa Live" />
-          <span>Nazraa Live</span>
+          <span>Nazraa <em>Live</em></span>
         </Link>
         <Link className={styles.navDownload} href="/">
-          Back to Nazraa
+          <span aria-hidden="true">←</span> Back to Nazraa
         </Link>
       </header>
-      <section className={styles.section}>
-        <div className={styles.sectionIntro}>
-          <span className={styles.eyebrow}>Official Android release</span>
-          <h2 style={{ marginTop: 18 }}>Download Nazraa</h2>
+
+      <section className={styles.downloadHero}>
+        <div>
+          <span className={styles.eyebrow}><i aria-hidden="true" /> Official Android release</span>
+          <h1>Download Nazraa<br /><span>with confidence.</span></h1>
           <p>
-            Install the current official Android release. Your browser may ask
-            for permission to install apps from this source; that is normal for
-            a direct APK download.
+            This page always points to the current official Nazraa Android
+            release and provides the information you need to verify it.
           </p>
+          <div className={styles.downloadTrust}>
+            <span><b>✓</b> Official release source</span>
+            <span><b>✓</b> SHA-256 published</span>
+            <span><b>✓</b> Android 7.0+</span>
+          </div>
         </div>
-        <div
-          className={styles.releaseCard}
-          style={{ marginTop: 34 }}
-          id="download"
-        >
-          <div>
-            <h2>Version {release.version}</h2>
-            <p>
-              Build {release.build} · released{" "}
-              {new Intl.DateTimeFormat("en", {
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-                timeZone: "UTC",
-              }).format(new Date(`${release.releaseDate}T00:00:00Z`))}
-            </p>
-            <div className={styles.releaseMeta}>
-              <span>{releaseFileSize(release.apkSizeBytes)}</span>
-              <span>{release.minimumAndroidVersion}</span>
-            </div>
+        <aside className={styles.versionCard} id="download">
+          <div className={styles.versionIcon} aria-hidden="true">N</div>
+          <span className={styles.versionLabel}>CURRENT RELEASE</span>
+          <h2>v{release.version}</h2>
+          <p>Build {release.build} · {releaseDate}</p>
+          <div className={styles.versionSpecs}>
+            <span>{releaseFileSize(release.apkSizeBytes)}</span>
+            <span>{release.minimumAndroidVersion}</span>
           </div>
           {release.apkUrl ? (
-            <a className={styles.downloadButton} href={release.apkUrl}>
-              Download APK
-            </a>
+            <a className={styles.downloadButton} href={release.apkUrl}>Download APK <span aria-hidden="true">↓</span></a>
           ) : (
-            <span className={styles.downloadButton} aria-disabled="true">
-              Release link preparing
-            </span>
+            <span className={styles.downloadButton} aria-disabled="true">Release link preparing</span>
           )}
-        </div>
-        <div className={styles.featureGrid} style={{ marginTop: 22 }}>
-          <article className={styles.feature}>
-            <div className={styles.featureIcon}>1</div>
-            <h3>Download</h3>
-            <p>
-              Use the official Download APK button when the release link is
-              published.
-            </p>
-          </article>
-          <article className={styles.feature}>
-            <div className={styles.featureIcon}>2</div>
-            <h3>Install</h3>
-            <p>
-              Open the downloaded file and follow Android&apos;s installation
-              prompt.
-            </p>
-          </article>
-          <article className={styles.feature}>
-            <div className={styles.featureIcon}>3</div>
-            <h3>Verify</h3>
-            <p>
-              For extra assurance, compare the file checksum below with the
-              downloaded APK.
-            </p>
-          </article>
-        </div>
-        <section className={styles.section} style={{ paddingBottom: 20 }}>
-          <div className={styles.sectionIntro}>
-            <h2 style={{ fontSize: 28 }}>Release notes</h2>
-          </div>
-          <div className={styles.featureGrid}>
-            {release.releaseNotes.map((note, index) => (
-              <article className={styles.feature} key={note}>
-                <div className={styles.featureIcon}>0{index + 1}</div>
-                <p style={{ marginTop: 16 }}>{note}</p>
-              </article>
-            ))}
-          </div>
-          <p
-            className={styles.checksum}
-            style={{ marginTop: 32, color: "#625775", fontSize: 12 }}
-          >
-            <strong>SHA-256</strong>
-            <br />
-            {release.sha256}
-          </p>
-        </section>
+          <small>Published release file · not an in-app update</small>
+        </aside>
       </section>
+
+      <section className={styles.downloadSection}>
+        <div className={styles.sectionIntro}>
+          <span className={styles.sectionKicker}>THREE SIMPLE STEPS</span>
+          <h2>From download to first room.</h2>
+        </div>
+        <div className={styles.installGrid}>
+          {installSteps.map(([number, title, copy]) => (
+            <article key={number}>
+              <span>{number}</span><h3>{title}</h3><p>{copy}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.releaseNotes}>
+        <div className={styles.notesHeading}>
+          <span className={styles.sectionKicker}>WHAT&apos;S IN THIS RELEASE</span>
+          <h2>Built for a smoother room.</h2>
+          <p>Released {releaseDate}</p>
+        </div>
+        <ol>
+          {release.releaseNotes.map((note, index) => (
+            <li key={note}><span>0{index + 1}</span><p>{note}</p></li>
+          ))}
+        </ol>
+      </section>
+
+      <section className={styles.verifySection}>
+        <div>
+          <span className={styles.sectionKicker}>OPTIONAL FILE CHECK</span>
+          <h2>Verify the download.</h2>
+          <p>
+            If you use a checksum tool, compare the downloaded APK’s SHA-256
+            value with the official value below. They must match exactly.
+          </p>
+        </div>
+        <code className={styles.checksum}>{release.sha256}</code>
+      </section>
+
+      <section className={styles.helpStrip}>
+        <div><span>Need a hand?</span><h2>We&apos;re here to help.</h2></div>
+        <p>For installation, account, verification, safety, or privacy questions, contact Nazraa Support.</p>
+        <Link className={styles.helpLink} href="/support">Visit support <span aria-hidden="true">→</span></Link>
+      </section>
+
       <footer className={styles.footer}>
-        <span>
-          Need help? <Link href="/support">Contact Nazraa Support</Link>.
-        </span>
-        <nav className={styles.footerLinks}>
+        <Link href="/" className={styles.footerBrand}>
+          <img src="/nazraa-logo.jpg" alt="" /> <span>Nazraa <em>Live</em></span>
+        </Link>
+        <p>© 2026 Nazraa Live. Built for live social entertainment.</p>
+        <nav className={styles.footerLinks} aria-label="Legal and support">
           <Link href="/privacy">Privacy</Link>
           <Link href="/terms">Terms</Link>
           <Link href="/community-guidelines">Guidelines</Link>
+          <Link href="/support">Support</Link>
         </nav>
       </footer>
     </main>
