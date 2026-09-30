@@ -137,6 +137,7 @@ import {
 } from "@/lib/db/repositories/mobile-safety";
 
 export const dynamic = "force-dynamic";
+import { faceLiveSocial, invalidateFaceLiveSocial } from "@/lib/db/repositories/face-live-social";
 
 // These routes run on the media critical path and can be called every two
 // seconds while a room is open. Cosmetic reads already enforce their own
@@ -145,6 +146,7 @@ export const dynamic = "force-dynamic";
 const mediaCriticalResources = new Set([
   "room-join",
   "pk-battle",
+  "face-live-social",
   "room-presence",
   "room-media-bootstrap",
 ]);
@@ -1284,6 +1286,10 @@ export async function POST(
         }
         return NextResponse.json(result);
       }
+      if (resource === "face-live-social") {
+        const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
+        return NextResponse.json(await faceLiveSocial(identity, parsed.roomCode), { headers: { "Cache-Control": "private, no-store" } });
+      }
       if (resource === "room-admins") {
         if (!mobileCan(identity, "rooms.manage.own"))
           return errorResponse(new Error("Forbidden."), 403);
@@ -1295,6 +1301,7 @@ export async function POST(
           })
           .parse(body);
         const result = await setRoomAdmin(identity, parsed);
+        await invalidateFaceLiveSocial(parsed.roomCode).catch(() => undefined);
         notifyRoom(parsed.roomCode, "seat");
         scheduleMixerSync(
           parsed.roomCode,
@@ -1598,10 +1605,12 @@ export async function POST(
             roomCode: z.string().trim().min(3).max(80),
             giftId: z.string().trim().min(1).max(80),
             recipientPublicId: z.string().regex(/^\d+$/),
+            recipientMode: z.enum(["SINGLE", "ALL"]).optional(),
             quantity: z.number().int().min(1).max(99),
           })
           .parse(body);
         const result = await sendGift(identity, parsed);
+        await invalidateFaceLiveSocial(parsed.roomCode).catch(() => undefined);
         notifyRoom(parsed.roomCode, "gift");
         return NextResponse.json(result);
       }

@@ -70,6 +70,7 @@ async function terminateAuthoritativeSeat(
     terminationReason:
       | "USER_LEFT_ROOM"
       | "HOST_REMOVED_USER"
+      | "RECONNECT_GRACE_EXPIRED"
       | "ROOM_ENDED";
   },
 ) {
@@ -81,7 +82,7 @@ async function terminateAuthoritativeSeat(
     [input.roomId, input.userId],
   );
   const seat = rows[0];
-  if (!seat || seat.seat_index == null) return false;
+  if (!seat || (seat.seat_index == null && seat.seat_session_id == null)) return false;
   const nextVersion = Number(seat.seat_version ?? 0) + 1;
   await connection.execute(
     `UPDATE live_room_members
@@ -260,7 +261,7 @@ function roomMediaDelivery(
   );
   const maxFaceAudioGuests = Math.max(
     1,
-    Math.min(12, Number(features.maxFaceAudioGuests ?? 4)),
+    Math.min(3, Number(features.maxFaceAudioGuests ?? 3)),
   );
   const rtcPassiveFallbackCeiling = Math.max(
     1,
@@ -2099,6 +2100,7 @@ export async function refreshRoomPresence(
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.seat_session_id, member.seat_version,
+              EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = member.application_user_id) is_face_admin,
               member.muted, member.muted_by_staff,
               accounting.id reward_accounting_id,
               accounting.host_application_user_id reward_host_application_user_id,
@@ -2184,7 +2186,8 @@ export async function refreshRoomPresence(
       await connection.execute(
         `UPDATE live_room_members
          SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', muted = TRUE,
-             muted_by_staff = FALSE, media_publishing = FALSE
+             muted_by_staff = FALSE, media_publishing = FALSE,
+             seat_session_id = NULL, seat_version = seat_version + 1
          WHERE room_id = ? AND media_role = 'AUDIO_GUEST'
            AND application_user_id <> ? AND left_at IS NULL
            AND last_seen_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))
@@ -2575,18 +2578,21 @@ export async function refreshRoomPresence(
               user.anchor_level_number anchor_level,
               user.vip_tier, user.country_code, user.language_code, member.room_role, member.media_role,
               member.media_publishing, member.seat_index, member.seat_session_id, member.seat_version,
+              EXISTS(SELECT 1 FROM face_host_admins admin JOIN live_rooms face_room ON face_room.host_application_user_id = admin.host_application_user_id
+                WHERE face_room.id = member.room_id AND admin.admin_application_user_id = member.application_user_id) is_face_admin,
               member.muted, member.muted_by_staff,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.followed_application_user_id = user.id) followers,
               (SELECT COUNT(*) FROM user_follows follow_link WHERE follow_link.follower_application_user_id = user.id) following,
               CASE WHEN avatar.updated_at IS NOT NULL
                 THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', user.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(avatar.updated_at) * 1000))
                 ELSE user.avatar_url END avatar_url,
-              COALESCE(gifts.received_value, 0) received_gift_value
+              COALESCE(gifts.received_value, 0) received_gift_value,
+              COALESCE(gifts.received_diamonds, 0) received_gift_diamonds
        FROM live_room_members member
        INNER JOIN application_users user ON user.id = member.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        LEFT JOIN (
-         SELECT room_id, receiver_application_user_id, SUM(coin_value) received_value
+         SELECT room_id, receiver_application_user_id, SUM(coin_value) received_value, SUM(diamond_value) received_diamonds
          FROM live_room_gift_events WHERE room_id = ? GROUP BY room_id, receiver_application_user_id
        ) gifts ON gifts.room_id = member.room_id AND gifts.receiver_application_user_id = member.application_user_id
        WHERE member.room_id = ? AND member.left_at IS NULL
@@ -2612,7 +2618,7 @@ export async function refreshRoomPresence(
       [rows[0].id, rows[0].id, reconnectGrace],
     );
     const [giftEvents] = await connection.query<RowDataPacket[]>(
-      `SELECT event.id, event.quantity, event.coin_value, event.created_at,
+      `SELECT event.id, event.quantity, event.coin_value, event.diamond_value, event.created_at,
               gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
               gift.animation_key gift_animation_key, gift.asset_config gift_asset_config,
               sender.public_id sender_public_id, sender.full_name sender_name, sender.vip_tier sender_vip,
@@ -2841,6 +2847,7 @@ export async function refreshRoomPresence(
       active: true,
       serverTime: rows[0].reward_server_time,
       roomRole: String(rows[0].room_role).toLowerCase(),
+      isRoomAdmin: Boolean(rows[0].is_face_admin) || rows[0].room_role === 'ADMIN',
       mediaRole: currentMediaRole.toLowerCase(),
       seatIndex: rows[0].seat_index,
       seatSessionId: rows[0].seat_session_id == null ? null : String(rows[0].seat_session_id),
@@ -3047,6 +3054,7 @@ export async function refreshRoomPresence(
           cosmetics: cosmeticsFor(member.public_id),
         },
         roomRole: String(member.room_role).toLowerCase(),
+        isRoomAdmin: Boolean(member.is_face_admin) || member.room_role === 'ADMIN',
         mediaRole: String(member.media_role).toLowerCase(),
         mediaPublishing: Boolean(member.media_publishing),
         seatIndex: member.seat_index == null ? null : Number(member.seat_index),
@@ -3055,11 +3063,13 @@ export async function refreshRoomPresence(
         muted: Boolean(member.muted),
         staffMuted: Boolean(member.muted_by_staff),
         receivedGiftValue: Number(member.received_gift_value),
+        receivedGiftDiamonds: Number(member.received_gift_diamonds),
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id),
         quantity: Number(event.quantity),
         value: Number(event.coin_value),
+        diamondValue: Number(event.diamond_value),
         createdAt: event.created_at,
         gift: {
           id: String(event.gift_key),
@@ -3246,8 +3256,8 @@ export async function respondLiveCoHost(
       const maxAudioGuests = Math.max(
         1,
         Math.min(
-          12,
-          Number(jsonObject(room.room_features_json).maxFaceAudioGuests ?? 4),
+          3,
+          Number(jsonObject(room.room_features_json).maxFaceAudioGuests ?? 3),
         ),
       );
       const [speakerRows] = await connection.query<
@@ -3277,12 +3287,14 @@ export async function respondLiveCoHost(
     await connection.execute(
       `UPDATE live_room_members SET room_role = ?,
          media_role = CASE WHEN ? THEN 'AUDIO_GUEST' ELSE 'PASSIVE_VIEWER' END,
-         muted = ?, muted_by_staff = FALSE, media_publishing = FALSE
+         muted = ?, muted_by_staff = FALSE, media_publishing = FALSE,
+         seat_session_id = IF(?, UUID(), NULL), seat_version = seat_version + 1
        WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL`,
       [
         input.accept ? "SPEAKER" : "AUDIENCE",
         input.accept,
         !input.accept,
+        input.accept,
         room.id,
         target.id,
       ],
@@ -3312,19 +3324,25 @@ export async function endLiveCoHost(
       targetPublicId !== identity.publicId &&
       room.host_application_user_id !== identity.userId
     ) {
-      throw new Error("Only the room owner can disconnect another co-host.");
+      const [admins] = await connection.query<RowDataPacket[]>("SELECT 1 FROM face_host_admins WHERE host_application_user_id = ? AND admin_application_user_id = ?", [room.host_application_user_id, identity.userId]);
+      if (!admins.length) throw new Error("Only the room owner or an appointed Admin can remove a guest.");
     }
     const [targets] = await connection.query<
-      (RowDataPacket & { id: string })[]
+      (RowDataPacket & { id: string; is_admin: number })[]
     >(
-      `SELECT user.id FROM application_users user
+      `SELECT user.id, EXISTS(SELECT 1 FROM face_host_admins admin
+         WHERE admin.host_application_user_id = ? AND admin.admin_application_user_id = user.id) is_admin FROM application_users user
        INNER JOIN live_room_members member ON member.application_user_id = user.id
        WHERE member.room_id = ? AND member.left_at IS NULL AND user.public_id = ? LIMIT 1 FOR UPDATE`,
-      [room.id, targetPublicId],
+      [room.host_application_user_id, room.id, targetPublicId],
     );
     const target = targets[0];
     if (!target || target.id === room.host_application_user_id)
       return { status: "ended" };
+    if (target.id !== identity.userId && target.is_admin && room.host_application_user_id !== identity.userId) {
+      throw new Error("Only the room owner can remove another Admin's seat.");
+    }
+    await terminateAuthoritativeSeat(connection, { roomId: room.id, userId: target.id, eventSource: "FACE_LEAVE_SEAT", terminationReason: "HOST_REMOVED_USER" });
     await connection.execute(
       "UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', muted = TRUE, muted_by_staff = FALSE, media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL",
       [room.id, target.id],
@@ -3350,6 +3368,46 @@ export async function endLiveCoHost(
     );
     return { status: "ended" };
   });
+}
+
+/** Existing minute maintenance job, not a new timer or presence polling loop.
+ * Only expire seats with both expired application presence and confirmed
+ * non-publishing media evidence. Muted, backgrounded or reconnecting speakers
+ * with a live provider track must not lose their durable seat.
+ */
+export async function pruneDisconnectedFaceGuests() {
+  const [settings] = await db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features'");
+  const grace = Math.max(30, Math.min(300, Number(jsonObject(settings[0]?.setting_value).mediaReconnectGraceSeconds ?? 180)));
+  const expired = `member.left_at IS NULL AND member.media_role = 'AUDIO_GUEST'
+    AND member.seat_session_id IS NOT NULL AND member.media_publishing = FALSE
+    AND member.last_seen_at < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))
+    AND COALESCE(member.last_media_heartbeat_at, member.last_seen_at) < TIMESTAMPADD(SECOND, -?, CURRENT_TIMESTAMP(3))
+    AND NOT EXISTS(SELECT 1 FROM livekit_active_media_tracks track
+      WHERE track.room_id = member.room_id AND track.application_user_id = member.application_user_id AND track.active = TRUE)`;
+  const [candidates] = await db().query<RowDataPacket[]>(`SELECT DISTINCT room.id, room.room_code FROM live_rooms room
+    JOIN live_room_members member ON member.room_id = room.id
+    WHERE room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED') AND ${expired} LIMIT 20`, [grace, grace]);
+  const cleaned: {roomCode: string; publicIds: string[]}[] = [];
+  for (const room of candidates) {
+    const publicIds = await withTransaction(async (connection) => {
+      const [locked] = await connection.query<RowDataPacket[]>("SELECT id FROM live_rooms WHERE id = ? AND status IN ('ACTIVE','LOCKED') FOR UPDATE", [room.id]);
+      if (!locked.length) return [] as string[];
+      const [members] = await connection.query<RowDataPacket[]>(`SELECT member.application_user_id, user.public_id
+        FROM live_room_members member JOIN application_users user ON user.id = member.application_user_id
+        WHERE member.room_id = ? AND ${expired} FOR UPDATE`, [room.id, grace, grace]);
+      for (const member of members) {
+        await terminateAuthoritativeSeat(connection, { roomId: room.id, userId: member.application_user_id,
+          eventSource: 'FACE_RECONNECT_TIMEOUT', terminationReason: 'RECONNECT_GRACE_EXPIRED' });
+        await connection.execute("UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER', left_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, member.application_user_id]);
+        await connection.execute("UPDATE livekit_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?", [room.id, member.application_user_id]);
+        await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND can_publish = TRUE", [room.id, member.application_user_id]);
+        await connection.execute("UPDATE live_cohost_requests SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND requester_application_user_id = ? AND status = 'ACCEPTED'", [room.id, member.application_user_id]);
+      }
+      return members.map(member => String(member.public_id));
+    });
+    if (publicIds.length) cleaned.push({ roomCode: String(room.room_code), publicIds });
+  }
+  return cleaned;
 }
 
 export async function roomPublishingDecision(
@@ -3435,8 +3493,6 @@ export async function setRoomAdmin(
     const room = rooms[0];
     if (!room || room.host_application_user_id !== identity.userId)
       throw new Error("Only the room owner can appoint Room Admins.");
-    if (room.room_type !== "PARTY")
-      throw new Error("Room Admins are available only in Party Rooms.");
     const [targets] = await connection.query<
       (RowDataPacket & { id: string })[]
     >(
@@ -3449,6 +3505,15 @@ export async function setRoomAdmin(
     const target = targets[0];
     if (!target || target.id === identity.userId)
       throw new Error("Choose another active room member.");
+    if (room.room_type !== "PARTY") {
+      if (input.makeAdmin) await connection.execute("INSERT IGNORE INTO face_host_admins (host_application_user_id, admin_application_user_id) VALUES (?, ?)", [identity.userId, target.id]);
+      else await connection.execute("DELETE FROM face_host_admins WHERE host_application_user_id = ? AND admin_application_user_id = ?", [identity.userId, target.id]);
+      await connection.execute(`INSERT INTO audit_logs (id, actor_role, action, module, target_type, target_id, new_data, reason)
+        VALUES (?, 'HOST', ?, 'FACE_ROOM', 'APPLICATION_USER', ?, JSON_OBJECT('hostId', ?), 'Host changed persistent Face Room Admin authority.')`,
+        [randomUUID(), input.makeAdmin ? "ROOM_ADMIN_APPOINTED" : "ROOM_ADMIN_REMOVED", target.id, identity.userId]);
+      const [admins] = await connection.query<RowDataPacket[]>("SELECT user.public_id FROM face_host_admins admin JOIN application_users user ON user.id = admin.admin_application_user_id WHERE admin.host_application_user_id = ?", [identity.userId]);
+      return { admins: admins.map((row) => String(row.public_id)), limit: null };
+    }
     if (input.makeAdmin) {
       const [countRows] = await connection.query<
         (RowDataPacket & { count: number })[]
@@ -3511,8 +3576,9 @@ export async function setRoomMemberMuted(
         muted_by_staff: number;
       })[]
     >(
-      `SELECT room.id room_id, actor.room_role actor_role,
-              room.room_type, target.application_user_id target_id, target.room_role target_role, target.muted_by_staff
+      `SELECT room.id room_id, CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = actor.application_user_id) THEN 'ADMIN' ELSE actor.room_role END actor_role,
+              room.room_type, target.application_user_id target_id,
+              CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = target.application_user_id) THEN 'ADMIN' ELSE target.room_role END target_role, target.muted_by_staff
        FROM live_rooms room
        INNER JOIN live_room_members actor ON actor.room_id = room.id
          AND actor.application_user_id = ? AND actor.left_at IS NULL
@@ -4239,7 +4305,8 @@ export async function kickRoomMember(
         target_role: string;
       })[]
     >(
-      `SELECT room.id room_id, actor.room_role actor_role, target.application_user_id target_id, target.room_role target_role
+      `SELECT room.id room_id, CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = actor.application_user_id) THEN 'ADMIN' ELSE actor.room_role END actor_role,
+        target.application_user_id target_id, CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = target.application_user_id) THEN 'ADMIN' ELSE target.room_role END target_role
        FROM live_rooms room
        INNER JOIN live_room_members actor ON actor.room_id = room.id
          AND actor.application_user_id = ? AND actor.left_at IS NULL

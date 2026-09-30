@@ -1643,7 +1643,7 @@ export async function submitRoomFeatureSettings(formData: FormData) {
       emergencyRtcFallbackEnabled: z.enum(["true", "false"]),
       mediaReconnectGraceSeconds: z.coerce.number().int().min(5).max(300),
       passiveBackgroundGraceSeconds: z.coerce.number().int().min(5).max(60),
-      maxFaceAudioGuests: z.coerce.number().int().min(1).max(12),
+      maxFaceAudioGuests: z.coerce.number().int().min(1).max(3),
       rtcPassiveFallbackCeiling: z.coerce.number().int().min(1).max(20),
       temporaryRtcCostGuardEnabled: z.enum(["true", "false"]),
       temporaryFaceRtcViewerCeiling: z.coerce.number().int().min(1).max(20),

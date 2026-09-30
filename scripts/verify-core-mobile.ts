@@ -433,6 +433,8 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    const faceMaster = await import("./face-live-master-tests");
+    await faceMaster.verifyFaceLiveMaster(root, user, owner);
     const guest = await user("QA Audience");
     const roomAdmin = await user("QA Room Admin");
     const stranger = await user("QA Other Branch");

@@ -18,7 +18,7 @@ export type RoomRealtimeTopic =
 let publisher: RedisClientType | undefined;
 let connecting: Promise<RedisClientType> | undefined;
 
-async function connectedPublisher(): Promise<RedisClientType | undefined> {
+export async function roomRedis(): Promise<RedisClientType | undefined> {
   const url = process.env.REDIS_URL;
   if (!url) return undefined; // Vercel remains operational until cutover.
   if (publisher?.isReady) return publisher;
@@ -44,7 +44,7 @@ export async function publishRoomRealtimeEvent(
 ): Promise<void> {
   if (!/^[A-Za-z0-9_-]{3,80}$/.test(roomCode)) return;
   try {
-    const client = await connectedPublisher();
+    const client = await roomRedis();
     if (!client) return;
     await client.publish(
       `room:${roomCode}`,

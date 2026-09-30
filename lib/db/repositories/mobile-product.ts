@@ -969,10 +969,68 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   return createdRoom;
 }
 
-export async function sendGift(identity: MobileIdentity, input: { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number }) {
+type GiftInput = { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number; recipientMode?: "SINGLE" | "ALL" };
+
+// SINGLE and ALL must agree about recoverable occupied Guest seats. Provider
+// evidence preserves a valid muted/reconnecting speaker, not a stale audience.
+const giftRecipientPresenceSql = `member.room_role = 'OWNER'
+  OR member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+  OR (member.media_role = 'AUDIO_GUEST' AND member.last_media_heartbeat_at >= TIMESTAMPADD(SECOND,
+    -GREATEST(30, LEAST(300, COALESCE((SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(setting_value, '$.mediaReconnectGraceSeconds')) AS UNSIGNED)
+      FROM system_settings WHERE setting_key = 'mobile.room_features'), 180))), CURRENT_TIMESTAMP(3)))
+  OR EXISTS(SELECT 1 FROM livekit_active_media_tracks active_track
+    WHERE active_track.room_id = member.room_id AND active_track.application_user_id = member.application_user_id AND active_track.active = TRUE)`;
+
+export async function sendGift(identity: MobileIdentity, input: GiftInput) {
+  const intentId = input.clientGiftId ?? randomUUID();
+  const key = `GIFT:${identity.userId}:${intentId}`;
+  const intent = JSON.stringify({ roomCode: input.roomCode, giftId: input.giftId,
+    recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity });
+  return withIdempotentTransaction(async (connection) => {
+    await connection.execute("INSERT IGNORE INTO gift_intent_receipts (idempotency_key, request_json) VALUES (?, ?)", [key, intent]);
+    const [receipts] = await connection.query<(RowDataPacket & { request_json: unknown; receipt_json: unknown })[]>(
+      "SELECT request_json, receipt_json FROM gift_intent_receipts WHERE idempotency_key = ? FOR UPDATE", [key]);
+    const savedIntent = asObject(receipts[0].request_json);
+    const wantedIntent = JSON.parse(intent) as Record<string, unknown>;
+    if (Object.keys(wantedIntent).some((field) => savedIntent[field] !== wantedIntent[field])) throw new Error("This gift request ID was already used.");
+    if (receipts[0].receipt_json != null) {
+      const receipt = asObject(receipts[0].receipt_json) as Awaited<ReturnType<typeof sendGiftToRecipient>> & { totalCoins: number };
+      const [balances] = await connection.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [identity.userId]);
+      return { ...receipt, remainingCoins: Number(balances[0]?.available_balance ?? 0), message: "Gift already sent", event: null, events: [], replayed: true };
+    }
+    let recipients = [input.recipientPublicId];
+    if (input.recipientMode === "ALL") {
+      const [rooms] = await connection.query<RowDataPacket[]>(
+        `SELECT room.id, room.room_type FROM live_rooms room
+         JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL
+         WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') FOR UPDATE`, [identity.userId, input.roomCode]);
+      if (!rooms[0] || !["FACE", "LIVE"].includes(rooms[0].room_type)) throw new Error("ALL gifting is available in Face Live.");
+      const [targets] = await connection.query<RowDataPacket[]>(
+        `SELECT user.public_id FROM live_room_members member JOIN application_users user ON user.id = member.application_user_id
+         WHERE member.room_id = ? AND member.left_at IS NULL AND user.account_status = 'ACTIVE'
+         AND (member.room_role = 'OWNER' OR (member.media_role = 'AUDIO_GUEST' AND member.seat_session_id IS NOT NULL))
+         AND (${giftRecipientPresenceSql})
+         ORDER BY member.room_role = 'OWNER' DESC, user.id FOR UPDATE`, [rooms[0].id]);
+      recipients = targets.map((target) => String(target.public_id));
+      if (!recipients.length || recipients.length > 4) throw new Error("The room's gift recipients changed. Please try again.");
+    }
+    const results = [];
+    for (const recipientPublicId of recipients) {
+      results.push(await sendGiftToRecipient(connection, identity, { ...input, recipientPublicId,
+        clientGiftId: input.recipientMode === "ALL" ? `${intentId}:ALL:${recipientPublicId}` : intentId }));
+    }
+    const result = { ...results[0], remainingCoins: results.at(-1)!.remainingCoins,
+      events: results.flatMap((item) => item.event ? [item.event] : []),
+      totalCoins: results.reduce((sum, item) => sum + (item.event?.value ?? 0), 0),
+      message: input.recipientMode === "ALL" ? `Sent to ${recipients.length} recipients` : results[0].message, replayed: false };
+    await connection.execute("UPDATE gift_intent_receipts SET receipt_json = ? WHERE idempotency_key = ?", [JSON.stringify(result), key]);
+    return result;
+  });
+}
+
+async function sendGiftToRecipient(connection: PoolConnection, identity: MobileIdentity, input: GiftInput) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
-  return withIdempotentTransaction(async (connection) => {
     const liveRules = await loadFaceLiveRules(connection);
     await connection.execute(
       `INSERT IGNORE INTO gift_idempotency_requests
@@ -1005,8 +1063,9 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
       return { success: true, remainingCoins: Number(balanceRows[0]?.available_balance ?? 0), message: "Gift already sent", rocket: null, event: null };
     }
     const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; animation_key: string | null; asset_config: unknown; coin_price: number })[]>("SELECT id, name, emoji, visual_url, animation_key, asset_config, coin_price FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
-    const [roomRows] = await connection.query<(RowDataPacket & { id: string })[]>(
-      `SELECT room.id FROM live_rooms room
+    const [roomRows] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; live_session_id: string | null })[]>(
+      `SELECT room.id, room.room_type, room.host_application_user_id,
+         (SELECT id FROM live_session_accounting WHERE room_id = room.id AND status = 'ACTIVE') live_session_id FROM live_rooms room
        INNER JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL
        WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1 FOR UPDATE`,
       [identity.userId, input.roomCode],
@@ -1024,18 +1083,11 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
          -- joined or on a social-presence refresh racing the LiveKit publish.
          -- The active room owner is the intended Host recipient; other
          -- members still require current membership evidence.
-         AND (
-           member.room_role = 'OWNER'
-           OR member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
-           OR EXISTS (
-             SELECT 1 FROM livekit_active_media_tracks active_track
-             WHERE active_track.room_id = member.room_id
-               AND active_track.application_user_id = member.application_user_id
-               AND active_track.active = TRUE
-           )
-         )
+         AND (${giftRecipientPresenceSql})
+         AND (? = 'PARTY' OR member.room_role = 'OWNER'
+           OR (member.media_role = 'AUDIO_GUEST' AND member.seat_session_id IS NOT NULL))
          AND user.public_id = ? AND user.account_status = 'ACTIVE' LIMIT 1 FOR UPDATE`,
-      [room.id, input.recipientPublicId],
+      [room.id, room.room_type, input.recipientPublicId],
     );
     const [senderProfileRows] = await connection.query<(RowDataPacket & { public_id: string; full_name: string; avatar_url: string | null; avatar_updated_at: Date | null; country_code: string | null; language_code: string | null; vip_tier: number; consumption_points: number; anchor_income_points: number })[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
@@ -1107,9 +1159,9 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
     const eventId = randomUUID();
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone)],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id],
     );
     const rocket = await recordRocketGift(connection, {
       roomId: room.id,
@@ -1133,7 +1185,6 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
     };
-  });
 }
 
 export async function mutateGameWallet(identity: MobileIdentity, input: {
