@@ -155,12 +155,60 @@ function numberArray(value: unknown, fallback: number[], length?: number) {
   return parsed.every((item) => Number.isSafeInteger(item) && item >= 0) ? parsed : fallback;
 }
 
+/**
+ * The first shared-round rollout used these exact timings.  The result phase
+ * was too short for the deterministic client selector to finish on a busy
+ * device, so the next round could replace a settled result before it was
+ * shown.  Keep the total cadence unchanged while extending the result hold.
+ *
+ * This is deliberately an exact match only.  A Master-defined schedule is
+ * never silently rewritten; the database migration persists this equivalent
+ * correction for the untouched legacy configuration.
+ */
+const legacyResultHoldPacing: Partial<Record<ConfigurableGameId, {
+  bettingSeconds: number;
+  drawingSeconds: number;
+  resultSeconds: number;
+}>> = {
+  teen_patti_pro: { bettingSeconds: 12, drawingSeconds: 4, resultSeconds: 3 },
+  luck77: { bettingSeconds: 8, drawingSeconds: 2, resultSeconds: 3 },
+  greedy_lion: { bettingSeconds: 16, drawingSeconds: 3, resultSeconds: 3 },
+  greedy_king: { bettingSeconds: 24, drawingSeconds: 3, resultSeconds: 3 },
+};
+
+function resolvedTiming(
+  id: ConfigurableGameId,
+  stored: Record<string, unknown>,
+  fallback: GameRuntimeConfig,
+) {
+  const timing = {
+    bettingSeconds: integer(stored.bettingSeconds, fallback.bettingSeconds, 0, 300),
+    drawingSeconds: integer(stored.drawingSeconds, fallback.drawingSeconds, 0, 60),
+    resultSeconds: integer(stored.resultSeconds, fallback.resultSeconds, 0, 60),
+  };
+  const legacy = legacyResultHoldPacing[id];
+  if (
+    legacy != null &&
+    timing.bettingSeconds === legacy.bettingSeconds &&
+    timing.drawingSeconds === legacy.drawingSeconds &&
+    timing.resultSeconds === legacy.resultSeconds
+  ) {
+    return {
+      bettingSeconds: fallback.bettingSeconds,
+      drawingSeconds: fallback.drawingSeconds,
+      resultSeconds: fallback.resultSeconds,
+    };
+  }
+  return timing;
+}
+
 export function mobileGamesConfig(value: unknown): MobileGamesConfig {
   const root = object(value);
   const storedGames = object(root.games);
   const games = Object.fromEntries(configurableGameIds.map((id) => {
     const fallback = defaultMobileGamesConfig.games[id];
     const stored = object(storedGames[id]);
+    const timing = resolvedTiming(id, stored, fallback);
     const outcomeLength = id === "teen_patti_pro" || id === "luck77"
       ? 3
       : id === "bounty_football"
@@ -202,9 +250,9 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
         1,
         1000,
       ),
-      bettingSeconds: integer(stored.bettingSeconds, fallback.bettingSeconds, 0, 300),
-      drawingSeconds: integer(stored.drawingSeconds, fallback.drawingSeconds, 0, 60),
-      resultSeconds: integer(stored.resultSeconds, fallback.resultSeconds, 0, 60),
+      bettingSeconds: timing.bettingSeconds,
+      drawingSeconds: timing.drawingSeconds,
+      resultSeconds: timing.resultSeconds,
       minimumBet: integer(stored.minimumBet, fallback.minimumBet, 1, 50_000_000),
       maximumBet: integer(stored.maximumBet, fallback.maximumBet, 1, 50_000_000),
       denominations: (() => {

@@ -199,6 +199,29 @@ async function main() {
       gameConfig.defaultMobileGamesConfig.games.luck77.bettingSeconds,
       7,
     );
+    const legacyTiming = gameConfig.mobileGamesConfig({
+      games: {
+        teen_patti_pro: { bettingSeconds: 12, drawingSeconds: 4, resultSeconds: 3 },
+        luck77: { bettingSeconds: 8, drawingSeconds: 2, resultSeconds: 3 },
+        greedy_lion: { bettingSeconds: 16, drawingSeconds: 3, resultSeconds: 3 },
+        greedy_king: { bettingSeconds: 24, drawingSeconds: 3, resultSeconds: 3 },
+      },
+    });
+    assert.deepEqual(
+      [
+        legacyTiming.games.teen_patti_pro,
+        legacyTiming.games.luck77,
+        legacyTiming.games.greedy_lion,
+        legacyTiming.games.greedy_king,
+      ].map(({ bettingSeconds, drawingSeconds, resultSeconds }) => ({ bettingSeconds, drawingSeconds, resultSeconds })),
+      [
+        { bettingSeconds: 11, drawingSeconds: 3, resultSeconds: 5 },
+        { bettingSeconds: 7, drawingSeconds: 1, resultSeconds: 5 },
+        { bettingSeconds: 14, drawingSeconds: 3, resultSeconds: 5 },
+        { bettingSeconds: 22, drawingSeconds: 3, resultSeconds: 5 },
+      ],
+      "the exact known legacy shared-game configuration must receive a safe result hold even before its durable migration runs",
+    );
     assert.equal(
       gameConfig.defaultMobileGamesConfig.games.jungle_hunt.targetWinRate,
       0.4,
