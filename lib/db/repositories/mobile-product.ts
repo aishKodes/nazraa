@@ -953,7 +953,21 @@ export async function sendGift(identity: MobileIdentity, input: { clientGiftId?:
        FROM live_room_members member INNER JOIN application_users user ON user.id = member.application_user_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
        WHERE member.room_id = ? AND member.left_at IS NULL
-         AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+         -- A Host who is actively publishing can be alone in a Face Live.
+         -- Do not make a viewer's first Gift depend on another viewer having
+         -- joined or on a social-presence refresh racing the LiveKit publish.
+         -- The active room owner is the intended Host recipient; other
+         -- members still require current membership evidence.
+         AND (
+           member.room_role = 'OWNER'
+           OR member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
+           OR EXISTS (
+             SELECT 1 FROM livekit_active_media_tracks active_track
+             WHERE active_track.room_id = member.room_id
+               AND active_track.application_user_id = member.application_user_id
+               AND active_track.active = TRUE
+           )
+         )
          AND user.public_id = ? AND user.account_status = 'ACTIVE' LIMIT 1 FOR UPDATE`,
       [room.id, input.recipientPublicId],
     );

@@ -1839,8 +1839,31 @@ async function main() {
         quantity: 1,
       }),
     );
+    // A Face Host can be the only active publisher when the first viewer
+    // opens the room.  Reproduce a delayed social-presence timestamp: the
+    // viewer must still be able to gift the active room owner.  This covers
+    // the production race where LiveKit media was ready before the next
+    // participant snapshot arrived.
+    const soloGiftViewer = await user("QA Solo Gift Viewer");
+    await rooms.joinLiveRoom(soloGiftViewer, faceRoomCode);
+    await root.execute(
+      `UPDATE live_room_members member
+       INNER JOIN live_rooms room ON room.id = member.room_id
+       SET member.last_seen_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 3 MINUTE)
+       WHERE room.room_code = ? AND member.application_user_id = ?`,
+      [faceRoomCode, owner.userId],
+    );
+    const soloHostGift = await product.sendGift(soloGiftViewer, {
+      clientGiftId: randomUUID(),
+      roomCode: faceRoomCode,
+      giftId: gift.id,
+      recipientPublicId: owner.publicId,
+      quantity: 1,
+    });
+    assert.equal(soloHostGift.success, true);
+    assert.equal(soloHostGift.event?.receiver.id, owner.publicId);
     console.log(
-      "PASS gifts: active receivers, atomic coin debit/diamond credit, retry idempotency, wallet-specific ledger, room event and per-seat total",
+      "PASS gifts: active receivers including a solo Face Host, atomic coin debit/diamond credit, retry idempotency, wallet-specific ledger, room event and per-seat total",
     );
 
     // Profile Live History must be a read-only projection of the same durable
@@ -1878,7 +1901,11 @@ async function main() {
     assert.equal(ownerLiveHistory.summary.videoSeconds, 70);
     assert.equal(ownerLiveHistory.summary.validDays, 1);
     assert.equal(ownerLiveHistory.summary.sendingCoins, giftValue + gift.cost);
-    assert.equal(ownerLiveHistory.summary.receivedCoins, 0);
+    assert.equal(
+      ownerLiveHistory.summary.receivedCoins,
+      gift.cost,
+      "the solo-Host regression gift belongs only to the Host's own history",
+    );
     assert.deepEqual(
       ownerLiveHistory.days.find((day) => day.date === "2026-09-05"),
       {
