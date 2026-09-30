@@ -70,3 +70,33 @@ export async function publishSharedGameBetInvalidation(game: SharedGameRealtimeS
     // Private HTTP reconciliation remains the fallback.
   }
 }
+
+/**
+ * A shared-round settlement has committed its wallet/ledger rows. This is an
+ * invalidation only: the authenticated state endpoint remains the sole source
+ * for a player's wager, payout and balance. Unlike public phase state, this
+ * event must never be cache-deduplicated; another player's settlement for the
+ * same round can be the moment a given player becomes ready too.
+ */
+export async function publishSharedGameSettlementInvalidation(
+  game: SharedGameRealtimeState["game"],
+  roundId: string,
+): Promise<void> {
+  try {
+    const client = await connectedPublisher();
+    if (!client) return;
+    await client.publish(
+      `game:${game}`,
+      JSON.stringify({
+        type: "GAME_CHANGED",
+        game,
+        reason: "SETTLEMENT",
+        roundId,
+        serverNow: Date.now(),
+      }),
+    );
+  } catch {
+    // The next authenticated reconciliation is safe if a transient Redis
+    // failure follows a committed durable settlement.
+  }
+}

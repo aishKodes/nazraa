@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { maintainSharedGameRounds } from "@/lib/db/repositories/mobile-product";
-import { publishSharedGameRealtimeState } from "@/lib/services/game-realtime-events";
+import {
+  publishSharedGameRealtimeState,
+  publishSharedGameSettlementInvalidation,
+} from "@/lib/services/game-realtime-events";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +20,14 @@ export async function GET(request: Request) {
   try {
     const result = await maintainSharedGameRounds();
     await Promise.all(result.realtime.map(publishSharedGameRealtimeState));
+    // Only publish after the transaction that inserted the settlement and
+    // ledger entries committed. The round ID lets a client reconcile its
+    // current result instead of presenting it on the following round.
+    await Promise.all(
+      result.settledRounds.map(({ game, roundId }) =>
+        publishSharedGameSettlementInvalidation(game, roundId),
+      ),
+    );
     return NextResponse.json({
       settlements: result.settlements,
       totalSettlements: result.totalSettlements,

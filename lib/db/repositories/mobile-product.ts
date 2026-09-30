@@ -1998,6 +1998,11 @@ async function settleMaturedSharedRounds(
     [game, priorityUserId, priorityUserId],
   );
   let settledCount = 0;
+  // A settlement is private in SQL, but its committed round ID is safe to
+  // publish as an invalidation. Keep every affected round so clients fetch
+  // their own post-commit wallet/settlement immediately instead of first
+  // discovering it when the next round arrives.
+  const settledRoundIds = new Set<string>();
   for (const pair of pairs) {
     await connection.query(
       "SELECT id FROM game_shared_bet_requests WHERE round_id = ? AND application_user_id = ? FOR UPDATE",
@@ -2094,8 +2099,9 @@ async function settleMaturedSharedRounds(
       );
     }
     settledCount++;
+    settledRoundIds.add(round.id);
   }
-  return settledCount;
+  return { settledCount, settledRoundIds: [...settledRoundIds] };
 }
 
 /**
@@ -2107,13 +2113,14 @@ async function settleMaturedSharedRounds(
 export async function maintainSharedGameRounds() {
   const settlements: Partial<Record<SharedRoundGame, number>> = {};
   const realtime: SharedGameRealtimeState[] = [];
+  const settledRounds: Array<{ game: SharedRoundGame; roundId: string }> = [];
   for (const game of sharedRoundGames) {
     const result = await withTransaction(async (connection) => {
       const [settings, liveRules] = await Promise.all([
         gameSettings(connection),
         loadFaceLiveRules(connection),
       ]);
-      const settled = await settleMaturedSharedRounds(
+      const settlement = await settleMaturedSharedRounds(
         connection,
         game,
         "",
@@ -2122,13 +2129,21 @@ export async function maintainSharedGameRounds() {
       );
       const now = new Date();
       const round = await ensureSharedRound(connection, game, settings.games[game], now);
-      return { settled, realtime: sharedGameRealtimeState(round, now) };
+      return {
+        settled: settlement.settledCount,
+        settledRoundIds: settlement.settledRoundIds,
+        realtime: sharedGameRealtimeState(round, now),
+      };
     });
     settlements[game] = result.settled;
+    settledRounds.push(
+      ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
+    );
     realtime.push(result.realtime);
   }
   return {
     settlements,
+    settledRounds,
     realtime,
     totalSettlements: Object.values(settlements).reduce(
       (total, count) => total + Number(count ?? 0),
