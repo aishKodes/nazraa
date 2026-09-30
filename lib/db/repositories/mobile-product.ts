@@ -151,6 +151,71 @@ function giftSymbol(key: string, name: string) {
   return "🎁";
 }
 
+type GiftCatalogRow = RowDataPacket & {
+  gift_key: string;
+  name: string;
+  category: string;
+  catalog_type: string;
+  emoji: string | null;
+  coin_price: number;
+  currency: string | null;
+  validity_days: number | null;
+  vip_tier_eligibility: number | null;
+  sort_order: number;
+  visual_url: string | null;
+  animation_key: string | null;
+  asset_config: unknown;
+};
+
+function mobileGiftPayload(rows: GiftCatalogRow[]) {
+  return {
+    gifts: rows.filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({
+      id: String(row.gift_key),
+      name: String(row.name),
+      symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)),
+      cost: Number(row.coin_price),
+      category: String(row.category),
+      accent: Number(asObject(row.asset_config).accent ?? [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4]),
+      visualUrl: row.visual_url,
+      animationKey: row.animation_key,
+      effectConfig: asObject(row.asset_config),
+    })),
+    mallCatalog: rows.map((row) => ({
+      id: String(row.gift_key),
+      name: String(row.name),
+      type: String(row.catalog_type) === "ENTRY_FRAME" ? "ENTRY_EFFECT" : String(row.catalog_type),
+      symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)),
+      cost: Number(row.coin_price),
+      currency: String(row.currency ?? "COIN"),
+      validityDays: Number(row.validity_days ?? 30),
+      enabled: true,
+      sortOrder: Number(row.sort_order ?? 0),
+      vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility),
+      category: String(row.category),
+      visualUrl: row.visual_url,
+      animationKey: row.animation_key,
+      assetConfig: asObject(row.asset_config),
+    })),
+  };
+}
+
+/**
+ * Lightweight catalog retry for the room Gift sheet.  This intentionally
+ * avoids materialising the complete Home bootstrap (rooms, discovery,
+ * wallets and histories) merely because a cold cache has no gifts yet.
+ */
+export async function mobileGiftCatalogSnapshot() {
+  const [rows] = await withDatabaseReadRetry(() => db().query<GiftCatalogRow[]>(
+    `SELECT gift_key, name, category, catalog_type, emoji, coin_price,
+            currency, validity_days, vip_tier_eligibility, sort_order,
+            visual_url, animation_key, asset_config
+       FROM gift_catalog
+      WHERE active = TRUE
+      ORDER BY catalog_type, sort_order, coin_price, name`,
+  ));
+  return mobileGiftPayload(rows);
+}
+
 function switchRole(role: string, isHost: boolean) {
   if (role === "AGENCY") return "agency_owner";
   if (role === "COIN_SELLER") return "coin_seller";
@@ -398,7 +463,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
-    db().query<RowDataPacket[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
+    db().query<GiftCatalogRow[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
     db().query<RowDataPacket[]>(
       `SELECT id, placement, title, subtitle, image_url, action_type, action_target, priority, starts_at, ends_at
        FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3))
@@ -546,6 +611,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
   // The current user's transactional snapshot may have just materialized a
   // configured VIP grant, so it is the strongest source for their own entry.
   cosmeticLoadouts.set(String(profile.public_id), cosmetics.loadout);
+  const giftCatalog = mobileGiftPayload(giftRows[0]);
 
   const usersByName = new Map<string, { id: string; name: string; level: number; vip: number }>();
   for (const item of peopleRows[0]) usersByName.set(String(item.public_id), { id: String(item.public_id), name: String(item.full_name), level: Number(item.level_number), vip: Number(item.vip_tier) });
@@ -594,8 +660,8 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       country: row.country_code ?? "", language: row.language_code ?? "", level: consumptionProgress(Number(row.consumption_points ?? 0), Number(row.level_number)).level, anchorLevel: anchorProgress(Number(row.anchor_income_points ?? 0), Number(row.anchor_level_number)).level,
       vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host),
       cosmetics: cosmeticLoadouts.get(String(row.public_id)) ?? {} })),
-    gifts: giftRows[0].filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({ id: String(row.gift_key), name: String(row.name), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), category: String(row.category), accent: Number(asObject(row.asset_config).accent ?? [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4]), visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: asObject(row.asset_config) })),
-    mallCatalog: giftRows[0].map((row) => ({ id: String(row.gift_key), name: String(row.name), type: String(row.catalog_type) === "ENTRY_FRAME" ? "ENTRY_EFFECT" : String(row.catalog_type), symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)), cost: Number(row.coin_price), currency: String(row.currency ?? "COIN"), validityDays: Number(row.validity_days ?? 30), enabled: true, sortOrder: Number(row.sort_order ?? 0), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), category: String(row.category), visualUrl: row.visual_url, animationKey: row.animation_key, assetConfig: asObject(row.asset_config) })),
+    gifts: giftCatalog.gifts,
+    mallCatalog: giftCatalog.mallCatalog,
     cosmeticEntitlements: cosmetics.entitlements,
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({

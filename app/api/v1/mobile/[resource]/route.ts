@@ -17,6 +17,7 @@ import {
   gameRoundLeaderboard,
   gameSocialState,
   gameSharedRoundState,
+  mobileGiftCatalogSnapshot,
   mobileBootstrap,
   sendGift,
   placeSharedGameBets,
@@ -305,6 +306,17 @@ export async function GET(
       if (resource === "face") {
         return NextResponse.json(await mobileFaceVerificationSnapshot(identity), {
           headers: { "Cache-Control": "private, no-store" },
+        });
+      }
+      if (resource === "gifts") {
+        return NextResponse.json(await mobileGiftCatalogSnapshot(), {
+          // Catalog assets are versioned at the item/effect level. Keep the
+          // response short-lived so a cold Gift sheet can recover without
+          // waiting for Home/discovery, while Control changes still arrive
+          // promptly without an APK release.
+          headers: {
+            "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
+          },
         });
       }
       if (resource === "live-history") {
