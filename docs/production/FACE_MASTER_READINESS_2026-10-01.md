@@ -2,18 +2,22 @@
 
 ## Release decision
 
-**OWNER-AUTHORIZED DISTRIBUTION IN PROGRESS.** On 2026-10-01 the owner explicitly
+**RELEASED — OWNER-AUTHORIZED DISTRIBUTION.** On 2026-10-01 the owner explicitly
 requested immediate launch without a second emulator. The signed
 `2.4.76+7388` APK/AAB are published at the GitHub `Nazraa-Releases/v2.4.76`
-release; GitHub asset digests match both local SHA-256 values. Website and
-remote latest-version activation follow only after artifact verification.
+release; GitHub asset digests match both local SHA-256 values. The public APK
+was downloaded, SHA-256 verified and reinstalled on the authenticated emulator.
+Both official download URLs and the remote latest-version configuration now
+point to 2.4.76/build 7388. The minimum version remains 2.1.0.
 The automated checks and single-emulator smoke results below remain the
 actual evidence; unperformed Host/Guest/phone-call acceptance is not PASS.
 
 ## Production backend
 
 - Branch: `feature/face-live-master-redesign`.
-- Deployed runtime commit: `b65f93a` (previous runtime: `ed2a3bf`).
+- Deployed runtime commit: `21dbb9c`; product implementation `b65f93a`.
+  The final image changes release metadata and includes already-applied
+  config migration 0097; no further product/mobile changes were made.
 - API: `https://api.nazraa.pixtra.site`; WS:
   `wss://ws.nazraa.pixtra.site/realtime`.
 - Production database: `nazraa_final_20260929_070033`.
@@ -32,8 +36,9 @@ actual evidence; unperformed Host/Guest/phone-call acceptance is not PASS.
   (identical). Public config independently returns capacity three.
 - Backup: `/opt/nazraa/backups/production/nazraa-nightly-20260930T200919Z.sql.gz`
   and its checksum; existing encrypted OCI offload workflow preserved.
-- Image: `nazraa-api:face-b65f93a`, also tagged `production-candidate`.
-- Image manifest-list SHA-256:
+- Final image: `nazraa-api:release-2476`, also tagged `production-candidate`.
+  Previous product image: `nazraa-api:face-b65f93a`.
+- Previous product image manifest-list SHA-256:
   `1e673d2d4f5f8f21c7fd23e96000d71dc8fbf17779105d3f5eb908ae4502517c`.
 - Only API/worker were redeployed. MySQL, Redis, realtime, Caddy and OCI
   LiveKit/TURN infrastructure were not restarted or reconfigured.
@@ -44,15 +49,53 @@ actual evidence; unperformed Host/Guest/phone-call acceptance is not PASS.
 
 ### Rollback
 
-The prior image remains `nazraa-api:rollback-ed2a3bf`.
+The immediately preceding product image is `nazraa-api:rollback-pre2476`.
+The earlier pre-Face image also remains `nazraa-api:rollback-ed2a3bf`.
 
 ```sh
-docker image tag nazraa-api:rollback-ed2a3bf nazraa-api:production-candidate
+docker image tag nazraa-api:rollback-pre2476 nazraa-api:production-candidate
 docker compose -f /opt/nazraa/compose.yaml up -d --no-deps api worker
 ```
 
 Migration 0096 is additive/backward-compatible. Do not drop new tables or
 discard committed financial receipts during rollback.
+
+## Publication verification
+
+- GitHub release: `https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.4.76`.
+  APK and AAB were uploaded to a draft, their GitHub SHA-256 digests checked,
+  then the verified release was published as latest. Older releases remain.
+- Download: `https://api.nazraa.pixtra.site/download` and
+  `https://nazraa.vercel.app/download`; both resolve to the new APK page.
+- VPS `/release/latest` returns version 2.4.76/build 7388, 308125575 bytes,
+  the exact APK URL and SHA-256. Website screenshot:
+  `/tmp/nazraa-2476-download-page.jpg`.
+- The historical Vercel source deployment was blocked because its old Git
+  commit author lacked deployment permission. No Git identity was forged and
+  no deployment-access permissions were changed. Instead the authenticated
+  owner CLI published exactly three public project redirects: `/`, `/download`
+  and `/release/latest` to their existing authoritative VPS equivalents.
+  No API, callback, financial or other route was changed. Existing Vercel
+  write fence remains active: `/api/internal/maintenance` still returns 503.
+  Legacy public config still bridges to the same VPS configuration.
+- Redirect IDs: download `53965c7b-6dee-493a-bb76-9610500f3a95`,
+  manifest `9ff88c57-5806-43e4-9397-b9ad0021aa84`,
+  home `9fdfa779-a958-45a3-a819-9fc6f2929975`.
+  Disable only those IDs and publish if public redirect rollback is required.
+- Audited atomic `mobile.app_config` update changes only latestVersion and
+  updateUrl. Exactly one `settings.mobile_release_2476` audit exists.
+  Minimum version, maintenance/support/withdrawal fields remain unchanged;
+  unrelated-config SHA-256 before/after both
+  `c3535f63da981db3ee52049724af505e299c0db8f147828f196905d66bd9eeec`.
+  Root-only backup: `/opt/nazraa/backups/production/mobile-app-config-pre2476-20261001.json`,
+  SHA-256 `461abcee865d29b4838b72c02ef323705ea3d20f5ea7c1b8f923384669f75828`.
+- Exact public APK reinstall: version 2.4.76/7388, target SDK 36, existing
+  ordinary login preserved, Home displays live production content, crash log
+  empty. Evidence `/tmp/qa-2476-public-home.png` and `.xml`.
+- API/worker are healthy after release activation; public config and WebSocket
+  health return 200/ready. MySQL, Redis, realtime, Caddy and LiveKit unchanged.
+- Frozen Vercel build and write-fence regression tests passed. Temporary local
+  environment verification files were removed; original credentials unchanged.
 
 ## Implemented scope
 
