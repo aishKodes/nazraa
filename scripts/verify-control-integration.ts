@@ -13,10 +13,14 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 async function main() {
   const database = `nazraa_control_qa_${Date.now()}`;
   const root = await mysql.createConnection({ host: "127.0.0.1", user: "root", multipleStatements: true });
+  await root.query("SET time_zone = '+00:00'");
   await root.query(`CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
   await root.query(`USE \`${database}\``);
   global.nazraaPool = mysql.createPool({ host: "127.0.0.1", user: "root", database, connectionLimit: 8, decimalNumbers: true, timezone: "Z" });
   global.nazraaInstrumentedPool = global.nazraaPool;
+  const testConnections = await Promise.all(Array.from({ length: 8 }, () => global.nazraaPool!.getConnection()));
+  await Promise.all(testConnections.map((connection) => connection.query("SET time_zone = '+00:00'")));
+  for (const connection of testConnections) connection.release();
   let passed = 0;
   let keep = false;
   try {
@@ -32,6 +36,8 @@ async function main() {
     const agencies = await import("@/lib/db/repositories/agency-applications");
     const mobileAdministration = await import("@/lib/db/repositories/mobile-administration");
     const dashboard = await import("@/lib/db/repositories/dashboard");
+    const ownerReports = await import("@/lib/db/repositories/owner-reports");
+    const reportExports = await import("@/lib/reports/xlsx");
     const catalog = await import("@/lib/db/repositories/catalog");
     const mobileSession = await import("@/lib/auth/mobile-session");
     const liveAccess = await import("@/lib/services/live-access-policy");
@@ -132,6 +138,34 @@ async function main() {
     }
     const ownUser = await user(agency.account.id, "QA Own Host");
     const otherUser = await user(agencyOther.account.id, "QA Other Host");
+    const ownAgencyReport = await ownerReports.agencyHostReport(await refresh(agency));
+    assert.equal(ownAgencyReport.items.some((row) => row.hostId === ownUser.publicId), true, "Agency report includes its authorized Host");
+    assert.equal(ownAgencyReport.items.some((row) => row.hostId === otherUser.publicId), false, "Agency report never includes a cross-Agency Host");
+    assert.equal((await ownerReports.agencyHostReport(await refresh(agency), { q: otherUser.publicId })).total, 0, "edited Host ID filters cannot escape Agency scope");
+    assert.equal((await ownerReports.agencyHostReport(master, {}, true)).total, 2, "Master Excel source returns the complete authorized filtered set");
+    const ownHierarchyReport = await ownerReports.hierarchyReport(await refresh(agency));
+    assert.equal(ownHierarchyReport.items.some((row) => row.id === agency.account.publicId), true);
+    assert.equal(ownHierarchyReport.items.some((row) => row.id === agencyOther.account.publicId), false, "hierarchy report remains branch-scoped");
+    assert.equal((await ownerReports.hierarchyReport(await refresh(agency), { q: agencyOther.account.publicId })).total, 0, "edited Agency IDs cannot escape hierarchy scope");
+    for (const [applicationUserId, gameName, wager, payout, after] of [
+      [ownUser.id, "luck77", 100, 180, 1080],
+      [otherUser.id, "greedy_king", 100, 0, 900],
+    ] as const) {
+      await root.execute(
+        `INSERT INTO game_round_results
+          (id, client_round_id, application_user_id, game_name, bets_json, outcome_json, wager_total, payout_total, balance_after)
+         VALUES (?, ?, ?, ?, JSON_OBJECT('qa', 100), JSON_OBJECT('qa', true), ?, ?, ?)`,
+        [randomUUID(), randomUUID(), applicationUserId, gameName, wager, payout, after],
+      );
+    }
+    const ownGameReport = await ownerReports.gameManagementReport(await refresh(agency), { q: ownUser.publicId, period: "24h" });
+    assert.equal(ownGameReport.total, 1);
+    assert.equal(ownGameReport.summary[0].totalGamesWon, 1);
+    assert.equal(ownGameReport.items[0].walletBefore, 1000, "wallet before is reconstructed from the canonical result equation");
+    assert.equal((await ownerReports.gameManagementReport(await refresh(agency), { q: otherUser.publicId, period: "24h" })).total, 0, "edited User IDs cannot escape Agency game-report scope");
+    assert.equal((await ownerReports.gameManagementReport(master, { period: "24h" })).total, 2);
+    const qaWorkbook = await reportExports.workbookBuffer("QA report", [{ name: "Rows", headers: ["ID", "Coins"], rows: [["QA-1", 25]] }]);
+    assert.equal(String.fromCharCode(...qaWorkbook.slice(0, 2)), "PK", "server exporter produces a real XLSX ZIP workbook");
     for (const [role, scope] of scopes) {
       const rows = await directory.listUsersPage(scope);
       const shouldSeeOwn = !["BD", "COIN_SELLER"].includes(role);
@@ -216,6 +250,15 @@ async function main() {
     assert.equal(gameSocial.controls?.enabled, true);
     const roomInput = (kind: string) => ({ roomCode: randomUUID(), kind, title: "QA suspension room", category: "chat", language: "en", privacy: "public" as const, seatCount: 8, themeIndex: 0, themeEnabled: true, countryCode: "IN" });
     const interruptedRoom = await product.createRoom(identity, roomInput("party"));
+    await product.createRoom(identity, roomInput("face"));
+    const ownLiveReport = await ownerReports.liveRewardReport(await refresh(agency), { q: ownUser.publicId, period: "24h" });
+    assert.equal(ownLiveReport.total, 1, "Live report returns one canonical row per Live session");
+    assert.equal(ownLiveReport.items[0].sessionId.length > 0, true);
+    assert.equal(ownLiveReport.items[0].claimStatus, "NOT_REACHED");
+    assert.equal((await ownerReports.liveRewardReport(await refresh(agency), { q: otherUser.publicId, period: "24h" })).total, 0, "edited Host IDs cannot escape Live report scope");
+    const otherIdentity = { ...identity, userId: otherUser.id, publicId: otherUser.publicId, externalUserId: otherUser.id, fullName: "QA Other Host", agencyAccountId: agencyOther.account.id };
+    await product.createRoom(otherIdentity, roomInput("face"));
+    assert.equal((await ownerReports.liveRewardReport(master, { period: "24h" })).total, 2, "Master receives the full authorized Live scope");
     // Unverified hosts must remain moderatable; verification is independent.
     await root.execute("UPDATE host_profiles SET verification_status = 'UNVERIFIED' WHERE id = ?", [hostId]);
     await assert.rejects(hostsRepository.updateHostStatus({ scope: agencyOther, hostId, status: "SUSPENDED", reason: "QA reject foreign host suspension" }));
@@ -512,6 +555,19 @@ async function main() {
     assert.equal((await directory.searchCoinTransferRecipients(await refresh(seller), "Other")).some((user) => user.id === otherUser.id), true, "Coin Seller can find any active user by a partial name outside its branch");
     assert.equal((await directory.searchCoinTransferRecipients(await refresh(agency), "QA Other Host")).some((user) => user.id === otherUser.id), true, "Every authorized coin transfer screen can identify a valid platform user");
     await ops.transferCoins({ scope: await refresh(seller), recipientId: otherUser.id, amount: 50, reason: "QA Coin Seller cross-platform sale", idempotencyKey: randomUUID() });
+    const sellerB = await create("COIN_SELLER", adminOther, "Isolated Seller B");
+    await ops.allocatePlatformCoins({ scope: master, accountId: sellerB.account.id, amount: 20, reason: "QA fund second seller", idempotencyKey: randomUUID() });
+    await ops.transferCoins({ scope: await refresh(sellerB), recipientId: otherUser.id, amount: 20, reason: "QA second seller transfer", idempotencyKey: randomUUID() });
+    const sellerHistory = await ownerReports.coinTransferHistory(await refresh(seller), { mode: "24h", q: otherUser.publicId });
+    assert.equal(sellerHistory.total, 1);
+    assert.equal(sellerHistory.summary.totalCoinsTransferred, 50);
+    assert.equal((await ownerReports.coinTransferHistory(await refresh(seller), { mode: "24h", q: ownUser.publicId })).total, 0, "seller search sees only transfers actually sent by that seller");
+    assert.equal((await ownerReports.coinTransferHistory(master, { mode: "24h", q: otherUser.publicId })).total, 0, "Master view does not widen seller-private transfer history");
+    const manipulatedSellerHistory = await ownerReports.coinTransferHistory(await refresh(seller), { mode: "24h", q: otherUser.publicId, sellerId: sellerB.account.id } as Parameters<typeof ownerReports.coinTransferHistory>[1] & { sellerId: string });
+    assert.equal(manipulatedSellerHistory.total, 1);
+    assert.equal(manipulatedSellerHistory.summary.totalCoinsTransferred, 50, "edited seller identifiers cannot reveal another seller's record");
+    const istToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    assert.equal((await ownerReports.coinTransferHistory(await refresh(seller), { mode: "date", date: istToday, q: otherUser.publicId })).total, 1, "Date Wise uses the IST calendar day");
     const [sellerWallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [seller.account.id]);
     assert.equal(Number(sellerWallet[0].available_balance), 150);
     const key = randomUUID();
@@ -520,7 +576,7 @@ async function main() {
     await ops.transferCoins({ scope: agency, recipientId: otherUser.id, amount: 1, reason: "QA authorized cross-platform transfer", idempotencyKey: randomUUID() });
     const [wallet] = await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'COIN'", [agency.account.id]);
     assert.equal(Number(wallet[0].available_balance), 399);
-    assert.equal((await dashboard.getDashboardMetrics(master)).coinInventory, 300);
+    assert.equal((await dashboard.getDashboardMetrics(master)).coinInventory, 280);
     assert.equal((await dashboard.getRecentLedger(agency)).some((entry) => entry.transactionType === "ACCOUNT_ALLOCATION"), true, "Agency must see inventory received from its Admin");
     passed++;
 

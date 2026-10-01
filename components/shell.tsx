@@ -33,6 +33,11 @@ const common = {
   banners: { href: "/dashboard/banners", label: "Banners", icon: Images },
   notifications: { href: "/dashboard/notifications", label: "Notifications", icon: Bell },
   reports: { href: "/dashboard/reports", label: "Reports", icon: FileBarChart },
+  agencyReport: { href: "/dashboard/agency-report", label: "Agency Report", icon: Building2 },
+  hierarchyReport: { href: "/dashboard/hierarchy-report", label: "Hierarchy Report", icon: Network },
+  liveRewards: { href: "/dashboard/live-rewards", label: "Live Reward Monitoring", icon: Radio },
+  gameManagement: { href: "/dashboard/game-management", label: "Game Management", icon: Coins },
+  coinTransfers: { href: "/dashboard/coin-transfers", label: "Coin Transfer History", icon: ReceiptText },
   audit: { href: "/dashboard/audit", label: "Audit log", icon: ClipboardList },
   risk: { href: "/dashboard/risk", label: "Risk queue", icon: ShieldAlert },
   support: { href: "/dashboard/support", label: "Support", icon: CircleHelp },
@@ -41,13 +46,13 @@ const common = {
 } satisfies Record<string, NavItem>;
 
 const navigationByRole: Record<Role, NavItem[]> = {
-  MASTER: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies, common.monitoring, common.moderation, common.wallet, common.transactions, common.withdrawals, common.rooms, common.commerce, common.face, common.reports, common.audit, common.risk, common.support, common.gifts, common.banners, common.notifications, common.levels, common.settings],
-  COUNTRY_MANAGER: [common.overview, common.accounts, common.hierarchy, common.users, common.hosts, common.agencies, common.monitoring, common.moderation, common.wallet, common.transactions, common.withdrawals, common.commerce, common.rooms, common.face, common.reports, common.audit, common.risk, common.support],
-  SUPER_ADMIN: [common.overview, common.accounts, common.hierarchy, common.agencies, common.hosts, common.users, common.monitoring, common.moderation, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.audit, common.risk, common.support],
-  ADMIN: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.monitoring, common.moderation, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.risk, common.support],
-  BD: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.monitoring, common.moderation, common.wallet, common.transactions, common.withdrawals, common.rooms, common.face, common.reports, common.risk, common.support],
-  AGENCY: [common.overview, common.agencies, common.hosts, common.monitoring, common.wallet, common.transactions, common.withdrawals, common.face, common.support],
-  COIN_SELLER: [common.overview, common.wallet, common.commerce, common.transactions],
+  MASTER: [common.overview, common.hierarchy, common.hierarchyReport, common.accounts, common.users, common.hosts, common.agencies, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.commerce, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support, common.gifts, common.banners, common.notifications, common.levels, common.settings],
+  COUNTRY_MANAGER: [common.overview, common.accounts, common.hierarchy, common.hierarchyReport, common.users, common.hosts, common.agencies, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.commerce, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support],
+  SUPER_ADMIN: [common.overview, common.accounts, common.hierarchy, common.hierarchyReport, common.agencies, common.hosts, common.users, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support],
+  ADMIN: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.risk, common.support],
+  BD: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.risk, common.support],
+  AGENCY: [common.overview, common.agencies, common.hosts, common.agencyReport, common.liveRewards, common.gameManagement, common.monitoring, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.face, common.support],
+  COIN_SELLER: [common.overview, common.wallet, common.commerce, common.transactions, common.coinTransfers],
   // CS work is intentionally concentrated in one search-first workspace.
   // Master still sees every CS action through the platform audit trail.
   MONITORING_CS: [common.overview, common.monitoring, common.moderation, common.support],
@@ -55,9 +60,9 @@ const navigationByRole: Record<Role, NavItem[]> = {
 
 const navigationGroups = [
   { label: "Core", items: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
-  { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.withdrawals] },
+  { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.coinTransfers, common.withdrawals] },
   { label: "Safety", items: [common.monitoring, common.moderation, common.rooms, common.face, common.risk, common.support, common.audit] },
-  { label: "Platform", items: [common.reports, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
+  { label: "Platform", items: [common.reports, common.agencyReport, common.hierarchyReport, common.liveRewards, common.gameManagement, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
 ] satisfies { label: string; items: NavItem[] }[];
 
 export function AppShell({ account, children }: { account: SessionAccount; children: ReactNode }) {
