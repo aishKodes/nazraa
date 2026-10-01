@@ -2,11 +2,13 @@
 
 ## Release decision
 
-**NOT RELEASED.** Candidate `2.4.76+7388` is signed and installed on the
-authenticated Android 16 emulator. The public download, GitHub release assets,
-and remote minimum/current mobile version have not been changed for this
-candidate. Mandatory real Host/Guest/phone-call acceptance is still unverified.
-Do not translate isolated database/widget tests into real-device media PASS.
+**OWNER-AUTHORIZED DISTRIBUTION IN PROGRESS.** On 2026-10-01 the owner explicitly
+requested immediate launch without a second emulator. The signed
+`2.4.76+7388` APK/AAB are published at the GitHub `Nazraa-Releases/v2.4.76`
+release; GitHub asset digests match both local SHA-256 values. Website and
+remote latest-version activation follow only after artifact verification.
+The automated checks and single-emulator smoke results below remain the
+actual evidence; unperformed Host/Guest/phone-call acceptance is not PASS.
 
 ## Production backend
 
@@ -146,7 +148,7 @@ untimestamped-JAR warnings are not Google Play approval evidence.
   SHA-256 `032658043151407d611e361c2b628478c32d1b3860c6edf3d98db7e3cc25d306`.
   Contains the corrected visual fixture and reviewed Party golden only.
 
-## Runtime acceptance still required
+## Runtime evidence and unperformed acceptance
 
 Exact APK installation and authenticated Home launch PASS on
 `nazraa_release_qa_20260926` / emulator-5554 (Android 16). Package version is
@@ -188,10 +190,8 @@ an existing qualified Host login. No protected credentials were extracted.
 A separate stalled medium_phone process was stopped; its account data was not
 deleted.
 
-Release next only after completing these real acceptance checks, then publish
-the verified candidate and update the public download, GitHub assets and remote
-version together. The automated/visual release checks are now green; qualified
-Host authentication and real multi-client media acceptance remain outstanding.
-The Mac is now unlocked. Sign in to the second emulator with a qualified Host
-without sharing a password in chat. Ordinary Face Live remains subject to the
-configured 08:00–02:00 Asia/Kolkata schedule; no QA bypass was introduced.
+The owner's latest launch instruction supersedes the two-client release gate.
+No authentication, Face-verification or Live-hour bypass was introduced.
+The optional second emulator was stopped without deleting its AVD. Dedicated
+two-client media and phone-call acceptance remain follow-up validation, not
+completed tests or a claimed zero-bug guarantee.
