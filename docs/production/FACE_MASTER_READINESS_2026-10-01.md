@@ -17,6 +17,17 @@ Do not translate isolated database/widget tests into real-device media PASS.
 - Production database: `nazraa_final_20260929_070033`.
 - Migration `0096_face_live_master.sql` applied after successful existing backup
   service execution (`Result=success`, `ExecMainStatus=0`).
+- Follow-up configuration migration `0097_face_guest_capacity_config.sql`
+  (source commit `934bb70`) applied atomically: public `maxFaceAudioGuests`
+  aligned from the legacy four to three, with exactly one deployment audit.
+  Lower owner-configured capacities are preserved and retries do not add audits.
+  No containers were rebuilt/restarted; deployed runtime stays `b65f93a`.
+  Exact setting backup:
+  `/opt/nazraa/backups/production/face-room-features-pre0097-20261001.json`
+  SHA-256 `f2ff94f7f1e0c4eb2fe6b1e0939c013b8bead6e450e4ca45207f69e691d2729c`.
+  Before/after SHA-256 of JSON excluding only `maxFaceAudioGuests`:
+  `472316bfdf24fd73eae886ff353e75c438a91bf84ab0c1d13c5b78212257b897`
+  (identical). Public config independently returns capacity three.
 - Backup: `/opt/nazraa/backups/production/nazraa-nightly-20260930T200919Z.sql.gz`
   and its checksum; existing encrypted OCI offload workflow preserved.
 - Image: `nazraa-api:face-b65f93a`, also tagged `production-candidate`.
@@ -89,8 +100,17 @@ background media grace remains 25s. Do not substitute earlier historical rules.
   Logs: `/tmp/nazraa-face-final-flutter-tests.log` and
   `/tmp/nazraa-face-final-analyze.log`.
 - Backend TypeScript/build, core mobile transaction suite, role suite and
-  Control integration suite: PASS. Control integration covers migrations
-  0001–0096 and 28 groups.
+  Control integration suite: PASS. Latest Control integration covers migrations
+  0001–0097 and 29 groups, including capacity alignment, preservation and replay.
+  Latest TypeScript check is clean. Config-only changes do not require an APK
+  rebuild.
+- After migration 0097 was added, isolated core-mobile and the eight-role
+  permission suites were rerun: PASS. This includes canonical gifting,
+  Face social/three-seat authority, session/reward and PK continuity scenarios.
+  Logs: `/tmp/nazraa-face-capacity-core-mobile.log`,
+  `/tmp/nazraa-face-capacity-integration.log`,
+  `/tmp/nazraa-face-capacity-typecheck.log` and
+  `/tmp/nazraa-face-capacity-roles.log`.
 - Face DB scenarios: three-seat concurrent race; durable release; Single/ALL
   correct recipients/costs; concurrent retry once; changed-intent denial;
   insufficient-funds rollback; real multi-gifter exact Top 5; independent
@@ -156,14 +176,22 @@ real Single/ALL gifts through the new sheet, Effects OFF while RTC voice
 continues, Host/Guest transport interruption, phone-call/background recovery,
 PK start/end continuity, and Face performance/video/audio continuity.
 
-One second-AVD attempt had a different historical signing certificate, so no
-data was wiped/uninstalled to replace it. A separate stalled medium_phone
-test process was stopped; its account data was not deleted. The current
-authenticated emulator remains available for user sign-in and continuation.
+Both `emulator-5554` (`nazraa_release_qa_20260926`) and `emulator-5556`
+(`nazraa_api36`) now have the exact signed candidate, version 2.4.76/7388.
+The second emulator's startup was blocked by consent for a stale emulator crash
+report. The documented `-crash-report-mode never` option resolved startup
+without sending reports or wiping the AVD. Inspection confirmed its installed
+2.4.62 app was our isolated loopback media probe (no Nazraa login); only that
+probe app was replaced with the exact candidate. The first emulator's ordinary
+account/login is preserved. The second is at standard Google sign-in awaiting
+an existing qualified Host login. No protected credentials were extracted.
+A separate stalled medium_phone process was stopped; its account data was not
+deleted.
 
 Release next only after completing these real acceptance checks, then publish
 the verified candidate and update the public download, GitHub assets and remote
 version together. The automated/visual release checks are now green; qualified
 Host authentication and real multi-client media acceptance remain outstanding.
-Native desktop access is currently blocked by the locked Mac. Unlock it and
-sign in to the emulator with a qualified Host without sharing a password in chat.
+The Mac is now unlocked. Sign in to the second emulator with a qualified Host
+without sharing a password in chat. Ordinary Face Live remains subject to the
+configured 08:00–02:00 Asia/Kolkata schedule; no QA bypass was introduced.
