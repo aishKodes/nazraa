@@ -49,6 +49,52 @@ async function main() {
     const masterAccount = await accounts.accountByManagementId("100001");
     assert.ok(masterAccount);
     const master = await accounts.scopeFor(masterAccount);
+    // Exercise the deployment-only config alignment on an existing legacy
+    // setting, not just an empty newly provisioned database. It must be
+    // replay-safe and must never replace unrelated media/economy config.
+    const capacityMigration = await readFile("db/migrations/0097_face_guest_capacity_config.sql", "utf8");
+    const [beforeCapacityRows] = await root.query<RowDataPacket[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features'",
+    );
+    const originalFeatures = beforeCapacityRows[0]
+      ? (typeof beforeCapacityRows[0].setting_value === "string"
+        ? JSON.parse(beforeCapacityRows[0].setting_value)
+        : beforeCapacityRows[0].setting_value)
+      : {};
+    const legacyFeatures = { ...originalFeatures, maxFaceAudioGuests: 4, qaPreserve: { provider: "LIVEKIT", enabled: true } };
+    const [initialCapacityAudits] = await root.query<RowDataPacket[]>(
+      "SELECT COUNT(*) total FROM audit_logs WHERE action = 'settings.face_guest_capacity_align'",
+    );
+    await root.execute(
+      "INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.room_features', ?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",
+      [JSON.stringify(legacyFeatures), master.account.id],
+    );
+    await root.query(capacityMigration);
+    await root.query(capacityMigration);
+    const [alignedRows] = await root.query<RowDataPacket[]>(
+      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.room_features'",
+    );
+    const alignedFeatures = typeof alignedRows[0].setting_value === "string"
+      ? JSON.parse(alignedRows[0].setting_value) : alignedRows[0].setting_value;
+    assert.deepEqual(alignedFeatures, { ...legacyFeatures, maxFaceAudioGuests: 3 });
+    const [capacityAudits] = await root.query<RowDataPacket[]>(
+      "SELECT COUNT(*) total FROM audit_logs WHERE action = 'settings.face_guest_capacity_align'",
+    );
+    assert.equal(Number(capacityAudits[0].total), Number(initialCapacityAudits[0].total) + 1, "capacity alignment must audit once, not on replay");
+    await root.execute(
+      "UPDATE system_settings SET setting_value = ? WHERE setting_key = 'mobile.room_features'",
+      [JSON.stringify({ ...originalFeatures, maxFaceAudioGuests: 2 })],
+    );
+    await root.query(capacityMigration);
+    const [lowerCapacityRows] = await root.query<RowDataPacket[]>(
+      "SELECT JSON_EXTRACT(setting_value, '$.maxFaceAudioGuests') capacity FROM system_settings WHERE setting_key = 'mobile.room_features'",
+    );
+    assert.equal(Number(lowerCapacityRows[0].capacity), 2, "preserve a configured lower capacity");
+    await root.execute(
+      "UPDATE system_settings SET setting_value = ? WHERE setting_key = 'mobile.room_features'",
+      [JSON.stringify({ ...originalFeatures, maxFaceAudioGuests: 3 })],
+    );
+    passed++;
     // Migration 0063 can only seed this setting when a Master already exists.
     // The isolated QA database creates its Master afterward, so seed an
     // always-open test schedule before exercising Live role enforcement.
