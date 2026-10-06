@@ -8,6 +8,7 @@ assert.deepEqual(roles, ["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "B
 for (const role of roles) {
   assert.equal(can(role, "dashboard.read"), true, `${role} needs its own overview`);
   assert.equal(can(role, "users.permanent"), role === "MASTER", `${role} permanent-user rule`);
+  assert.equal(can(role, "face_live.suspend"), role === "MASTER" || role === "MONITORING_CS", `${role} dedicated Face Live suspension rule`);
   assert.equal(can(role, "accounts.permanent"), role === "MASTER", `${role} permanent-account rule`);
   assert.equal(can(role, "coins.mint"), role === "MASTER", `${role} coin-mint rule`);
   assert.equal(can(role, "settings.manage"), role === "MASTER", `${role} global-settings rule`);
@@ -36,6 +37,8 @@ assert.equal(can("MONITORING_CS", "coins.transfer"), false, "Monitoring access m
 assert.equal(can("COIN_SELLER", "coin_orders.manage"), true);
 assert.equal(can("MONITORING_CS", "monitoring.read"), true);
 assert.equal(can("MONITORING_CS", "rooms.restrict"), true);
+assert.equal(can("MONITORING_CS", "face_live.suspend"), true);
+assert.equal(can("MONITORING_CS", "users.permanent"), false);
 assert.equal(can("MONITORING_CS", "rooms.manage"), false);
 assert.equal(can("MONITORING_CS", "wallet.read"), false);
 

@@ -1,4 +1,5 @@
 import "server-only";
+import { enqueueFaceSuspensionPush } from "@/lib/services/fcm-push-service";
 import { randomUUID } from "crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
@@ -273,6 +274,7 @@ export type TemporaryLiveRestrictionMinutes = 30 | 60 | 120 | 1440;
 
 export async function createTemporaryLiveRestriction(input: { scope: Scope; applicationUserId: string; reason: string; durationMinutes: TemporaryLiveRestrictionMinutes }) {
   if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restrict Live access.");
+  if (input.scope.account.role === "MONITORING_CS") throw new Error("CS Monitoring can only apply the dedicated 30-minute or 2-hour Face Live suspension.");
   if (input.reason.trim().length < 5) throw new Error("Provide a specific moderation reason.");
   if (![30, 60, 120, 1440].includes(input.durationMinutes)) throw new Error("Choose a 30 minute, 1 hour, 2 hour, or 24 hour restriction.");
   const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
@@ -290,7 +292,7 @@ export async function createTemporaryLiveRestriction(input: { scope: Scope; appl
     const [active] = await connection.query<(RowDataPacket & { id: string; ends_at: string | null })[]>(
       `SELECT id, ends_at FROM moderation_restrictions
        WHERE application_user_id = ? AND status = 'ACTIVE'
-         AND restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+         AND restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION','FACE_LIVE')
          AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3)) LIMIT 1 FOR UPDATE`,
       [input.applicationUserId],
     );
@@ -325,8 +327,181 @@ export async function createTemporaryLiveRestriction(input: { scope: Scope; appl
   });
 }
 
+export async function createFaceLiveSuspension(input: {
+  scope: Scope;
+  applicationUserId: string;
+  reason: string;
+  durationMinutes: 30 | 120;
+}) {
+  if (!can(input.scope.account.role, "face_live.suspend")) {
+    throw new Error("Your role cannot suspend Face Live.");
+  }
+  if (![30, 120].includes(input.durationMinutes)) {
+    throw new Error("Choose exactly 30 minutes or 2 hours.");
+  }
+  const reason = input.reason.trim();
+  if (reason.length < 5 || reason.length > 500) {
+    throw new Error("Provide a clear moderation reason.");
+  }
+  const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
+  return withTransaction(async (connection) => {
+    const [users] = await connection.query<(RowDataPacket & {
+      id: string;
+      public_id: number;
+      full_name: string;
+    })[]>(
+      `SELECT id, public_id, full_name FROM application_users
+       WHERE id = ? AND account_status = 'ACTIVE' AND ${permitted.clause}
+       LIMIT 1 FOR UPDATE`,
+      [input.applicationUserId, ...permitted.values],
+    );
+    const user = users[0];
+    if (!user) throw new Error("User was not found in your permitted scope.");
+
+    await connection.execute(
+      `UPDATE moderation_restrictions SET status = 'EXPIRED'
+       WHERE application_user_id = ? AND status = 'ACTIVE'
+         AND ends_at IS NOT NULL AND ends_at <= CURRENT_TIMESTAMP(3)`,
+      [user.id],
+    );
+    const [active] = await connection.query<(RowDataPacket & {
+      restriction_type: string;
+      ends_at: Date | string | null;
+    })[]>(
+      `SELECT restriction_type, ends_at FROM moderation_restrictions
+       WHERE application_user_id = ? AND status = 'ACTIVE'
+         AND restriction_type IN ('FACE_LIVE','TEMP_LIVE_BAN','SUSPENSION')
+         AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3))
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+      [user.id],
+    );
+    if (active[0]) {
+      const until = active[0].ends_at
+        ? new Date(active[0].ends_at).toISOString()
+        : "indefinitely";
+      throw new Error(`This user already has an active Live restriction ending ${until}. No overlapping restriction was created.`);
+    }
+
+    const [rooms] = await connection.query<(RowDataPacket & {
+      id: string;
+      room_code: string;
+    })[]>(
+      `SELECT id, room_code FROM live_rooms
+       WHERE host_application_user_id = ? AND room_type IN ('FACE','LIVE')
+         AND status IN ('ACTIVE','LOCKED')
+       ORDER BY started_at DESC LIMIT 1 FOR UPDATE`,
+      [user.id],
+    );
+    const liveRoom = rooms[0] ?? null;
+    const [guestRooms] = await connection.query<(RowDataPacket & { room_id: string; room_code: string })[]>(
+      `SELECT room.id room_id, room.room_code
+       FROM live_rooms room
+       INNER JOIN live_room_members member ON member.room_id = room.id
+       WHERE member.application_user_id = ? AND member.left_at IS NULL
+         AND member.room_role = 'SPEAKER' AND member.media_role = 'AUDIO_GUEST'
+         AND room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
+       ORDER BY room.started_at DESC FOR UPDATE`,
+      [user.id],
+    );
+    const restrictionId = randomUUID();
+    await connection.execute(
+      `INSERT INTO moderation_restrictions
+        (id, application_user_id, restriction_type, ends_at, reason, actor_account_id)
+       VALUES (?, ?, 'FACE_LIVE', DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ${input.durationMinutes} MINUTE), ?, ?)`,
+      [restrictionId, user.id, reason, input.scope.account.id],
+    );
+    const [created] = await connection.query<(RowDataPacket & {
+      starts_at: Date | string;
+      ends_at: Date | string;
+      remaining_seconds: number;
+    })[]>(
+      `SELECT starts_at, ends_at,
+              GREATEST(0, TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP(3), ends_at)) remaining_seconds
+       FROM moderation_restrictions WHERE id = ? LIMIT 1`,
+      [restrictionId],
+    );
+    const restriction = created[0];
+    if (!restriction) throw new Error("The Face Live restriction could not be recorded.");
+
+    if (liveRoom) {
+      // Pin a server-side cutoff immediately. The reward-aware finalizer runs
+      // after commit and settles only valid publishing time before this point.
+      await connection.execute(
+        `UPDATE live_rooms SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3)
+         WHERE id = ? AND status IN ('ACTIVE','LOCKED')`,
+        [liveRoom.id],
+      );
+    }
+    if (guestRooms.length) {
+      await connection.execute(
+        `UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = 'PASSIVE_VIEWER',
+           seat_index = NULL, seat_session_id = NULL, seat_version = seat_version + 1,
+           muted = TRUE, media_publishing = FALSE
+         WHERE application_user_id = ? AND left_at IS NULL AND room_role = 'SPEAKER'
+           AND media_role = 'AUDIO_GUEST' AND room_id IN (${guestRooms.map(() => "?").join(",")})`,
+        [user.id, ...guestRooms.map((room) => room.room_id)],
+      );
+      await connection.execute(
+        `UPDATE live_cohost_requests SET status = 'ENDED', ended_at = CURRENT_TIMESTAMP(3)
+         WHERE requester_application_user_id = ? AND room_id IN (${guestRooms.map(() => "?").join(",")})
+           AND status = 'ACCEPTED' AND ended_at IS NULL`,
+        [user.id, ...guestRooms.map((room) => room.room_id)],
+      );
+    }
+    const durationText = input.durationMinutes === 30 ? "30 minutes" : "2 hours";
+    const expiryLabel = new Intl.DateTimeFormat("en-IN", {
+      timeZone: "Asia/Kolkata",
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(new Date(restriction.ends_at));
+    await connection.execute(
+      `INSERT INTO mobile_notifications
+        (id, application_user_id, notification_type, title, message, action_target)
+       VALUES (?, ?, 'MODERATION', 'Face Live temporarily restricted', ?, 'profile/live-access')`,
+      [randomUUID(), user.id, `Your Face Live access is suspended for ${durationText}. You can start Face Live again at ${expiryLabel} IST.`],
+    );
+    const pushDelivery = await enqueueFaceSuspensionPush(connection, {
+      restrictionId, userId: user.id, actorId: input.scope.account.id,
+      expiresAt: new Date(restriction.ends_at).toISOString(),
+      message: `You can start Face Live again at ${expiryLabel} IST.`,
+    });
+    await audit(connection, {
+      actorId: input.scope.account.id,
+      actorRole: input.scope.account.role,
+      action: "moderation.face_live_suspended",
+      module: "moderation",
+      targetType: "application_user",
+      targetId: user.id,
+      next: {
+        restrictionId,
+        restrictionType: "FACE_LIVE",
+        durationMinutes: input.durationMinutes,
+        startsAt: restriction.starts_at,
+        expiresAt: restriction.ends_at,
+        activeRoomCode: liveRoom?.room_code ?? null,
+        activeGuestRoomCodes: guestRooms.map((room) => room.room_code),
+      },
+      reason,
+    });
+    return {
+      restrictionId,
+      userId: user.id,
+      pushDelivery,
+      publicId: String(user.public_id),
+      userName: user.full_name,
+      durationMinutes: input.durationMinutes,
+      startsAt: restriction.starts_at,
+      expiresAt: restriction.ends_at,
+      expiresAtLabel: `${expiryLabel} IST`,
+      remainingSeconds: Number(restriction.remaining_seconds),
+      activeRoomCode: liveRoom?.room_code ?? null,
+      activeGuestRoomCodes: guestRooms.map((room) => room.room_code),
+    };
+  });
+}
+
 export async function permanentlyBanUser(input: { scope: Scope; applicationUserId: string; reason: string; confirmed: boolean }) {
-  if (input.scope.account.role !== "MASTER" || !input.scope.isGlobal || !input.confirmed) throw new Error("Master confirmation is required for a permanent ban.");
+  if (input.scope.account.role !== "MASTER" || !input.scope.isGlobal || !can(input.scope.account.role, "users.permanent") || !input.confirmed) throw new Error("Master confirmation is required for a permanent ban.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear permanent-ban reason.");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; full_name: string; account_status: string })[]>(
@@ -359,7 +534,7 @@ export async function permanentlyBanUser(input: { scope: Scope; applicationUserI
 }
 
 export async function permanentlyUnbanUser(input: { scope: Scope; applicationUserId: string; reason: string; confirmed: boolean }) {
-  if (input.scope.account.role !== "MASTER" || !input.scope.isGlobal || !input.confirmed) throw new Error("Master confirmation is required to unban an account.");
+  if (input.scope.account.role !== "MASTER" || !input.scope.isGlobal || !can(input.scope.account.role, "users.permanent") || !input.confirmed) throw new Error("Master confirmation is required to unban an account.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear unban reason.");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; full_name: string; account_status: string })[]>(
@@ -688,13 +863,16 @@ export async function restoreLiveAccess(input: { scope: Scope; restrictionId: st
       `SELECT restriction.id, restriction.application_user_id, restriction.restriction_type, user.full_name
        FROM moderation_restrictions restriction
        INNER JOIN application_users user ON user.id = restriction.application_user_id
-       WHERE restriction.id = ? AND restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+       WHERE restriction.id = ? AND restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION','FACE_LIVE')
          AND restriction.status = 'ACTIVE' AND ${filter.clause}
        LIMIT 1 FOR UPDATE`,
       [input.restrictionId, ...filter.values],
     );
     const restriction = rows[0];
     if (!restriction) throw new Error("The active temporary Live restriction was not found in your scope.");
+    if (restriction.restriction_type === "FACE_LIVE" && input.scope.account.role !== "MASTER") {
+      throw new Error("Only Master can end a scoped Face Live suspension early.");
+    }
     await connection.execute(
       "UPDATE moderation_restrictions SET status = 'REVOKED', ends_at = CURRENT_TIMESTAMP(3) WHERE id = ?",
       [restriction.id],

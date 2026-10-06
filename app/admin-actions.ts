@@ -1122,7 +1122,8 @@ export async function submitCreateBanner(formData: FormData) {
       destination(
         "/dashboard/banners",
         "error",
-        error instanceof Error ? error.message : "Banner could not be created.",
+        error instanceof Error && !("code" in error) && /^Banner |^Choose a banner/i.test(error.message)
+          ? error.message : "We couldn't save the banner. Please choose a valid image and try again.",
       ),
     );
   }

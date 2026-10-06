@@ -247,6 +247,22 @@ export async function queueMasterPush(
   });
 }
 
+/** Queued with the restriction transaction; enforcement never waits for FCM. */
+export async function enqueueFaceSuspensionPush(connection: PoolConnection, input: {
+  restrictionId: string; userId: string; actorId: string; expiresAt: string; message: string;
+}) {
+  const campaignId = randomUUID();
+  await connection.execute(
+    `INSERT INTO mobile_push_campaigns
+      (id, campaign_type, reference_key, title, message, action_target, payload, created_by_platform_account_id)
+     VALUES (?, 'MODERATION', ?, 'Face Live temporarily restricted', ?, 'profile/live-access', ?, ?)`,
+    [campaignId, `FACE_SUSPENSION:${input.restrictionId}`, input.message,
+      JSON.stringify({ kind: 'face_live_restriction', restrictionType: 'FACE_LIVE', expiresAt: input.expiresAt }), input.actorId],
+  );
+  const queued = await queueCampaignJobs(connection, { campaignId, recipientUserId: input.userId });
+  return { configured: Boolean(fcmConfiguration()), queued };
+}
+
 function fcmConfiguration() {
   const projectId = process.env.FCM_PROJECT_ID?.trim();
   const keyFilename = process.env.FCM_SERVICE_ACCOUNT_FILE?.trim();

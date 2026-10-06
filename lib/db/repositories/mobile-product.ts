@@ -1,5 +1,5 @@
 import "server-only";
-import { publicApiOrigin } from "@/lib/config/public-api-origin";
+import { publicApiOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 
 import { randomInt, randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
@@ -29,6 +29,7 @@ import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, typ
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
 import { currentPolicyAcceptance } from "@/lib/db/repositories/mobile-safety";
+import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 import {
   cosmeticSnapshot,
   equippedCosmeticLoadoutsByPublicId,
@@ -663,7 +664,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
     gifts: giftCatalog.gifts,
     mallCatalog: giftCatalog.mallCatalog,
     cosmeticEntitlements: cosmetics.entitlements,
-    banners: bannerRows[0].map((row) => ({ id: String(row.id), image: String(row.image_url), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
+    banners: bannerRows[0].map((row) => ({ id: String(row.id), image: currentPublicAssetUrl(String(row.image_url)), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({
       id: String(row.id), message: String(row.message), title: row.title,
       kind: row.notification_type ? "system" : "event", actionTarget: row.action_target,
@@ -929,15 +930,30 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
     if (!userRows[0] || userRows[0].account_status !== "ACTIVE") throw new Error("This account cannot create a room.");
     const [hostRows] = await connection.query<(RowDataPacket & { status: string })[]>("SELECT status FROM host_profiles WHERE application_user_id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!identity.hostAccessOverride && hostRows[0] && ["SUSPENDED", "INACTIVE"].includes(hostRows[0].status)) throw new Error("Hosting is suspended or inactive. Contact your Agency or support to restore access.");
-    const applicableRestrictionTypes = roomType === "PARTY" ? "('SUSPENSION')" : "('TEMP_LIVE_BAN','SUSPENSION')";
-    const [restrictionRows] = await connection.query<RowDataPacket[]>(
-      `SELECT id FROM moderation_restrictions
+    const applicableRestrictionTypes = roomType === "PARTY"
+      ? "('SUSPENSION')"
+      : "('TEMP_LIVE_BAN','SUSPENSION','FACE_LIVE')";
+    const [restrictionRows] = await connection.query<(RowDataPacket & {
+      restriction_type: string;
+      ends_at: Date | string | null;
+      remaining_seconds: number | null;
+    })[]>(
+      `SELECT id, restriction_type, ends_at,
+              CASE WHEN ends_at IS NULL THEN NULL
+                   ELSE GREATEST(0, TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP(3), ends_at)) END remaining_seconds
+       FROM moderation_restrictions
        WHERE application_user_id = ? AND status = 'ACTIVE'
          AND restriction_type IN ${applicableRestrictionTypes}
          AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP(3))
        LIMIT 1 FOR UPDATE`,
       [identity.userId],
     );
+    if (restrictionRows[0]?.restriction_type === "FACE_LIVE" && roomType === "FACE") {
+      throw faceLiveSuspensionError(
+        restrictionRows[0].ends_at!,
+        Number(restrictionRows[0].remaining_seconds ?? 0),
+      );
+    }
     if (restrictionRows[0]) throw new Error("Live hosting is temporarily restricted. Check your Nazraa notifications or contact support.");
     const [rewardRuleRows] = await connection.query<(RowDataPacket & { id: string })[]>(
       `SELECT id FROM host_reward_rules

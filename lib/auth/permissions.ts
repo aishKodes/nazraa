@@ -12,6 +12,7 @@ export type Permission =
   | "users.read"
   | "users.moderate"
   | "users.permanent"
+  | "face_live.suspend"
   | "hosts.read"
   | "hosts.review"
   | "agencies.read"
@@ -56,7 +57,7 @@ export type Permission =
 
 const master: Permission[] = [
   "dashboard.read", "accounts.read", "accounts.create", "accounts.manage", "accounts.edit",
-  "accounts.reassign", "accounts.roles", "accounts.permanent", "users.read", "users.moderate", "users.permanent",
+  "accounts.reassign", "accounts.roles", "accounts.permanent", "users.read", "users.moderate", "users.permanent", "face_live.suspend",
   "hosts.read", "hosts.review", "agencies.read", "agencies.create", "agencies.review",
   "hierarchy.read", "monitoring.read", "devices.read", "devices.manage", "wallet.read",
   "coins.mint", "coins.allocate", "coins.transfer", "coin_orders.read", "coin_orders.manage",
@@ -117,7 +118,7 @@ const grants: Record<Role, Permission[]> = {
     "dashboard.read", "wallet.read", "coins.transfer", "coin_orders.read", "coin_orders.manage", "transactions.read",
   ],
   MONITORING_CS: [
-    "dashboard.read", "users.read", "hosts.read", "monitoring.read", "rooms.read", "rooms.restrict",
+    "dashboard.read", "users.read", "hosts.read", "monitoring.read", "rooms.read", "rooms.restrict", "face_live.suspend",
     "support.read", "support.manage", "risk.read", "risk.manage", "audit.read",
   ],
 };

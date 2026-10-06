@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
+import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 import type { LiveKitPublishMode } from "@/lib/services/livekit-token-service";
 
 type MediaRole =
@@ -65,6 +66,26 @@ export async function authorizeLiveKitRoom(
       );
     }
     if (input.canPublish) {
+      if (room.room_type !== "PARTY") {
+        const [restrictions] = await connection.query<(RowDataPacket & {
+          ends_at: Date | string;
+          remaining_seconds: number;
+        })[]>(
+          `SELECT ends_at,
+                  GREATEST(0, TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP(3), ends_at)) remaining_seconds
+           FROM moderation_restrictions
+           WHERE application_user_id = ? AND restriction_type = 'FACE_LIVE'
+             AND status = 'ACTIVE' AND ends_at > CURRENT_TIMESTAMP(3)
+           ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+          [identity.userId],
+        );
+        if (restrictions[0]) {
+          throw faceLiveSuspensionError(
+            restrictions[0].ends_at,
+            Number(restrictions[0].remaining_seconds),
+          );
+        }
+      }
       const policy = LiveAccessPolicyService.for(identity);
       const access =
         room.room_type === "PARTY"

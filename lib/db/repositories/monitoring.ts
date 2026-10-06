@@ -47,7 +47,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
          FROM moderation_restrictions current_restriction
          WHERE current_restriction.application_user_id = u.id
            AND current_restriction.status = 'ACTIVE'
-           AND current_restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
+           AND current_restriction.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION','FACE_LIVE')
            AND (current_restriction.ends_at IS NULL OR current_restriction.ends_at > CURRENT_TIMESTAMP(3))
          ORDER BY (current_restriction.restriction_type = 'SUSPENSION') DESC,
                   current_restriction.created_at DESC

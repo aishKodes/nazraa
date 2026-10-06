@@ -44,6 +44,42 @@ export class LiveKitRoomAdmin {
     }
   }
 
+  /** Ends a moderated Face room and disconnects its complete audience. */
+  async endRoom(roomCode: string) {
+    const client = this.client();
+    if (!client) throw new Error("Live media moderation is not configured.");
+    try {
+      const rooms = await client.listRooms([roomCode]);
+      if (!rooms.some((room) => room.name === roomCode)) {
+        return { attempted: true, ended: false };
+      }
+      await client.deleteRoom(roomCode);
+      return { attempted: true, ended: true };
+    } catch {
+      // The database restriction is already authoritative, but explicitly
+      // surface a failed media shutdown so operations can retry immediately.
+      throw new Error("Live media could not be closed. The restriction is saved; retry the room shutdown.");
+    }
+  }
+
+  /** Removes a specific Face audio guest without ending the host's room. */
+  async disconnectParticipant(roomCode: string, publicId: string) {
+    const client = this.client();
+    if (!client) throw new Error("Live media moderation is not configured.");
+    try {
+      const participants = await client.listParticipants(roomCode);
+      if (!participants.some((participant) => participant.identity === publicId)) {
+        return { attempted: true, removed: false };
+      }
+      await client.removeParticipant(roomCode, publicId, {
+        revokeTokenTs: BigInt(Math.floor(Date.now() / 1000)),
+      });
+      return { attempted: true, removed: true };
+    } catch {
+      throw new Error("The Face audio guest could not be disconnected. The restriction is saved; retry the media action.");
+    }
+  }
+
   /** Mutes or unmutes every current audio track for a member, idempotently. */
   async setParticipantAudioMuted(roomCode: string, publicId: string, muted: boolean) {
     const client = this.client();

@@ -214,7 +214,15 @@ function errorResponse(error: unknown, status = 400) {
         ? "Nazraa is reconnecting to the server. Please retry."
         : rawMessage,
       ...(accessDenied
-        ? { code: error.accessCode }
+        ? {
+            code: error.accessCode,
+            ...(error.restriction
+              ? {
+                  expiresAt: error.restriction.expiresAt,
+                  remainingSeconds: error.restriction.remainingSeconds,
+                }
+              : {}),
+          }
         : safeClientCode
           ? { code: safeClientCode }
           : {}),

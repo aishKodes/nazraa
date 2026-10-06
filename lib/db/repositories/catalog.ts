@@ -1,5 +1,5 @@
 import "server-only";
-import { publicApiOrigin, publicAssetOrigin } from "@/lib/config/public-api-origin";
+import { publicApiOrigin, publicAssetOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 import { createHash, randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
@@ -177,10 +177,12 @@ export async function listBanners(page = 1) {
   const [rows] = await db().query<(RowDataPacket & { id: string; placement: string; title: string; subtitle: string | null; image_url: string; action_type: string; action_target: string | null; starts_at: string | null; ends_at: string | null; priority: number; active: number })[]>(
     "SELECT id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, active FROM banners ORDER BY active DESC, priority DESC, created_at DESC LIMIT 26 OFFSET ?", [(Math.max(1, Math.trunc(page)) - 1) * 25],
   );
-  return rows.map((row) => ({ id: row.id, placement: row.placement, title: row.title, subtitle: row.subtitle, imageUrl: row.image_url, actionType: row.action_type, actionTarget: row.action_target, startsAt: row.starts_at, endsAt: row.ends_at, priority: row.priority, active: Boolean(row.active) }));
+  return rows.map((row) => ({ id: row.id, placement: row.placement, title: row.title, subtitle: row.subtitle, imageUrl: currentPublicAssetUrl(row.image_url), actionType: row.action_type, actionTarget: row.action_target, startsAt: row.starts_at, endsAt: row.ends_at, priority: row.priority, active: Boolean(row.active) }));
 }
 
 export async function createBanner(input: { scope: Scope; placement: string; title: string; subtitle?: string; image: PreparedPublicImage; actionType: string; actionTarget?: string; startsAt?: string; endsAt?: string; priority: number; enabled: boolean }) {
+  if (!can(input.scope.account.role, "banners.manage")) throw new Error("Only an authorized banner manager can upload banners.");
+  if (input.image.byteSize < 1 || input.image.byteSize > 2097152 || input.image.data.length !== input.image.byteSize || input.image.mimeType !== "image/webp") throw new Error("Banner image could not be processed. Choose a JPG, PNG or WebP image up to 2 MB.");
   const id = randomUUID();
   const assetId = randomUUID();
   const imageUrl = `${publicApiOrigin()}/api/v1/assets/banners/${assetId}`;
@@ -188,9 +190,11 @@ export async function createBanner(input: { scope: Scope; placement: string; tit
     await connection.execute("INSERT INTO banner_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)", [assetId, input.image.mimeType, input.image.data, input.image.byteSize, input.image.originalName, input.scope.account.id]);
     await connection.execute("INSERT INTO banners (id, placement, title, subtitle, image_url, action_type, action_target, starts_at, ends_at, priority, active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [id, input.placement, input.title, input.subtitle || null, imageUrl, input.actionType, input.actionTarget || null, input.startsAt || null, input.endsAt || null, input.priority, input.enabled, input.scope.account.id]);
   } });
+  return { id, assetId, imageUrl };
 }
 
 export async function setBannerActive(input: { scope: Scope; id: string; active: boolean }) {
+  if (!can(input.scope.account.role, "banners.manage")) throw new Error("Only an authorized banner manager can change banner status.");
   await auditedMutation({ scope: input.scope, action: "banner.status_change", module: "banners", targetType: "banner", targetId: input.id, reason: input.active ? "Enabled banner" : "Disabled banner", run: async (connection) => { await connection.execute("UPDATE banners SET active = ? WHERE id = ?", [input.active, input.id]); } });
 }
 

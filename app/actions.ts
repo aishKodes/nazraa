@@ -12,6 +12,7 @@ import { accountByManagementId, createInitialMaster } from "@/lib/db/repositorie
 import { banDeviceAcrossAccounts, blockUserDevice, unbanDeviceAcrossAccounts, unblockUserDevice } from "@/lib/db/repositories/monitoring";
 import { adjustPlatformCoinInventory, allocatePlatformCoins, createTemporaryLiveRestriction, permanentlyBanUser, permanentlyUnbanUser, transferCoins, transitionWithdrawal } from "@/lib/db/repositories/operations";
 import { withTransaction } from "@/lib/db/transaction";
+import { suspendFaceLiveAndStopMedia } from "@/lib/services/face-live-moderation";
 
 const loginInput = z.object({ managementId: z.string().trim().regex(/^\d{6}$/), password: z.string().min(1).max(200) });
 
@@ -137,6 +138,9 @@ export async function submitWithdrawalTransition(formData: FormData) {
 
 export async function submitTemporaryRestriction(formData: FormData) {
   const scope = await requirePermission("rooms.restrict");
+  if (scope.account.role === "MONITORING_CS") {
+    redirect("/dashboard/monitoring?error=CS+Monitoring+can+only+apply+a+30-minute+or+2-hour+Face+Live+suspension.");
+  }
   const applicationUserId = z.string().uuid().safeParse(formData.get("applicationUserId"));
   const reason = z.string().trim().min(5).max(500).safeParse(formData.get("reason"));
   const durationMinutes = z.coerce.number().pipe(z.union([z.literal(30), z.literal(60), z.literal(120), z.literal(1440)])).safeParse(formData.get("durationMinutes"));
@@ -152,6 +156,37 @@ export async function submitTemporaryRestriction(formData: FormData) {
   revalidatePath("/dashboard/monitoring");
   const durationLabel = durationMinutes.data === 1440 ? "24-hour" : `${durationMinutes.data}-minute`;
   redirect(`${path}?success=${encodeURIComponent(`${result.userName} has a ${durationLabel} Face/Video Live restriction ending ${new Date(result.endsAt).toISOString()}.`)}`);
+}
+
+export async function submitFaceLiveSuspension(formData: FormData) {
+  const scope = await requirePermission("face_live.suspend");
+  const parsed = z.object({
+    applicationUserId: z.string().uuid(),
+    durationMinutes: z.enum(["30", "120"]).transform((value) => Number(value) as 30 | 120),
+    reason: z.string().trim().min(5).max(500),
+    confirmed: z.literal("yes"),
+  }).safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    redirect("/dashboard/monitoring?error=Choose+30+minutes+or+2+hours%2C+confirm%2C+and+provide+a+reason.");
+  }
+
+  let outcome: Awaited<ReturnType<typeof suspendFaceLiveAndStopMedia>>;
+  try {
+    outcome = await suspendFaceLiveAndStopMedia({ scope, ...parsed.data });
+  } catch (error) {
+    redirect(`/dashboard/monitoring?error=${encodeURIComponent(error instanceof Error && !("code" in error) ? error.message : "Face Live restriction failed. Please retry.")}`);
+  }
+  const { result, mediaEnded, accountingFinalized } = outcome;
+  const pushDelivery = result.pushDelivery;
+  revalidatePath("/dashboard/monitoring");
+  revalidatePath("/dashboard/rooms");
+  const status = [
+    mediaEnded ? "active Face media shutdown confirmed" : "restriction saved; active Face media shutdown needs an operator retry",
+    accountingFinalized ? "Live time/reward accounting finalized" : "restriction saved; Live accounting reconciliation is required",
+    pushDelivery.configured ? `${pushDelivery.queued} push delivery job(s) queued` : "in-app notice saved; push is not configured",
+  ].join(" · ");
+  const durationText = result.durationMinutes === 30 ? "30 minutes" : "2 hours";
+  redirect(`/dashboard/monitoring?success=${encodeURIComponent(`${result.userName}: Face Live suspended for ${durationText} until ${result.expiresAtLabel}. ${status}.`)}`);
 }
 
 export async function submitPermanentUserBan(formData: FormData) {

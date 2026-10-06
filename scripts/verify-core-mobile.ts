@@ -623,7 +623,7 @@ async function main() {
     );
     assert.ok(
       initialRemoteItem?.visualUrl?.startsWith(
-        "https://nazraa.vercel.app/api/v1/assets/gifts/",
+        "https://api.nazraa.pixtra.site/api/v1/assets/gifts/",
       ),
       "uploaded assets must receive an internal URL automatically",
     );

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import mysql, { type RowDataPacket } from "mysql2/promise";
+import sharp from "sharp";
 import type { Role, Scope } from "@/types/platform";
 
 // Standalone repository tests run outside Next's server-only module alias.
@@ -421,7 +422,7 @@ async function main() {
     assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     const partyBeforeLiveBlock = await product.createRoom(identity, roomInput("party"));
     const faceBeforeLiveBlock = await product.createRoom(identity, roomInput("face"));
-    const temp = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 1440, reason: "QA exact 24-hour Face Live restriction" });
+    const temp = await ops.createTemporaryLiveRestriction({ scope: master, applicationUserId: ownUser.id, durationMinutes: 1440, reason: "QA exact 24-hour Live restriction" });
     const [restrictionWindow] = await root.query<RowDataPacket[]>("SELECT TIMESTAMPDIFF(SECOND, starts_at, ends_at) duration_seconds FROM moderation_restrictions WHERE id = ?", [temp.restrictionId]);
     assert.equal(Number(restrictionWindow[0].duration_seconds), 86_400, "24-hour Live restriction must have an exact server-authored expiry");
     const [roomsAfterLiveBlock] = await root.query<RowDataPacket[]>("SELECT room_type, COUNT(*) active_count FROM live_rooms WHERE host_application_user_id = ? AND status IN ('ACTIVE','LOCKED') GROUP BY room_type", [ownUser.id]);
@@ -442,17 +443,50 @@ async function main() {
     assert.equal(restrictedPolicy.join.allowed, true);
     assert.ok((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId);
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), "Other Host")).some((entry) => entry.id === otherUser.id), true, "CS can find every Nazraa user without hierarchy clutter");
-    const crossBranchRestriction = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA CS platform support restriction" });
-    await ops.restoreLiveAccess({ scope: await refresh(cs), restrictionId: crossBranchRestriction.restrictionId, reason: "QA CS platform support restore" });
+    await assert.rejects(ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA CS cannot use generic Live restriction" }), /dedicated 30-minute or 2-hour/);
+    const crossBranchRestriction = await ops.createTemporaryLiveRestriction({ scope: master, applicationUserId: otherUser.id, durationMinutes: 30, reason: "QA Master cross-branch restriction" });
+    await ops.restoreLiveAccess({ scope: master, restrictionId: crossBranchRestriction.restrictionId, reason: "QA Master restores test restriction" });
     await root.execute("UPDATE moderation_restrictions SET ends_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE id = ?", [temp.restrictionId]);
     assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false);
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
     assert.equal((await monitoring.listModerationHistory(await refresh(cs), [ownUser.id]))[0].status, "EXPIRED");
-    const restored = await ops.createTemporaryLiveRestriction({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 60, reason: "QA temporary Live restriction to restore" });
-    await ops.restoreLiveAccess({ scope: await refresh(cs), restrictionId: restored.restrictionId, reason: "QA CS restores temporary restriction" });
+    const restored = await ops.createTemporaryLiveRestriction({ scope: master, applicationUserId: ownUser.id, durationMinutes: 60, reason: "QA temporary Live restriction to restore" });
+    await ops.restoreLiveAccess({ scope: master, restrictionId: restored.restrictionId, reason: "QA Master restores temporary restriction" });
     assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
     assert.equal((await monitoring.listModerationHistory(await refresh(cs), [ownUser.id]))[0].status, "REVOKED");
-    assert.equal((await ops.listAuditPage(master)).items.some((entry) => entry.action === "moderation.live_access_restored" && entry.actorRole === "MONITORING_CS"), true, "Master audit sees CS moderation");
+    assert.equal((await ops.listAuditPage(master)).items.some((entry) => entry.action === "moderation.live_access_restored" && entry.actorRole === "MASTER"), true, "Master audit sees scoped restoration");
+
+    const faceRoomForSuspension = await product.createRoom(identity, roomInput("face"));
+    const [faceAccounting] = await root.query<RowDataPacket[]>("SELECT id FROM live_session_accounting WHERE room_id = ?", [faceRoomForSuspension.id]);
+    const [faceRule] = await root.query<RowDataPacket[]>("SELECT id FROM host_reward_rules WHERE room_type = 'FACE' AND enabled = TRUE ORDER BY effective_from DESC LIMIT 1");
+    await root.execute("UPDATE host_reward_rules SET coins_per_hour = 3500, minimum_eligible_seconds = 3600 WHERE id = ?", [faceRule[0].id]);
+    await root.execute("UPDATE live_session_accounting SET eligible_duration_seconds = 3600, eligible_seconds_committed = 3600, valid_media_seconds = 3600, reward_rule_id = ? WHERE id = ?", [faceRule[0].id, faceAccounting[0].id]);
+    const [diamondBeforeModeration] = await root.query<RowDataPacket[]>("SELECT COALESCE(SUM(available_balance), 0) amount FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [ownUser.id]);
+    const faceSuspension30 = await ops.createFaceLiveSuspension({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 30, reason: "QA 30-minute Face-only suspension" });
+    assert.equal(faceSuspension30.activeRoomCode, faceRoomForSuspension.roomCode, "suspending a live Host closes its current Face room");
+    const moderationFinalization = await liveCompletion.finalizeLiveSession(identity, faceRoomForSuspension.roomCode);
+    assert.equal(moderationFinalization.eligibleSeconds, 3600, "one already-qualified reward hour is retained when moderation ends Live");
+    assert.equal(moderationFinalization.rewardCoins, 3500, "the existing completed-hour reward is settled through the normal claimable reward flow");
+    const [diamondAfterModeration] = await root.query<RowDataPacket[]>("SELECT COALESCE(SUM(available_balance), 0) amount FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND'", [ownUser.id]);
+    assert.equal(Number(diamondAfterModeration[0].amount), Number(diamondBeforeModeration[0].amount), "Face suspension does not directly alter the Host's Diamond wallet");
+    const [face30Window] = await root.query<RowDataPacket[]>("SELECT restriction_type, TIMESTAMPDIFF(SECOND, starts_at, ends_at) duration_seconds FROM moderation_restrictions WHERE id = ?", [faceSuspension30.restrictionId]);
+    assert.deepEqual([face30Window[0].restriction_type, Number(face30Window[0].duration_seconds)], ["FACE_LIVE", 1800]);
+    assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionType, "FACE_LIVE");
+    assert.equal((await mobileSession.authenticateMobileRequest(restrictionRequest))?.liveRestricted, false, "Face-only suspension never disables account session access");
+    await assert.rejects(product.createRoom(identity, roomInput("face")), (error: unknown) => error instanceof mobileSession.MobileAccessDeniedError && error.accessCode === "FACE_LIVE_TEMPORARILY_SUSPENDED");
+    const partyDuringFaceSuspension = await product.createRoom(identity, roomInput("party"));
+    assert.equal(partyDuringFaceSuspension.status, "ACTIVE", "Face-only suspension does not block Party");
+    await assert.rejects(ops.restoreLiveAccess({ scope: await refresh(cs), restrictionId: faceSuspension30.restrictionId, reason: "QA CS cannot early restore Face Live" }), /Only Master/);
+    await ops.restoreLiveAccess({ scope: master, restrictionId: faceSuspension30.restrictionId, reason: "QA Master early restore" });
+    assert.equal((await monitoring.searchMonitoring(await refresh(cs), ownUser.publicId))[0]?.restrictionId, null);
+
+    const faceSuspension120 = await ops.createFaceLiveSuspension({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 120, reason: "QA 2-hour Face-only suspension" });
+    const [face120Window] = await root.query<RowDataPacket[]>("SELECT restriction_type, TIMESTAMPDIFF(SECOND, starts_at, ends_at) duration_seconds FROM moderation_restrictions WHERE id = ?", [faceSuspension120.restrictionId]);
+    assert.deepEqual([face120Window[0].restriction_type, Number(face120Window[0].duration_seconds)], ["FACE_LIVE", 7200]);
+    await root.execute("UPDATE moderation_restrictions SET ends_at = DATE_SUB(CURRENT_TIMESTAMP(3), INTERVAL 1 SECOND) WHERE id = ?", [faceSuspension120.restrictionId]);
+    await assert.rejects(ops.createFaceLiveSuspension({ scope: await refresh(cs), applicationUserId: ownUser.id, durationMinutes: 60 as unknown as 30 | 120, reason: "QA invalid duration" }));
+    await assert.rejects(ops.createFaceLiveSuspension({ scope: await refresh(cm), applicationUserId: ownUser.id, durationMinutes: 30, reason: "QA non-CS role denied" }));
+    assert.equal((await product.createRoom(identity, roomInput("face"))).status, "ACTIVE", "an expired Face-only restriction needs no manual unban or cron");
     passed++;
 
     const token = randomUUID();
@@ -588,6 +622,45 @@ async function main() {
     for (const nextStatus of ["UNDER_REVIEW", "APPROVED", "PROCESSING", "COMPLETED"]) await ops.transitionWithdrawal({ scope: await refresh(cm), withdrawalId, nextStatus, providerReference: "QA-NO-REAL-PAYMENT", reason: "QA payout state transition" });
     passed++;
 
+    const bannerPixels = randomBytes(64 * 64 * 4);
+    for (let index = 3; index < bannerPixels.length; index += 4) bannerPixels[index] = 255;
+    const png = await sharp(bannerPixels, { raw: { width: 64, height: 64, channels: 4 } }).png().toBuffer();
+    const { preparePublicImage } = await import("@/lib/security/public-images");
+    const preparedBanner = await preparePublicImage(new File([png], "qa-banner.png", { type: "image/png" }), 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 });
+    assert.equal(preparedBanner.mimeType, "image/webp");
+    const smallPng = await sharp({ create: { width: 300, height: 100, channels: 3, background: "#58739a" } }).png().toBuffer();
+    const smallBanner = await preparePublicImage(new File([smallPng], "small-valid.png", { type: "image/png" }), 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 });
+    assert.ok(smallBanner.byteSize > 0 && smallBanner.byteSize < 1000, "valid optimized artwork reproduces the old database constraint failure");
+    const smallCreated = await catalog.createBanner({ scope: master, placement: "HOME", title: "QA small valid upload", image: smallBanner, actionType: "NONE", priority: 999, enabled: false });
+    assert.ok((await catalog.listBanners()).some(banner => banner.id === smallCreated.id), "valid sub-1KB optimized artwork is durable");
+    await assert.rejects(preparePublicImage(new File([Buffer.from("not an image")], "invalid.png", { type: "image/png" }), 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 }), /unmodified JPG, PNG, or WebP/);
+    await assert.rejects(preparePublicImage(new File([Buffer.alloc(2 * 1024 * 1024 + 1)], "large.png", { type: "image/png" }), 2 * 1024 * 1024, "Banner", { maxWidth: 1200, maxHeight: 450 }), /2 MB or smaller/);
+    const createdBanner = await catalog.createBanner({ scope: master, placement: "HOME", title: "QA upload", image: preparedBanner, actionType: "NONE", priority: 999, enabled: true });
+    assert.match(createdBanner.imageUrl, /^https:\/\/api\.nazraa\.pixtra\.site\/api\/v1\/assets\/banners\/[0-9a-f-]+$/i);
+    assert.equal(createdBanner.imageUrl.includes("nazraa.vercel.app"), false);
+    assert.equal((await catalog.listBanners()).find((banner) => banner.id === createdBanner.id)?.imageUrl, createdBanner.imageUrl);
+    const mobileBannerSnapshot = await product.mobileBootstrap(identity);
+    assert.equal(mobileBannerSnapshot.banners.find((banner) => banner.id === createdBanner.id)?.image, createdBanner.imageUrl, "the consumer Home bootstrap uses the working public banner asset URL");
+    const bannerAssetRoute = await import("@/app/api/v1/assets/banners/[id]/route");
+    const assetResponse = await bannerAssetRoute.GET(new Request(createdBanner.imageUrl), { params: Promise.resolve({ id: createdBanner.assetId }) });
+    assert.equal(assetResponse.status, 200, "persisted banner image endpoint should serve the stored asset");
+    assert.match(assetResponse.headers.get("content-type") ?? "", /image\/webp/);
+    assert.ok((await assetResponse.arrayBuffer()).byteLength > 0);
+    await catalog.setBannerActive({ scope: master, id: createdBanner.id, active: false });
+    assert.equal((await catalog.listBanners()).find((banner) => banner.id === createdBanner.id)?.active, false, "banner disable persists on reload");
+    await catalog.setBannerActive({ scope: master, id: createdBanner.id, active: true });
+    assert.equal((await catalog.listBanners()).find((banner) => banner.id === createdBanner.id)?.active, true, "banner re-enable persists on reload");
+    await assert.rejects(catalog.createBanner({ scope: await refresh(cs), placement: "HOME", title: "forbidden", image: preparedBanner, actionType: "NONE", priority: 0, enabled: true }));
+
+    const legacyBannerId = randomUUID();
+    const legacyAssetId = randomUUID();
+    await root.execute("INSERT INTO banner_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by) VALUES (?, ?, ?, ?, 'qa-legacy.webp', ?)", [legacyAssetId, preparedBanner.mimeType, preparedBanner.data, preparedBanner.byteSize, master.account.id]);
+    await root.execute("INSERT INTO banners (id, placement, title, image_url, action_type, active, created_by) VALUES (?, 'HOME', 'QA legacy URL', ?, 'NONE', TRUE, ?)", [legacyBannerId, `https://nazraa.vercel.app/api/v1/assets/banners/${legacyAssetId}`, master.account.id]);
+    assert.equal((await catalog.listBanners()).find((banner) => banner.id === legacyBannerId)?.imageUrl, `https://api.nazraa.pixtra.site/api/v1/assets/banners/${legacyAssetId}`, "legacy Vercel banner records are served on the stable API host");
+    const legacyConsumerBanner = (await product.mobileBootstrap(identity)).banners.find((banner) => banner.id === legacyBannerId);
+    assert.equal(legacyConsumerBanner?.image, `https://api.nazraa.pixtra.site/api/v1/assets/banners/${legacyAssetId}`, "consumer bootstrap never emits a stale Vercel banner link");
+    await root.execute("DELETE FROM banners WHERE id = ?", [legacyBannerId]);
+    await root.execute("DELETE FROM banner_assets WHERE id = ?", [legacyAssetId]);
     const bannerId = randomUUID();
     await root.execute("INSERT INTO banners (id, placement, title, image_url, action_type, active, created_by) VALUES (?, 'HOME', 'QA unused banner', '/qa-image.webp', 'NONE', FALSE, ?)", [bannerId, master.account.id]);
     await assert.rejects(catalog.deleteBanner({ scope: cm, id: bannerId, reason: "QA reject unauthorized deletion", confirmed: true }));
@@ -596,8 +669,14 @@ async function main() {
     const [audit] = await root.query<RowDataPacket[]>("SELECT previous_data FROM audit_logs WHERE target_id = ? AND action = 'banner.delete'", [bannerId]);
     assert.equal(audit.length, 1);
     assert.equal((await catalog.listBanners()).some((banner) => banner.id === bannerId), false);
-    await assert.rejects(ops.permanentlyBanUser({ scope: cm, applicationUserId: ownUser.id, reason: "QA deny non-Master ban", confirmed: true }));
-    await assert.rejects(ops.permanentlyBanUser({ scope: await refresh(cs), applicationUserId: ownUser.id, reason: "QA CS cannot permanently ban", confirmed: true }));
+    for (const [role, nonMasterScope] of scopes) {
+      if (role === "MASTER") continue;
+      await assert.rejects(
+        ops.permanentlyBanUser({ scope: await refresh(nonMasterScope), applicationUserId: ownUser.id, reason: `QA ${role} cannot permanently ban`, confirmed: true }),
+        (error: unknown) => error instanceof Error,
+        `${role} must be rejected by the repository-level Master-only guard`,
+      );
+    }
     const accountBanToken = randomUUID();
     const accountBanSessionId = randomUUID();
     const explicitLogoutSessionId = randomUUID();

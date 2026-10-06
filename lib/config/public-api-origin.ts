@@ -1,6 +1,6 @@
 /** Public asset/API origin for links returned to Nazraa clients. */
 export function publicApiOrigin(): string {
-  const raw = process.env.NAZRAA_PUBLIC_API_ORIGIN?.trim() || "https://nazraa.vercel.app";
+  const raw = process.env.NAZRAA_PUBLIC_API_ORIGIN?.trim() || "https://api.nazraa.pixtra.site";
   const url = new URL(raw);
   if (
     url.protocol !== "https:" ||

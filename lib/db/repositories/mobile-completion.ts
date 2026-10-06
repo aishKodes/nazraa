@@ -45,6 +45,7 @@ import {
 } from "@/lib/services/live-business-policy";
 import type { MediaProvider } from "@/lib/services/media-provider";
 import { mediaProviderFor } from "@/lib/services/media-provider";
+import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 
 function code(prefix: string) {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 6).toUpperCase()}`;
@@ -645,6 +646,7 @@ async function settleCompletedLiveHours(
       host_profile_status: string | null;
       agency_authorized: number;
       actively_restricted: number;
+      face_live_moderation_cutoff: number;
       host_member_active: number;
     })[]
   >(
@@ -673,6 +675,12 @@ async function settleCompletedLiveHours(
                 AND restriction_row.restriction_type IN ('TEMP_LIVE_BAN','SUSPENSION')
                 AND (restriction_row.ends_at IS NULL OR restriction_row.ends_at > CURRENT_TIMESTAMP(3))
             ) actively_restricted,
+            EXISTS (
+              SELECT 1 FROM moderation_restrictions face_cutoff
+              WHERE face_cutoff.application_user_id = host_user.id
+                AND face_cutoff.restriction_type = 'FACE_LIVE'
+                AND ABS(TIMESTAMPDIFF(SECOND, face_cutoff.starts_at, room.ended_at)) <= 60
+            ) face_live_moderation_cutoff,
             EXISTS (
               SELECT 1 FROM live_room_members host_member
               WHERE host_member.room_id = room.id
@@ -710,7 +718,8 @@ async function settleCompletedLiveHours(
     activelyRestricted: Boolean(row.actively_restricted),
     validBroadcastSession:
       row.accounting_status === "ACTIVE" &&
-      ["ACTIVE", "LOCKED"].includes(row.room_status) &&
+      (["ACTIVE", "LOCKED"].includes(row.room_status) ||
+        (row.room_status === "ENDED" && Boolean(row.face_live_moderation_cutoff))) &&
       row.room_host_id === row.host_application_user_id &&
       Boolean(row.host_member_active),
     roomType: row.room_type,
@@ -3253,6 +3262,24 @@ export async function respondLiveCoHost(
       throw new Error("This audio request is no longer pending.");
     }
     if (input.accept) {
+      const [restrictionRows] = await connection.query<(RowDataPacket & {
+        ends_at: Date | string;
+        remaining_seconds: number;
+      })[]>(
+        `SELECT ends_at,
+                GREATEST(0, TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP(3), ends_at)) remaining_seconds
+         FROM moderation_restrictions
+         WHERE application_user_id = ? AND restriction_type = 'FACE_LIVE'
+           AND status = 'ACTIVE' AND ends_at > CURRENT_TIMESTAMP(3)
+         ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+        [target.id],
+      );
+      if (restrictionRows[0]) {
+        throw faceLiveSuspensionError(
+          restrictionRows[0].ends_at,
+          Number(restrictionRows[0].remaining_seconds),
+        );
+      }
       const maxAudioGuests = Math.max(
         1,
         Math.min(
@@ -4492,7 +4519,7 @@ export async function unblockRoomMember(
 }
 
 export async function finalizeLiveSession(
-  identity: MobileIdentity,
+  identity: Pick<MobileIdentity, "userId"> & Partial<Omit<MobileIdentity, "userId">>,
   roomCode: string,
 ) {
   return withTransaction(async (connection) => {
