@@ -52,3 +52,8 @@ history for Master/Admin/Super Admin, alongside the 10,005-ledger-row tests.
 Private-contact inference via the Users search is denied for roles without
 private Host identity access; tests populate real fixture fields before checking
 redaction, instead of merely checking already-null fields.
+
+Operational Face/Party hour projection also uses the same committed/valid-media
+seconds as canonical Live History, not a larger legacy room-open duration. An
+isolated assertion verifies that 7,200 legacy duration seconds cannot overwrite
+1,800 actual committed publishing seconds in the new display.

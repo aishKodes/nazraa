@@ -283,7 +283,7 @@ async function main() {
     assert.equal(gameSocial.controls?.enabled, true);
     const roomInput = (kind: string) => ({ roomCode: randomUUID(), kind, title: "QA suspension room", category: "chat", language: "en", privacy: "public" as const, seatCount: 8, themeIndex: 0, themeEnabled: true, countryCode: "IN" });
     const interruptedRoom = await product.createRoom(identity, roomInput("party"));
-    await product.createRoom(identity, roomInput("face"));
+    const ownFaceRoom = await product.createRoom(identity, roomInput("face"));
     const ownLiveReport = await ownerReports.liveRewardReport(await refresh(agency), { q: ownUser.publicId, period: "24h" });
     assert.equal(ownLiveReport.total, 1, "Live report returns one canonical row per Live session");
     assert.equal(ownLiveReport.items[0].sessionId.length > 0, true);
@@ -292,6 +292,10 @@ async function main() {
     const otherIdentity = { ...identity, userId: otherUser.id, publicId: otherUser.publicId, externalUserId: otherUser.id, fullName: "QA Other Host", agencyAccountId: agencyOther.account.id };
     await product.createRoom(otherIdentity, roomInput("face"));
     assert.equal((await ownerReports.liveRewardReport(master, { period: "24h" })).total, 2, "Master receives the full authorized Live scope");
+    await root.execute('UPDATE live_session_accounting SET eligible_seconds_committed=1800,valid_media_seconds=1800,valid_duration_seconds=7200 WHERE room_id=?',[ownFaceRoom.id]);
+    const operational=await (await import('@/lib/db/repositories/host-operations')).hostOperationalActivity(await refresh(agency),[ownUser.id]);
+    assert.equal(operational[0].faceSeconds,1800,'operational hours use canonical publishing time, never a larger legacy room-open duration');
+    await root.execute('UPDATE live_session_accounting SET eligible_seconds_committed=0,valid_media_seconds=0,valid_duration_seconds=0 WHERE room_id=?',[ownFaceRoom.id]);
     // Unverified hosts must remain moderatable; verification is independent.
     await root.execute("UPDATE host_profiles SET verification_status = 'UNVERIFIED' WHERE id = ?", [hostId]);
     await assert.rejects(hostsRepository.updateHostStatus({ scope: agencyOther, hostId, status: "SUSPENDED", reason: "QA reject foreign host suspension" }));

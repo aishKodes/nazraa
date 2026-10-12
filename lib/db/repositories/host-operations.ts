@@ -26,7 +26,7 @@ export async function hostOperationalActivity(scope: Scope, requestedIds: string
   const permitted=users.map(row=>String(row.id)); const places=permitted.map(()=>"?").join(",");
   const [days,rules,gifts]=await Promise.all([
     db().query<RowDataPacket[]>(`SELECT host_application_user_id,IF(room_type='PARTY','PARTY','FACE') mode,business_date,
-      SUM(GREATEST(eligible_seconds_committed,valid_media_seconds,valid_duration_seconds)) seconds
+      SUM(GREATEST(COALESCE(eligible_seconds_committed,0),COALESCE(valid_media_seconds,0))) seconds
       FROM live_session_accounting WHERE host_application_user_id IN (${places}) AND status<>'VOID'
       AND started_at>=UTC_TIMESTAMP(3)-INTERVAL 30 DAY GROUP BY host_application_user_id,mode,business_date`,permitted),
     db().query<RowDataPacket[]>(`SELECT minimum_eligible_seconds FROM host_reward_rules
