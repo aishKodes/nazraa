@@ -165,6 +165,27 @@ async function main() {
     assert.equal(ownGameReport.items[0].walletBefore, 1000, "wallet before is reconstructed from the canonical result equation");
     assert.equal((await ownerReports.gameManagementReport(await refresh(agency), { q: otherUser.publicId, period: "24h" })).total, 0, "edited User IDs cannot escape Agency game-report scope");
     assert.equal((await ownerReports.gameManagementReport(master, { period: "24h" })).total, 2);
+    // The interactive summary is intentionally bounded to 100; the existing
+    // Excel export must include every authorized filtered player instead.
+    const exportUsers:string[]=[];
+    try {
+      for(let index=0;index<101;index++){
+        const id=randomUUID();exportUsers.push(id);
+        await root.execute('INSERT INTO application_users (id,external_user_id,full_name,agency_account_id) VALUES (?,?,?,?)',[id,id,`QA game export ${index}`,agency.account.id]);
+        await root.execute(`INSERT INTO game_round_results (id,client_round_id,application_user_id,game_name,bets_json,outcome_json,wager_total,payout_total,balance_after)
+          VALUES (?,?,?,'luck77',JSON_OBJECT('qa',100),JSON_OBJECT('qa',true),100,180,1080)`,[randomUUID(),randomUUID(),id]);
+      }
+      assert.equal((await ownerReports.gameManagementReport(master,{period:'24h'})).summary.length,100);
+      assert.equal((await ownerReports.gameManagementReport(master,{period:'24h'},true)).summary.length,103);
+      for(const scope of [branchAdmin,sa]){
+        const complete=await ownerReports.gameManagementReport(await refresh(scope),{period:'24h'},true);
+        assert.equal(complete.summary.length,102);assert.equal(complete.items.length,102);
+      }
+      assert.equal((await ownerReports.gameManagementReport(await refresh(saOther),{period:'24h'},true)).summary.length,1);
+    } finally {
+      const placeholders=exportUsers.map(()=>'?').join(',');
+      if(exportUsers.length){await root.execute(`DELETE FROM game_round_results WHERE application_user_id IN (${placeholders})`,exportUsers);await root.execute(`DELETE FROM application_users WHERE id IN (${placeholders})`,exportUsers);}
+    }
     const qaWorkbook = await reportExports.workbookBuffer("QA report", [{ name: "Rows", headers: ["ID", "Coins"], rows: [["QA-1", 25]] }]);
     assert.equal(String.fromCharCode(...qaWorkbook.slice(0, 2)), "PK", "server exporter produces a real XLSX ZIP workbook");
     for (const [role, scope] of scopes) {
@@ -209,14 +230,17 @@ async function main() {
     const liveCompletion = await import("@/lib/db/repositories/mobile-completion");
     const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
     const [ownHostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
+    await root.execute("UPDATE application_users SET email='qa-private-host@example.test',whatsapp_e164='+919999003333',date_of_birth='1940-01-01' WHERE id=?",[ownUser.id]);
     await hostsRepository.updateHostGender({ scope: master, hostId: String(ownHostRows[0].id), gender: "FEMALE", reason: "QA authorized identity correction" });
     assert.equal((await hostsRepository.getHostDetail(master, String(ownHostRows[0].id)))?.gender, "FEMALE");
+    assert.equal((await hostsRepository.getHostDetail(master,String(ownHostRows[0].id)))?.email,'qa-private-host@example.test');
     for (const restricted of [branchAdmin, agency]) {
       const detail = await hostsRepository.getHostDetail(await refresh(restricted), String(ownHostRows[0].id));
       assert.equal(detail?.gender, null);
       assert.equal(detail?.email, null);
       assert.equal(detail?.mobile, null);
       assert.equal(detail?.dateOfBirth, null);
+      assert.equal((await directory.listUsersPage(await refresh(restricted),{search:'qa-private-host@example.test'})).items.length,0,'private contact cannot be inferred through the Users directory');
       await assert.rejects(hostsRepository.updateHostGender({scope:await refresh(restricted),hostId:String(ownHostRows[0].id),gender:"MALE",reason:"QA private identity edit denied"}));
     }
     await assert.rejects(hostsRepository.updateHostGender({ scope: await refresh(adminOther), hostId: String(ownHostRows[0].id), gender: "MALE", reason: "QA foreign branch correction denied" }));

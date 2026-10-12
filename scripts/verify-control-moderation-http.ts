@@ -19,6 +19,7 @@ async function main() {
   const dbPassword = randomBytes(24).toString("hex");
   const secret = randomBytes(32).toString("hex");
   const root = await mysql.createConnection({ host: "127.0.0.1", user: "root", multipleStatements: true });
+  await root.query("SET time_zone = '+00:00'");
   let server: ReturnType<typeof spawn> | undefined;
   try {
     await root.query(`CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
@@ -101,6 +102,19 @@ async function main() {
       if(role!=='MASTER')assert.equal((await get(scope,'/api/reports/withdrawal-summary?kind=detail&format=csv')).status,403,`${role} Master withdrawal export`);
     }
     assert.equal((await get(cs,'/api/reports/games?format=xlsx')).status,403,'CS read access does not grant a new export permission');
+    for(let index=0;index<101;index++){
+      const id=randomUUID();
+      await root.execute('INSERT INTO application_users (id,external_user_id,full_name,agency_account_id) VALUES (?,?,?,?)',[id,id,`HTTP game export ${index}`,scopes.get('AGENCY')!.account.id]);
+      await root.execute(`INSERT INTO game_round_results (id,client_round_id,application_user_id,game_name,bets_json,outcome_json,wager_total,payout_total,balance_after)
+        VALUES (?,?,?,'luck77',JSON_OBJECT('qa',100),JSON_OBJECT('qa',true),100,180,1080)`,[randomUUID(),randomUUID(),id]);
+    }
+    for(const role of ['MASTER','ADMIN','SUPER_ADMIN'] as const){
+      const complete=await get(scopes.get(role)!,'/api/reports/games?format=xlsx&period=24h');
+      assert.equal(complete.status,200);
+      const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(await complete.arrayBuffer()) as never);
+      for(const name of ['User Game Summary','Game History'])assert.equal(book.getWorksheet(name)!.rowCount,102,`${role}: ${name} exports all 101 actual scoped users/results, not 100`);
+    }
+    console.log('PASS game XLSX: Master/Admin/Super Admin complete 101-player summary and history, no UI-summary limit applied to export.');
     // More than one UI page proves exports are record-level, not just the
     // current page or summary. These are isolated local test requests only.
     for(let i=0;i<31;i++)await root.execute("INSERT INTO withdrawal_requests (id,withdrawal_code,application_user_id,amount,status) VALUES (?,?,?,?,'PENDING')",[randomUUID(),`QA-EXPORT-${i}`,target,100000+i]);

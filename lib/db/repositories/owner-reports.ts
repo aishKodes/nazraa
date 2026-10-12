@@ -430,7 +430,7 @@ export async function gameManagementReport(scope: Scope, input: ReportPageInput 
      LEFT JOIN wallet_balances wallet ON wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = user.id AND wallet.asset_type = 'COIN'
      WHERE ${where}
      GROUP BY user.id, user.public_id, user.full_name, wallet.available_balance
-     ORDER BY total_coins_bet DESC LIMIT 100`, values,
+     ORDER BY total_coins_bet DESC LIMIT ${all ? REPORT_EXPORT_LIMIT + 1 : 100}`, values,
   ));
   const [countRows] = await withDatabaseReadRetry(() => db().execute<(RowDataPacket & { total: number })[]>(
     `SELECT COUNT(*) total FROM game_round_results result INNER JOIN application_users user ON user.id = result.application_user_id LEFT JOIN host_profiles host ON host.application_user_id = user.id WHERE ${where}`,
@@ -438,6 +438,7 @@ export async function gameManagementReport(scope: Scope, input: ReportPageInput 
   ));
   const total = Number(countRows[0]?.total ?? 0);
   if (all && total > REPORT_EXPORT_LIMIT) throw new Error(`Filtered export exceeds ${REPORT_EXPORT_LIMIT.toLocaleString()} rows. Narrow the filters first.`);
+  if (all && summaryRows.length > REPORT_EXPORT_LIMIT) throw new Error(`Filtered export exceeds ${REPORT_EXPORT_LIMIT.toLocaleString()} users. Narrow the filters first.`);
   const limit = all ? REPORT_EXPORT_LIMIT : pageSize;
   const [historyRows] = await withDatabaseReadRetry(() => db().execute<(RowDataPacket & Record<string, unknown>)[]>(
     `SELECT result.id result_id, result.client_round_id, result.game_name, result.created_at,

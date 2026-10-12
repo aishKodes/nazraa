@@ -35,8 +35,20 @@ fabricating a business rule. Historical country changes without a saved country
 snapshot cannot be reconstructed exactly. Exports over 20,000 withdrawal rows
 require narrower filters and return an explicit error, never partial success.
 
-## Production verification pending until deploy
+## Production verification
 
-Candidate runtime health/config check, Master banner save, role-scoped pages and
-Master withdrawal summary must be checked after deploy. This document is not a
-claim that production verification has already passed.
+The private candidate runtime reported ready and the configured 8 MB Server
+Action limit. The API-only deployment retained the existing worker, realtime,
+database, Redis, Caddy, production config and dirty source edits. Master saved
+the previously failing 1.3 MB PNG; the stored WebP loaded at 951 × 450. The QA
+banner remains disabled. The Master withdrawal summary loaded without a server
+exception. Screenshots are retained locally in this directory.
+
+A final export audit also found that the Game workbook's player-summary sheet
+used the interactive 100-player limit. It now exports the full authorized
+filtered set (with the same explicit 20,000-row safety limit as the detailed
+report). Direct HTTP XLSX tests verify 101 actual isolated players and all
+history for Master/Admin/Super Admin, alongside the 10,005-ledger-row tests.
+Private-contact inference via the Users search is denied for roles without
+private Host identity access; tests populate real fixture fields before checking
+redaction, instead of merely checking already-null fields.

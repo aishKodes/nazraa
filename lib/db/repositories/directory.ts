@@ -74,12 +74,14 @@ export async function listUsersPage(scope: Scope, input: PageRequest = {}): Prom
   const values: unknown[] = [...scoped.values];
   if (search) {
     if (/^\d{1,10}$/.test(search)) {
-      filters.push("(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)");
-      values.push(Number(search), search, `${search}%`);
+      filters.push(canReadPrivateHostIdentity(scope.account.role)?"(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)":"(u.public_id = ? OR u.external_user_id = ?)");
+      values.push(Number(search), search);
+      if(canReadPrivateHostIdentity(scope.account.role))values.push(`${search}%`);
     } else {
-      filters.push("(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ? OR u.email LIKE ?)");
+      filters.push(canReadPrivateHostIdentity(scope.account.role)?"(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ? OR u.email LIKE ?)":"u.full_name LIKE ?");
       const prefix = `${search}%`;
-      values.push(prefix, prefix, prefix);
+      values.push(prefix);
+      if(canReadPrivateHostIdentity(scope.account.role))values.push(prefix,prefix);
     }
   }
   const [rows] = await db().query<UserRow[]>(
