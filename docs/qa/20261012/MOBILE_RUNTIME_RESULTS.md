@@ -35,7 +35,7 @@ the existing authorized reviewer Host. It is not a newly published APK.
   client in the correct owner Google Cloud project. Backend Web-client audience
   allowlist matches the mobile Web client. No credentials were rotated.
 
-## Remaining gates / access limitations
+## Remaining gates / access limitations (at the original 12 October test)
 
 - The viewer account correctly returned 403 when asked to create a Host room.
   A second already-verified Host is required for real 20-cycle PK, remote video
@@ -54,3 +54,30 @@ the existing authorized reviewer Host. It is not a newly published APK.
 
 No account verification was forged, no user role was elevated to manufacture QA,
 and no economy, LiveKit routing, DNS or firewall policy was changed by these tests.
+
+## Follow-up — 13 October
+
+The owner-selected Play account is now accessible. Current and previous Play
+public signing SHA-1s were verified from downloaded certificates, and the
+existing Google project was inspected. Its Android client registers only the
+direct-APK/upload certificate; approval to add the two Play certificate clients
+is pending. The Web client still matches mobile/server audience configuration.
+
+OCI maintenance now works through its existing Cloud Shell RSA key, without
+adding a new firewall rule or exposing/downloading any private key. Running
+LiveKit v1.13.7 still has the obsolete Vercel webhook destination. VPS destination
+is saved on disk with root-only backup; a zero-participant restart guard is
+pending. Valid signed connectivity probe returned 202, and invalid signature,
+body checksum and expired token returned 404. No fake publication evidence was
+inserted. Real provider callback receipt remains unverified until activation.
+
+Actual provider protobuf JSON reproduced another timestamp defect: string Unix
+seconds previously fell back to receipt time. Focused regression now passes and
+the API-only timestamp correction is healthy in production. No reward amount,
+gender/age/daily-cap rules or media routing were changed.
+
+All 244 Flutter tests and analyze (zero issues) were rerun after final source
+changes. A fresh profile build was installed on emulator-5554; it is not a public
+release, and the earlier 60-minute runtime evidence must not be misrepresented
+as a new soak on this rebuilt artifact. Owner waived waiting for a second Host;
+real two-Host PK/cross-audio verification therefore remains unclaimed.

@@ -1,16 +1,17 @@
 # Nazraa production LiveKit runbook
 
-Last verified: 2026-09-26
+Last verified: 2026-10-13 (webhook activation still pending safe idle restart)
 
 ## Service ownership
 
-- Media provider: `MEDIA_PROVIDER=LIVEKIT` in Vercel Production.
+- Media provider: `MEDIA_PROVIDER=LIVEKIT` in the current KVM8 VPS API.
+- Public application API: `https://api.nazraa.pixtra.site`.
 - Public signalling endpoint: `wss://rtc.pixtra.site`.
 - Public TURN endpoint: `turn.rtc.pixtra.site`.
 - LiveKit is self-hosted in OCI Mumbai on `nazraa-livekit-01-replacement`.
-- The mobile app never contains a LiveKit API secret. Vercel issues short-lived,
+- The mobile app never contains a LiveKit API secret. The VPS issues short-lived,
   role-scoped participant tokens with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and
-  `LIVEKIT_API_SECRET` held only as Production secrets.
+  `LIVEKIT_API_SECRET` held only as server-side Production secrets.
 
 ## Maintenance access
 
@@ -26,6 +27,13 @@ Mac's public IP changes: OCI ingress rules still determine reachability. Before
 an incident, verify `ssh -o BatchMode=yes nazraa-livekit 'hostname'` from the
 authorized Mac. Never broaden SSH ingress to the public Internet just to make
 the alias work; use an approved narrow source rule or private maintenance path.
+
+On 2026-10-13 the Mac alias timed out after its public IP changed. The existing
+OCI Cloud Shell identity `~/.ssh/nazraa_rescue_cloudshell_2048` successfully
+reached the replacement VM at `129.154.246.135` as `ubuntu`, with strict host-key
+checking and batch mode. No new SSH rule, IAM policy or credential was added.
+The key is already stored privately in Cloud Shell; never copy its contents
+into a browser form, local file, report or repository.
 
 ## Network contract
 
@@ -51,6 +59,8 @@ client receives or needs it.
 
 - Compose directory: `/root/livekit-generate/rtc.pixtra.site` on the LiveKit VM.
 - Runtime containers: Caddy, LiveKit, and private Redis.
+- Verified LiveKit image: `livekit/livekit-server:v1.13.7`, host networking.
+- Verified LiveKit container: `rtcpixtrasite-livekit-1`.
 - System service: `nazraa-livekit.service`.
 - Verify after a host reboot:
 
@@ -59,7 +69,7 @@ sudo systemctl is-active nazraa-livekit.service
 sudo docker compose -f /root/livekit-generate/rtc.pixtra.site/docker-compose.yaml ps
 ```
 
-Never print `livekit.yaml`, `.env`, Docker inspect output, or Vercel secret
+Never print `livekit.yaml`, `.env`, unfiltered Docker inspect output, or server secret
 values in logs, tickets, terminals shared with others, or source control.
 
 ## Authoritative application integration
@@ -71,10 +81,32 @@ values in logs, tickets, terminals shared with others, or source control.
 5. Room role changes require a newly authorized token; clients cannot elevate
    themselves by requesting a camera track.
 6. The LiveKit webhook posts signed events to
-   `/api/internal/livekit/webhook`. The backend deduplicates provider event
+   `https://api.nazraa.pixtra.site/api/internal/livekit/webhook`. The backend deduplicates provider event
    IDs and applies them as media evidence to the existing live-session ledger.
 7. Rewards remain claimable and continue to use the existing server-time
    accounting model; provider events are evidence, never a client-side payout.
+
+### Webhook repair status — 13 October
+
+The running process was discovered still configured with the old Vercel URL.
+Only `webhook.urls` was replaced on disk; secrets, TURN, publication and media
+settings are unchanged. Root-only rollback copy is under
+`/root/livekit-backups/webhook-vps-20261013/` on the existing VM.
+
+Installed v1.13.7 has no verified live-config reload mechanism. Do not send an
+unverified reload signal or restart while users are connected. The helper
+`scripts/qa-livekit-webhook-connectivity.py`, followed in the same root Python
+process by `scripts/qa-livekit-webhook-vps-cutover.py`, verifies authentication
+and inventories actual participants. With `--wait-idle-seconds=900` it waits a
+bounded period and restarts only LiveKit at zero participants, or explicitly
+defers. It does not restart Caddy/Redis, poll SQL or mutate financial state.
+
+Signed probe is an unsupported empty event: 202 is connectivity/authentication
+proof only, not real media evidence. Bad signatures, changed payload hashes and
+expired JWTs each returned 404. After activation, use an authorized real Host
+publish and verify actual `livekit_media_events` rows before claiming delivery
+PASS. Source timestamps include protobuf string Unix seconds and must remain
+the provider time, not retry receipt time.
 
 ## Minimum release checks
 
