@@ -81,3 +81,15 @@ changes. A fresh profile build was installed on emulator-5554; it is not a publi
 release, and the earlier 60-minute runtime evidence must not be misrepresented
 as a new soak on this rebuilt artifact. Owner waived waiting for a second Host;
 real two-Host PK/cross-audio verification therefore remains unclaimed.
+
+Internal diagnostic artifact (not for public distribution):
+
+- `/Users/aishwaryam/nazra2/build/app/outputs/flutter-apk/app-profile.apk`
+- SHA-256: `d49545948fd04e91bc4d2929c8b78b181388c59ee59e72a0a485e07c54524d50`
+- Installed package inspected with Android package diagnostics:
+  `com.nazraa.live`, `2.4.77`, build `7389`, min SDK 24, target SDK 36.
+
+VPS receiver aggregate after the timestamp deployment still contains zero
+provider events, as expected before the safe LiveKit restart. Receiver health
+is 200/ready and Docker reports healthy; private readiness URL remains blocked
+from public access. No synthetic media event was used to make the ledger pass.
