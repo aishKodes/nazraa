@@ -52,6 +52,13 @@ function eventDate(value: unknown) {
     if (Number.isFinite(seconds)) return new Date(seconds * 1000);
   }
   if (typeof value === "string") {
+    // LiveKit's protobuf JSON encodes int64 Unix timestamps as strings.
+    // Date.parse("1789398000") is invalid: falling back to receipt time would
+    // incorrectly move delayed/retried media events forward in the ledger.
+    const unix = value.trim();
+    if (/^\d+$/.test(unix) && Number.isSafeInteger(Number(unix))) {
+      return eventDate(Number(unix));
+    }
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) return parsed;
   }

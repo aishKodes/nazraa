@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { jwtVerify } from "jose";
+import { WebhookEvent } from "livekit-server-sdk";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -67,6 +68,29 @@ async function main() {
   assert.equal(evidence.providerEventId, "evt_lk_qa_1");
   assert.equal(evidence.trackKind, "VIDEO");
   assert.equal(evidence.roomCode, "NZAQA123");
+  assert.equal(evidence.occurredAt.getTime(), 1_789_398_000_000);
+  // Protobuf JSON represents int64 timestamps as strings. Use the actual
+  // provider SDK serializer, not a fixture that silently changes their type.
+  const providerEvent = new WebhookEvent({
+    id: "evt_lk_proto_qa",
+    event: "track_published",
+    createdAt: 1_789_398_000n,
+    room: { name: "NZAQA123" },
+    participant: { identity: "12000006" },
+    track: { sid: "TR_qa_proto", type: 1 },
+  });
+  providerEvent.event = "track_published";
+  const providerRaw = providerEvent.toJsonString();
+  const providerJson = JSON.parse(providerRaw);
+  assert.equal(typeof providerJson.createdAt, "string");
+  const providerEvidence = normalizeLiveKitWebhookEvent(providerJson, providerRaw);
+  assert.ok(providerEvidence);
+  assert.equal(providerEvidence.occurredAt.getTime(), 1_789_398_000_000);
+  const millisecondsRaw = JSON.stringify({ ...providerJson, createdAt: "1789398000000" });
+  assert.equal(
+    normalizeLiveKitWebhookEvent(JSON.parse(millisecondsRaw), millisecondsRaw)?.occurredAt.getTime(),
+    1_789_398_000_000,
+  );
   assert.equal(
     normalizeLiveKitWebhookEvent({ event: "track_published" }, raw),
     null,
