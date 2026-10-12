@@ -100,6 +100,9 @@ process by `scripts/qa-livekit-webhook-vps-cutover.py`, verifies authentication
 and inventories actual participants. With `--wait-idle-seconds=900` it waits a
 bounded period and restarts only LiveKit at zero participants, or explicitly
 defers. It does not restart Caddy/Redis, poll SQL or mutate financial state.
+The actual 900-second attempt ended deferred with 11 participants connected;
+no restart occurred and no permanent watcher was installed. The URL remains
+staged for activation in a safe idle window.
 
 Signed probe is an unsupported empty event: 202 is connectivity/authentication
 proof only, not real media evidence. Bad signatures, changed payload hashes and

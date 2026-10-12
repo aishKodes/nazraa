@@ -66,8 +66,9 @@ is pending. The Web client still matches mobile/server audience configuration.
 OCI maintenance now works through its existing Cloud Shell RSA key, without
 adding a new firewall rule or exposing/downloading any private key. Running
 LiveKit v1.13.7 still has the obsolete Vercel webhook destination. VPS destination
-is saved on disk with root-only backup; a zero-participant restart guard is
-pending. Valid signed connectivity probe returned 202, and invalid signature,
+is saved on disk with root-only backup. The 900-second zero-participant restart
+guard deferred with 11 participants connected and exited without restarting.
+Valid signed connectivity probe returned 202, and invalid signature,
 body checksum and expired token returned 404. No fake publication evidence was
 inserted. Real provider callback receipt remains unverified until activation.
 

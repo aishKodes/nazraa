@@ -113,9 +113,10 @@ or rewards were deleted.
   `https://nazraa.vercel.app/api/internal/livekit/webhook`, not the current VPS.
   The destination was changed on disk only to
   `https://api.nazraa.pixtra.site/api/internal/livekit/webhook`, with a root-only
-  rollback copy. A bounded 900-second guard checks actual room participants
-  and will restart only LiveKit if none are connected. Activation is not yet
-  claimed while real users are publishing.
+  rollback copy. The bounded 900-second guard checked actual room participants
+  and exited `LIVEKIT_RESTART_DEFERRED` with 11 participants connected. No
+  restart or permanent background job was left running. Activation still
+  requires a safe idle window; real users were not disconnected for this fix.
 - Actual signed VPS connectivity probe: valid 202; bad signature, tampered body
   and expired token each 404. Probe uses an unsupported empty event and creates
   no media/reward record. These tests do not substitute for real provider delivery.
