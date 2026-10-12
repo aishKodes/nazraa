@@ -10,7 +10,7 @@ import type {
   RowDataPacket,
 } from "mysql2/promise";
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
-import { withTransaction } from "@/lib/db/transaction";
+import { withTransaction,withIdempotentTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import {
@@ -2105,7 +2105,10 @@ export async function refreshRoomPresence(
     await finalizeClosedFaceLiveSession(roomCode);
     await finalizeStaleLiveSession(roomCode);
   }
-  const presence = await withTransaction(async (connection) => {
+  // Presence checkpoints are monotonic; reward units have durable DB unique
+  // keys. A concurrent MariaDB ER_CHECKREAD must roll back the whole attempt
+  // before retrying, never demote a valid Guest because a snapshot raced.
+  const presence = await withIdempotentTransaction(async (connection) => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.seat_session_id, member.seat_version,

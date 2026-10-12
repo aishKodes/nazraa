@@ -23,14 +23,20 @@ export class LiveAccessPolicyService {
     const partyRestrictionReason = hostingSuspended || hostStatusRestricted ? hostingSuspensionReason : "Hosting access active.";
     const liveRestrictionReason = temporaryLiveRestricted ? temporaryLiveReason : partyRestrictionReason;
     if (identity.hostAccessOverride) {
+      // Room creation still requires canonical Face verification. Do not tell
+      // an owner/QA account with a rejected capture that Face access is active
+      // and then reject it at the route boundary with a conflicting state.
+      const verified=identity.faceVerificationStatus==='VERIFIED';
+      const faceAllowed=verified&&!liveRestricted;
+      const faceReason=liveRestricted?liveRestrictionReason:!verified?'Complete Face Verification first.':'Owner test access active.';
       return {
         browse: decision(true, "Owner test access active."),
         join: decision(true, "Owner test access active."),
         chat: decision(true, "Owner test access active."),
         party: decision(!partyRestricted, partyRestricted ? partyRestrictionReason : "Owner test access active."),
-        video: decision(!liveRestricted, liveRestricted ? liveRestrictionReason : "Owner test access active."),
-        face: decision(!liveRestricted, liveRestricted ? liveRestrictionReason : "Owner test access active."),
-        faceVerified: true,
+        video: decision(faceAllowed, faceReason),
+        face: decision(faceAllowed, faceReason),
+        faceVerified: verified,
         agencyApproved: true,
         agencyAuthorized: true,
         superAdminAuthorized: true,

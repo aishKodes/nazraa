@@ -56,7 +56,7 @@ export async function withIdempotentTransaction<T>(operation: (connection: PoolC
     } catch (error) {
       lastError = error;
       const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-      if (!new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]).has(code) || attempt === attempts) throw error;
+      if (!new Set(["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT", "ER_CHECKREAD"]).has(code) || attempt === attempts) throw error;
       await new Promise((resolve) => setTimeout(resolve, 20 * attempt));
     }
   }
