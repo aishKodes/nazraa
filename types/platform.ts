@@ -47,6 +47,7 @@ export type PageRequest = {
 };
 
 export type DashboardMetrics = {
+  countries: number;
   users: number;
   hosts: number;
   agencies: number;

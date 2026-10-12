@@ -213,9 +213,12 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
   });
 }
 
-export async function listFaceVerificationRequests(scope: Scope, page = 1, view: "review" | "verified" = "review") {
+export async function listFaceVerificationRequests(scope: Scope, page = 1, view: "review" | "verified" = "review", search = "") {
   const filter = scopeWhere(scope, "user.agency_account_id");
-  const statusFilter = view === "verified"
+  const query = search.trim().slice(0, 12);
+  if (query && !/^\d{1,12}$/.test(query)) throw new Error("Enter a valid User ID.");
+  const searchFilter = query ? " AND (user.public_id = ? OR user.external_user_id = ?)" : "";
+  const statusFilter = query ? "1=1" : view === "verified"
     ? "user.face_verification_status = 'VERIFIED'"
     : "user.face_verification_status <> 'VERIFIED'";
   const [rows] = await db().query<(RowDataPacket & { id: string; public_id: number; user_public_id: number; full_name: string; country_code: string | null; status: string; user_status: string; selfie_document_id: string | null; document_mime_type: string | null; provider: string | null; liveness_score: number | null; match_score: number | null; review_reason: string | null; created_at: string; reviewed_at: string | null })[]>(
@@ -226,7 +229,7 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1, view:
      FROM face_verification_requests request
      INNER JOIN application_users user ON user.id = request.application_user_id
      LEFT JOIN private_documents document ON document.id = request.selfie_document_id
-     WHERE ${filter.clause} AND ${statusFilter}
+     WHERE ${filter.clause} AND ${statusFilter}${searchFilter}
        AND NOT EXISTS (
          SELECT 1 FROM face_verification_requests newer
          WHERE newer.application_user_id = request.application_user_id
@@ -242,7 +245,7 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1, view:
        _utf8mb4'VERIFIED' COLLATE utf8mb4_unicode_ci,
        _utf8mb4'NOT_SUBMITTED' COLLATE utf8mb4_unicode_ci
      ), request.created_at DESC LIMIT 26 OFFSET ?`,
-    [...filter.values, (Math.max(1, Math.trunc(page)) - 1) * 25],
+    [...filter.values, ...(query ? [Number(query), query] : []), (Math.max(1, Math.trunc(page)) - 1) * 25],
   );
   return rows.map((row) => ({ id: row.id, publicId: String(row.public_id), userPublicId: String(row.user_public_id), fullName: row.full_name, country: row.country_code, status: row.user_status, requestStatus: row.status, documentId: row.selfie_document_id, documentMimeType: row.document_mime_type, provider: row.provider, livenessScore: row.liveness_score == null ? null : Number(row.liveness_score), matchScore: row.match_score == null ? null : Number(row.match_score), reviewReason: row.review_reason, createdAt: row.created_at, reviewedAt: row.reviewed_at }));
 }

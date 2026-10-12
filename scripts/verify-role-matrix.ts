@@ -41,6 +41,19 @@ assert.equal(can("MONITORING_CS", "face_live.suspend"), true);
 assert.equal(can("MONITORING_CS", "users.permanent"), false);
 assert.equal(can("MONITORING_CS", "rooms.manage"), false);
 assert.equal(can("MONITORING_CS", "wallet.read"), false);
+for (const role of ["AGENCY", "ADMIN", "SUPER_ADMIN"] as const) {
+  assert.equal(can(role, "monitoring.read"), false);
+  assert.equal(can(role, "face_verification.read"), false);
+  assert.equal(can(role, "face_verification.manage"), false);
+}
+assert.equal(can("ADMIN", "accounts.edit"), false);
+assert.equal(can("ADMIN", "accounts.manage"), false);
+assert.equal(can("MASTER", "accounts.manage"), true);
+assert.equal(can("MONITORING_CS", "games.read"), true);
+assert.equal(can("MONITORING_CS", "live_reports.read"), true);
+assert.equal(can("MONITORING_CS", "devices.manage"), true);
+assert.equal(can("AGENCY", "games.read"), false);
+assert.equal(can("AGENCY", "live_reports.read"), true);
 
 const parentMatrix: Record<Role, Role[]> = {
   MASTER: [],

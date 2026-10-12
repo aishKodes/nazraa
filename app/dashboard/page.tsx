@@ -27,6 +27,7 @@ export default async function DashboardPage() {
   return <>
     <SectionHeading title={`${scope.account.role === "AGENCY" ? "Agency" : scope.account.role === "MONITORING_CS" ? "Monitoring" : "Operations"} overview`} description={scope.isGlobal ? "The entire Nazraa Control Platform." : `Only ${scope.account.fullName}'s permitted branch.`} action={<span className="range-chip">Live scope</span>} />
     <div className="metric-grid">
+      {scope.account.role === "MASTER" ? <MetricCard label="Total Country" value={metrics.countries} detail="Distinct configured Country Manager countries" icon={<Building2 size={20} />} /> : null}
       {isAgency && agencySummary ? <>
         <MetricCard label="Total Hosts" value={agencySummary.hostCount} detail="Only your Agency" icon={<Radio size={20} />} />
         <MetricCard label="Host Diamonds" value={formatNumber(agencySummary.availableDiamonds)} detail="Current withdrawable earnings" icon={<WalletCards size={20} />} />

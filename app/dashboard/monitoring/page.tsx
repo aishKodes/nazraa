@@ -6,6 +6,9 @@ import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
 import { listModerationHistory, listUserDevices, searchMonitoring } from "@/lib/db/repositories/monitoring";
 import { formatDate } from "@/lib/utils/format";
+import Image from "next/image";
+import { hostOperationalActivity } from "@/lib/db/repositories/host-operations";
+import { HostOperationalActivity } from "@/components/host-operational-activity";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +22,7 @@ export default async function MonitoringPage({ searchParams }: {
   const scope = await requirePermission("monitoring.read");
   const { q = "", error, success } = await searchParams;
   const results = await searchMonitoring(scope, q);
+  const activity = await hostOperationalActivity(scope,results.filter(user=>user.isHost).map(user=>user.id));
   const [history, devices] = await Promise.all([
     listModerationHistory(scope, results.map((user) => user.id)),
     can(scope.account.role, "devices.read") && results.length === 1 ? listUserDevices(scope, results[0].id) : Promise.resolve([]),
@@ -32,34 +36,195 @@ export default async function MonitoringPage({ searchParams }: {
   return <>
     <SectionHeading title="Monitoring / CS" description={isCs ? "Search a User or Host and suspend only Face Live for 30 minutes or 2 hours. The account, Party, wallet, chat, and audience features remain available." : "Search one User or Host ID, check their current status, and take only the permitted action."} />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
-    <Card className="monitor-search-card"><form className="filter-bar" action="/dashboard/monitoring"><label className="search-field"><Search size={18} /><input name="q" defaultValue={q} placeholder="User/Host ID, any part of name, phone, or email" autoFocus /><button className="primary-button" type="submit">Search</button></label><span>{scope.isGlobal || isCs ? "All Nazraa users" : "Your branch only"}</span></form></Card>
+    <Card className="monitor-search-card">
+<form className="filter-bar" action="/dashboard/monitoring">
+<label className="search-field">
+<Search size={18} />
+<input name="q" defaultValue={q} placeholder={isCs ? 'User/Host ID or name' : 'User/Host ID, any part of name, phone, or email'} autoFocus />
+<button className="primary-button" type="submit">Search</button>
+</label>
+<span>{scope.isGlobal || isCs ? "All Nazraa users" : "Your branch only"}</span>
+</form>
+</Card>
 
-    {!q ? <Card><EmptyState title="Search a User or Host" detail={isCs ? "Search every Nazraa user by ID, any part of their name, phone, or email." : "Use the exact ID for the quickest result. Access outside your branch is rejected by the server."} /></Card> : results.length ? <div className="monitor-results">{results.map((user) => <Card key={user.id} className="monitor-user-card">
-      <div className="card-title"><div><h2>{user.fullName}</h2><p className="mono">User ID {user.publicId}</p></div><StatusBadge value={user.status} /></div>
+    {!q ? <Card>
+<EmptyState title="Search a User or Host" detail={isCs ? "Search Nazraa users by ID or name. Contact data stays private." : "Use the exact ID for the quickest result. Access outside your branch is rejected by the server."} />
+</Card> : results.length ? <div className="monitor-results">{results.map((user) => <Card key={user.id} className="monitor-user-card">
+      <div className="card-title">
+<div>
+{user.avatarUrl ? <Image src={user.avatarUrl} alt="" width={48} height={48} unoptimized /> : null}<h2>{user.fullName}</h2>
+<p className="mono">User ID {user.publicId}</p>
+</div>
+<StatusBadge value={user.status} />
+</div>
       <div className="monitor-facts">
-        <span><small>Type</small><b>{user.isHost ? "Host" : "User"}</b></span><span><small>Agency</small><b>{user.agencyName ?? "Independent"}</b></span><span><small>Host status</small><b>{user.hostStatus ?? "—"}</b></span><span><small>Face verification</small><b>{user.faceStatus}</b></span><span><small>Complaints</small><b>{user.complaintCount}</b></span><span><small>Open risk flags</small><b>{user.riskCount}</b></span>
+        <span>
+<small>Type</small>
+<b>{user.isHost ? "Host" : "User"}</b>
+</span>
+<span>
+<small>Agency</small>
+<b>{user.agencyName ?? "Independent"}</b>
+</span>
+{isCs || scope.account.role==='MASTER' ? <><span><small>Gender</small><b>{user.gender??'—'}</b></span><span><small>Agency ID</small><b>{user.agencyPublicId??'—'}</b></span><span><small>Admin / BD</small><b>{user.adminName??'—'} {user.adminPublicId??''}</b></span></> : null}
+<span>
+<small>Host status</small>
+<b>{user.hostStatus ?? "—"}</b>
+</span>
+<span>
+<small>Face verification</small>
+<b>{user.faceStatus}</b>
+</span>
+<span>
+<small>Complaints</small>
+<b>{user.complaintCount}</b>
+</span>
+<span>
+<small>Open risk flags</small>
+<b>{user.riskCount}</b>
+</span>
       </div>
-      <div className="live-status"><span><Clock3 size={16} /><b>Current Live / Party</b></span>{user.roomCode ? <span><StatusBadge value={user.roomStatus ?? "ACTIVE"} /> {user.roomType} · <span className="mono">{user.roomCode}</span></span> : <span className="muted">Not currently live</span>}</div>
+      {activity.find(row=>row.userId===user.id) ? <HostOperationalActivity data={activity.find(row=>row.userId===user.id)!} /> : null}
+      <div className="live-status">
+<span>
+<Clock3 size={16} />
+<b>Current Live / Party</b>
+</span>{user.roomCode ? <span>
+<StatusBadge value={user.roomStatus ?? "ACTIVE"} /> {user.roomType} · <span className="mono">{user.roomCode}</span>
+</span> : <span className="muted">Not currently live</span>}</div>
       {user.restrictionId ? <Notice type="error">{user.restrictionType === "FACE_LIVE" ? "Face Live suspended until: " : "Live blocked until: "}{user.restrictionType === "FACE_LIVE" ? faceRestrictionDate(user.restrictionEndsAt) : formatDate(user.restrictionEndsAt)}</Notice> : null}
       <div className="monitor-actions">
-        {maySuspendFaceLive && !user.restrictionId && user.status !== "BANNED" ? <details className="moderation"><summary><Ban size={15} />Suspend Face Live</summary><form action={submitFaceLiveSuspension}><input type="hidden" name="applicationUserId" value={user.id} /><select name="durationMinutes" defaultValue="30" required><option value="30">30 minutes</option><option value="120">2 hours</option></select><input name="reason" minLength={5} maxLength={500} required placeholder="Face Live suspension reason" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm Face Live suspension for the selected duration only; account, Party, and wallet stay active</label><button className="danger-button" type="submit">Suspend Face Live</button></form></details> : null}
-        {!isCs && mayRestrict && !user.restrictionId && user.status !== "BANNED" ? <details className="moderation"><summary><Ban size={15} />Block Live for 24 hours</summary><form action={submitTemporaryRestriction}><input type="hidden" name="applicationUserId" value={user.id} /><input type="hidden" name="returnTo" value="monitoring" /><input type="hidden" name="durationMinutes" value="1440" /><input name="reason" minLength={5} maxLength={500} required placeholder="24-hour Live block reason" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm exactly 24 hours</label><button className="danger-button" type="submit">Block Live for 24 hours</button></form></details> : null}
-        {mayPermanentlyBan && user.status !== "BANNED" ? <details className="moderation permanent-action"><summary><ShieldAlert size={15} />Permanent ban</summary><form action={submitPermanentUserBan}><input type="hidden" name="applicationUserId" value={user.id} /><input name="reason" minLength={5} maxLength={500} required placeholder="Permanent-ban reason" /><input name="confirmation" pattern="BAN" required placeholder="Type BAN" /><button className="danger-button" type="submit">Permanently ban</button></form></details> : null}
-        {mayPermanentlyBan && user.status === "BANNED" ? <details className="moderation"><summary>Unban account</summary><form action={submitPermanentUserUnban}><input type="hidden" name="applicationUserId" value={user.id} /><input name="reason" minLength={5} maxLength={500} required placeholder="Why is account access being restored?" /><input name="confirmation" pattern="UNBAN" required placeholder="Type UNBAN" /><button className="secondary-button" type="submit">Unban and restore access</button></form></details> : null}
-        {mayRestrict && user.restrictionId && (user.restrictionType !== "FACE_LIVE" || scope.account.role === "MASTER") ? <details className="moderation"><summary>Restore Live access</summary><form action={submitRestoreLiveAccess}><input type="hidden" name="restrictionId" value={user.restrictionId} /><input type="hidden" name="returnTo" value="monitoring" /><input name="reason" minLength={5} maxLength={500} required placeholder="Restoration reason" /><button className="secondary-button" type="submit">Restore now</button></form></details> : null}
+        {maySuspendFaceLive && !user.restrictionId && user.status !== "BANNED" ? <details className="moderation">
+<summary>
+<Ban size={15} />Suspend Face Live</summary>
+<form action={submitFaceLiveSuspension}>
+<input type="hidden" name="applicationUserId" value={user.id} />
+<select name="durationMinutes" defaultValue="30" required>
+<option value="30">30 minutes</option>
+<option value="120">2 hours</option>
+</select>
+<input name="reason" minLength={5} maxLength={500} required placeholder="Face Live suspension reason" />
+<label className="checkbox-line">
+<input type="checkbox" name="confirmed" value="yes" required />Confirm Face Live suspension for the selected duration only; account, Party, and wallet stay active</label>
+<button className="danger-button" type="submit">Suspend Face Live</button>
+</form>
+</details> : null}
+        {!isCs && mayRestrict && !user.restrictionId && user.status !== "BANNED" ? <details className="moderation">
+<summary>
+<Ban size={15} />Block Live for 24 hours</summary>
+<form action={submitTemporaryRestriction}>
+<input type="hidden" name="applicationUserId" value={user.id} />
+<input type="hidden" name="returnTo" value="monitoring" />
+<input type="hidden" name="durationMinutes" value="1440" />
+<input name="reason" minLength={5} maxLength={500} required placeholder="24-hour Live block reason" />
+<label className="checkbox-line">
+<input type="checkbox" name="confirmed" value="yes" required />Confirm exactly 24 hours</label>
+<button className="danger-button" type="submit">Block Live for 24 hours</button>
+</form>
+</details> : null}
+        {mayPermanentlyBan && user.status !== "BANNED" ? <details className="moderation permanent-action">
+<summary>
+<ShieldAlert size={15} />Permanent ban</summary>
+<form action={submitPermanentUserBan}>
+<input type="hidden" name="applicationUserId" value={user.id} />
+<input name="reason" minLength={5} maxLength={500} required placeholder="Permanent-ban reason" />
+<input name="confirmation" pattern="BAN" required placeholder="Type BAN" />
+<button className="danger-button" type="submit">Permanently ban</button>
+</form>
+</details> : null}
+        {mayPermanentlyBan && user.status === "BANNED" ? <details className="moderation">
+<summary>Unban account</summary>
+<form action={submitPermanentUserUnban}>
+<input type="hidden" name="applicationUserId" value={user.id} />
+<input name="reason" minLength={5} maxLength={500} required placeholder="Why is account access being restored?" />
+<input name="confirmation" pattern="UNBAN" required placeholder="Type UNBAN" />
+<button className="secondary-button" type="submit">Unban and restore access</button>
+</form>
+</details> : null}
+        {mayRestrict && user.restrictionId && (user.restrictionType !== "FACE_LIVE" || scope.account.role === "MASTER") ? <details className="moderation">
+<summary>Restore Live access</summary>
+<form action={submitRestoreLiveAccess}>
+<input type="hidden" name="restrictionId" value={user.restrictionId} />
+<input type="hidden" name="returnTo" value="monitoring" />
+<input name="reason" minLength={5} maxLength={500} required placeholder="Restoration reason" />
+<button className="secondary-button" type="submit">Restore now</button>
+</form>
+</details> : null}
       </div>
-    </Card>)}</div> : <Card><EmptyState title="No user found" detail="Try an exact ID or a name/phone prefix. Results never cross your hierarchy branch." /></Card>}
+    </Card>)}</div> : <Card>
+<EmptyState title="No user found" detail="Try an exact ID or a name/phone prefix. Results never cross your hierarchy branch." />
+</Card>}
 
-    {history.length ? <><div className="section-subheading"><h2>Moderation history</h2><p>Recent restrictions for the matching users.</p></div><Card><div className="compact-list">{history.map((item) => <div key={item.id}><span><b>{item.userName} · {item.type.replaceAll("_", " ")}</b><small>{item.reason} · by {item.actorName}</small></span><span><StatusBadge value={item.status} /><small>{item.type === "FACE_LIVE" ? faceRestrictionDate(item.startsAt) : formatDate(item.startsAt)} → {item.type === "FACE_LIVE" ? faceRestrictionDate(item.endsAt) : formatDate(item.endsAt)}</small></span></div>)}</div></Card></> : null}
+    {history.length ? <>
+<div className="section-subheading">
+<h2>Moderation history</h2>
+<p>Recent restrictions for the matching users.</p>
+</div>
+<Card>
+<div className="compact-list">{history.map((item) => <div key={item.id}>
+<span>
+<b>{item.userName} · {item.type.replaceAll("_", " ")}</b>
+<small>{item.reason} · by {item.actorName}</small>
+</span>
+<span>
+<StatusBadge value={item.status} />
+<small>{item.type === "FACE_LIVE" ? faceRestrictionDate(item.startsAt) : formatDate(item.startsAt)} → {item.type === "FACE_LIVE" ? faceRestrictionDate(item.endsAt) : formatDate(item.endsAt)}</small>
+</span>
+</div>)}</div>
+</Card>
+</> : null}
 
-    {devices.length ? <><div className="section-subheading"><h2>Devices</h2><p>Only your branch is available. Older app versions without a device ID support session blocking only.</p></div><Card><div className="compact-list">{devices.map((device) => <div key={device.id}><span><b><Laptop size={15} />{device.label}</b><small>{device.persistentDevice ? "Persistent device control" : "Legacy app · this session only"} · Last used {formatDate(device.lastUsedAt)}{device.blockReason ? ` · ${device.blockReason} · blocked ${formatDate(device.blockedAt)} by ${device.blockedByName ?? "authorized staff"}` : ""}</small></span>{mayManageDevices ? device.blockId ? <form action={submitDeviceUnblock} className="compact-action"><input type="hidden" name="blockId" value={device.blockId} /><input name="reason" minLength={5} required placeholder="Unblock reason" /><button className="secondary-button" type="submit">Unblock</button></form> : device.revokedAt ? <StatusBadge value="SIGNED OUT" /> : <form action={submitDeviceBlock} className="compact-action"><input type="hidden" name="sessionId" value={device.id} /><input name="reason" minLength={5} required placeholder="Block reason" /><label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm</label><button className="danger-button" type="submit">{device.persistentDevice ? "Block device" : "Block session"}</button></form> : <StatusBadge value={device.blockId ? "BLOCKED" : device.revokedAt ? "SIGNED OUT" : "ACTIVE"} />}</div>)}</div></Card></> : null}
+    {devices.length ? <>
+<div className="section-subheading">
+<h2>Devices</h2>
+<p>Only your branch is available. Older app versions without a device ID support session blocking only.</p>
+</div>
+<Card>
+<div className="compact-list">{devices.map((device) => <div key={device.id}>
+<span>
+<b>
+<Laptop size={15} />{device.label}</b>
+<small>{device.persistentDevice ? "Persistent device control" : "Legacy app · this session only"} · Last used {formatDate(device.lastUsedAt)}{device.blockReason ? ` · ${device.blockReason} · blocked ${formatDate(device.blockedAt)} by ${device.blockedByName ?? "authorized staff"}` : ""}</small>
+</span>{mayManageDevices ? device.blockId ? <form action={submitDeviceUnblock} className="compact-action">
+<input type="hidden" name="blockId" value={device.blockId} />
+<input name="reason" minLength={5} required placeholder="Unblock reason" />
+<button className="secondary-button" type="submit">Unblock</button>
+</form> : device.revokedAt ? <StatusBadge value="SIGNED OUT" /> : <form action={submitDeviceBlock} className="compact-action">
+<input type="hidden" name="sessionId" value={device.id} />
+<input name="reason" minLength={5} required placeholder="Block reason" />
+<label className="checkbox-line">
+<input type="checkbox" name="confirmed" value="yes" required />Confirm</label>
+<button className="danger-button" type="submit">{device.persistentDevice ? "Block device" : "Block session"}</button>
+</form> : <StatusBadge value={device.blockId ? "BLOCKED" : device.revokedAt ? "SIGNED OUT" : "ACTIVE"} />}</div>)}</div>
+</Card>
+</> : null}
 
     {scope.account.role === "MASTER" && results.length === 1 ? <>
-      <div className="section-subheading"><h2>Master · all-account device ban</h2><p>This is separate from the account-only block above. It revokes every matching session and rejects sign-in or new-account creation using that device identifier. Every action is audited.</p></div>
-      {devices.length ? <Card><div className="compact-list">{devices.map((device) => <div key={`global-${device.id}`}>
-        <span><b><Laptop size={15} />{device.label}</b><small>{device.deviceIdentityKind === "ANDROID_ID" ? "Android app-scoped device ID" : "Legacy/install identifier · may change after reinstall"} · {device.matchingAccounts} account(s) currently recorded on this identifier{device.globalBlocked ? ` · globally banned ${formatDate(device.globalBlockedAt)}` : ""}</small>{device.globalBlocked && device.globalBlockReason ? <small>Ban reason: {device.globalBlockReason}</small> : null}</span>
-        {!device.persistentDevice ? <StatusBadge value="NO DEVICE ID" /> : device.globalBlockId ? <form action={submitGlobalDeviceUnban} className="compact-action"><input type="hidden" name="banId" value={device.globalBlockId} /><input name="reason" minLength={5} maxLength={500} required placeholder="Unban reason" /><input name="confirmation" pattern="UNBAN DEVICE" required placeholder="Type UNBAN DEVICE" /><button className="secondary-button" type="submit">Remove global ban</button></form> : <form action={submitGlobalDeviceBan} className="compact-action"><input type="hidden" name="sessionId" value={device.id} /><input name="reason" minLength={5} maxLength={500} required placeholder="Why ban this device?" /><input name="confirmation" pattern="BAN DEVICE" required placeholder="Type BAN DEVICE" /><button className="danger-button" type="submit">Ban across all accounts</button></form>}
-      </div>)}</div></Card> : <Card><EmptyState title="No device identifier recorded" detail="The user must sign in with the current Android app before a device-wide ban can target their device." /></Card>}
+      <div className="section-subheading">
+<h2>Master · all-account device ban</h2>
+<p>This is separate from the account-only block above. It revokes every matching session and rejects sign-in or new-account creation using that device identifier. Every action is audited.</p>
+</div>
+      {devices.length ? <Card>
+<div className="compact-list">{devices.map((device) => <div key={`global-${device.id}`}>
+        <span>
+<b>
+<Laptop size={15} />{device.label}</b>
+<small>{device.deviceIdentityKind === "ANDROID_ID" ? "Android app-scoped device ID" : "Legacy/install identifier · may change after reinstall"} · {device.matchingAccounts} account(s) currently recorded on this identifier{device.globalBlocked ? ` · globally banned ${formatDate(device.globalBlockedAt)}` : ""}</small>{device.globalBlocked && device.globalBlockReason ? <small>Ban reason: {device.globalBlockReason}</small> : null}</span>
+        {!device.persistentDevice ? <StatusBadge value="NO DEVICE ID" /> : device.globalBlockId ? <form action={submitGlobalDeviceUnban} className="compact-action">
+<input type="hidden" name="banId" value={device.globalBlockId} />
+<input name="reason" minLength={5} maxLength={500} required placeholder="Unban reason" />
+<input name="confirmation" pattern="UNBAN DEVICE" required placeholder="Type UNBAN DEVICE" />
+<button className="secondary-button" type="submit">Remove global ban</button>
+</form> : <form action={submitGlobalDeviceBan} className="compact-action">
+<input type="hidden" name="sessionId" value={device.id} />
+<input name="reason" minLength={5} maxLength={500} required placeholder="Why ban this device?" />
+<input name="confirmation" pattern="BAN DEVICE" required placeholder="Type BAN DEVICE" />
+<button className="danger-button" type="submit">Ban across all accounts</button>
+</form>}
+      </div>)}</div>
+</Card> : <Card>
+<EmptyState title="No device identifier recorded" detail="The user must sign in with the current Android app before a device-wide ban can target their device." />
+</Card>}
     </> : null}
   </>;
 }

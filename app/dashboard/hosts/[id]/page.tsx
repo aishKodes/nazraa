@@ -5,40 +5,262 @@ import { ArrowLeft, Eye, FileLock2, Upload, UserRound } from "lucide-react";
 import { notFound } from "next/navigation";
 import { submitDocumentReview, submitHostDocument, submitHostGender, submitHostReview, submitHostStatus } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading, StatusBadge } from "@/components/ui";
-import { can } from "@/lib/auth/permissions";
+import { can, canReadPrivateHostIdentity } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
 import { listAgencies } from "@/lib/db/repositories/directory";
 import { getHostDetail, listHostDocuments } from "@/lib/db/repositories/hosts";
 import { formatDate } from "@/lib/utils/format";
+import { hostOperationalActivity } from "@/lib/db/repositories/host-operations";
+import { HostOperationalActivity } from "@/components/host-operational-activity";
+import { submitHostAgencyTransfer } from "@/app/host-actions";
 
 export const dynamic = "force-dynamic";
 
 export default async function HostDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ error?: string; success?: string }> }) {
   const scope = await requirePermission("hosts.read");
   const { id } = await params; const { error, success } = await searchParams;
-  const mayReadDocuments = can(scope.account.role, "documents.read");
+  const privateIdentity = canReadPrivateHostIdentity(scope.account.role);
+  const mayReadDocuments = privateIdentity && can(scope.account.role, "documents.read");
   const [host, documents, agencies] = await Promise.all([getHostDetail(scope, id), mayReadDocuments ? listHostDocuments(scope, id) : Promise.resolve([]), listAgencies(scope)]);
   if (!host) notFound();
+  const [activity] = await hostOperationalActivity(scope,[host.applicationUserId]);
   const mayReview = can(scope.account.role, "hosts.review"); const mayUpload = can(scope.account.role, "documents.upload"); const mayReviewDocuments = can(scope.account.role, "documents.manage");
-  return <><Link href="/dashboard/hosts" className="back-link"><ArrowLeft size={15} />Host applications</Link><SectionHeading title={host.legalName} description={`${host.externalUserId} · ${countryName(host.country)}`} action={<StatusBadge value={host.status} />} />
+  return <>
+<Link href="/dashboard/hosts" className="back-link">
+<ArrowLeft size={15} />Host applications</Link>
+<SectionHeading title={host.legalName} description={`${host.externalUserId} · ${countryName(host.country)}`} action={<StatusBadge value={host.status} />} />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
-    <div className="split-grid"><Card><div className="card-title"><div><h2>Host account</h2><p>Visible only to staff authorized for this Host branch.</p></div>{host.avatarUrl ? <Image className="host-detail-avatar" src={host.avatarUrl} alt={`${host.displayName} profile`} width={72} height={72} unoptimized /> : <span className="host-detail-avatar host-avatar-empty"><UserRound size={30} /></span>}</div><dl className="detail-list"><div><dt>Display name</dt><dd>{host.displayName}</dd></div><div><dt>User ID</dt><dd className="mono">{host.publicId}</dd></div><div><dt>Host ID</dt><dd className="mono">{host.externalUserId}</dd></div><div><dt>Date of birth</dt><dd>{host.dateOfBirth ? formatDate(host.dateOfBirth) : "—"}</dd></div><div><dt>Gender</dt><dd>{host.gender?.replaceAll("_", " ") ?? "—"}</dd></div><div><dt>Mobile / WhatsApp</dt><dd>{host.mobile ?? "—"}</dd></div><div><dt>Email</dt><dd>{host.email ?? "—"}</dd></div><div><dt>Account status</dt><dd><StatusBadge value={host.accountStatus} /></dd></div><div><dt>Face verification</dt><dd><StatusBadge value={host.faceVerification} /></dd></div><div><dt>Government ID</dt><dd>{mayReadDocuments ? `${host.governmentIdType ?? "—"} · •••• ${host.governmentIdLast4 ?? "—"}` : "Protected for this role"}</dd></div><div><dt>Agency</dt><dd>{host.agencyName ?? "Unassigned"}</dd></div><div><dt>Applied</dt><dd>{formatDate(host.appliedAt)}</dd></div><div><dt>Reviewed</dt><dd>{formatDate(host.reviewedAt)}</dd></div><div><dt>Review note</dt><dd>{host.reviewReason ?? "—"}</dd></div></dl></Card>
-      <Card><div className="card-title"><div><h2>Server-timed Live accounting</h2><p>Publishing duration and reward progress come from the same durable session ledger.</p></div></div><dl className="detail-list"><div><dt>Live hours · 30 days</dt><dd>{(host.liveMinutes30d / 60).toFixed(1)}</dd></div><div><dt>Face Live sessions · 30 days</dt><dd>{host.sessionCount30d}</dd></div><div><dt>Currently Live</dt><dd>{host.currentLive ? "Yes" : "No"}</dd></div>{host.currentLive ? <><div><dt>Eligible reward time</dt><dd>{formatDuration(host.currentLive.eligibleSeconds)}</dd></div><div><dt>Actual publishing time</dt><dd>{formatDuration(host.currentLive.publishingSeconds)}</dd></div><div><dt>Reconnect state</dt><dd><StatusBadge value={host.currentLive.reconnectState} /></dd></div><div><dt>Accounting confidence</dt><dd><StatusBadge value={host.currentLive.accountingAccuracy} /></dd></div><div><dt>Claimable reward units</dt><dd>{host.currentLive.rewardUnitsGenerated}</dd></div></> : null}</dl></Card>
-      {mayReview && ["PENDING", "REJECTED"].includes(host.status) ? <Card><div className="card-title"><div><h2>Review decision</h2><p>Approval verifies the host and maps the user to an agency.</p></div></div><form action={submitHostReview} className="stack-form"><input type="hidden" name="hostId" value={host.id} /><label>Agency<select name="agencyAccountId" defaultValue={host.agencyId ?? ""}><option value="">Select agency</option>{agencies.map((agency) => <option value={agency.id} key={agency.id}>{agency.name} · {agency.code}</option>)}</select></label><label>Decision<select name="decision" required defaultValue=""><option value="" disabled>Select</option><option value="APPROVED">Approve</option><option value="REJECTED">Reject</option></select></label><label>Reason<input name="reason" minLength={5} required placeholder="Verification notes or rejection reason" /></label><button className="primary-button" type="submit">Save decision</button></form></Card> : null}
-      {mayReview ? <Card><div className="card-title"><div><h2>Account controls</h2><p>Every identity/status change is scoped and written to the audit log.</p></div></div>
-        <form action={submitHostGender} className="stack-form"><input type="hidden" name="hostId" value={host.id} />
-          <label>Gender<select name="gender" required defaultValue={host.gender ?? ""}><option value="" disabled>Select</option><option value="FEMALE">Female</option><option value="MALE">Male</option><option value="NON_BINARY">Non-binary</option><option value="PREFER_NOT_TO_SAY">Prefer not to say</option></select></label>
-          <label>Change reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for identity correction" /></label>
+    {activity ? <HostOperationalActivity data={activity} showCoins={scope.account.role==='MASTER'} /> : null}
+    {scope.account.role==='MASTER' ? <Card><h2>Host → Agency management</h2><p>Current Agency: {host.agencyName??'Independent'}. Host identity and historical financial/activity records are preserved.</p>
+      <form action={submitHostAgencyTransfer} className="stack-form"><input type="hidden" name="hostId" value={host.id} />
+        <label>Destination Agency<input name="destinationAgencyId" list="host-agency-destinations" defaultValue={host.agencyId??''} placeholder="6-digit Agency ID; leave blank to remove"/><datalist id="host-agency-destinations">{agencies.map(agency=><option key={agency.id} value={agency.code}>{agency.name}</option>)}</datalist><small>Any active approved Agency ID is accepted; suggestions do not limit the available destinations. Leave blank to remove.</small></label>
+        <label>Reason<input name="reason" required minLength={5} maxLength={500} /></label><label><input type="checkbox" name="confirmed" value="yes" required />Confirm the displayed destination / removal</label>
+        <button type="submit" className="primary-button">Transfer / Remove from Agency</button>
+      </form></Card> : null}
+    <div className="split-grid">
+<Card>
+<div className="card-title">
+<div>
+<h2>Host account</h2>
+<p>Visible only to staff authorized for this Host branch.</p>
+</div>{host.avatarUrl ? <Image className="host-detail-avatar" src={host.avatarUrl} alt={`${host.displayName} profile`} width={72} height={72} unoptimized /> : <span className="host-detail-avatar host-avatar-empty">
+<UserRound size={30} />
+</span>}</div>
+<dl className="detail-list">
+<div>
+<dt>Display name</dt>
+<dd>{host.displayName}</dd>
+</div>
+<div>
+<dt>User ID</dt>
+<dd className="mono">{host.publicId}</dd>
+</div>
+<div>
+<dt>Host ID</dt>
+<dd className="mono">{host.externalUserId}</dd>
+</div>
+{privateIdentity ? <><div>
+<dt>Date of birth</dt>
+<dd>{host.dateOfBirth ? formatDate(host.dateOfBirth) : "—"}</dd>
+</div></> : null}
+{privateIdentity || scope.account.role === "MONITORING_CS" ? <div>
+<dt>Gender</dt>
+<dd>{host.gender?.replaceAll("_", " ") ?? "—"}</dd>
+</div> : null}
+{privateIdentity ? <><div>
+<dt>Mobile / WhatsApp</dt>
+<dd>{host.mobile ?? "—"}</dd>
+</div>
+<div>
+<dt>Email</dt>
+<dd>{host.email ?? "—"}</dd>
+</div></> : null}
+<div>
+<dt>Account status</dt>
+<dd>
+<StatusBadge value={host.accountStatus} />
+</dd>
+</div>
+<div>
+<dt>Face verification</dt>
+<dd>
+<StatusBadge value={host.faceVerification} />
+</dd>
+</div>
+{privateIdentity ? <div>
+<dt>Government ID</dt>
+<dd>{mayReadDocuments ? `${host.governmentIdType ?? "—"} · •••• ${host.governmentIdLast4 ?? "—"}` : "Protected for this role"}</dd>
+</div> : null}
+<div>
+<dt>Agency</dt>
+<dd>{host.agencyName ?? "Unassigned"}</dd>
+</div>
+<div>
+<dt>Applied</dt>
+<dd>{formatDate(host.appliedAt)}</dd>
+</div>
+<div>
+<dt>Reviewed</dt>
+<dd>{formatDate(host.reviewedAt)}</dd>
+</div>
+<div>
+<dt>Review note</dt>
+<dd>{host.reviewReason ?? "—"}</dd>
+</div>
+</dl>
+</Card>
+      <Card>
+<div className="card-title">
+<div>
+<h2>Server-timed Live accounting</h2>
+<p>Publishing duration and reward progress come from the same durable session ledger.</p>
+</div>
+</div>
+<dl className="detail-list">
+<div>
+<dt>Live hours · 30 days</dt>
+<dd>{(host.liveMinutes30d / 60).toFixed(1)}</dd>
+</div>
+<div>
+<dt>Face Live sessions · 30 days</dt>
+<dd>{host.sessionCount30d}</dd>
+</div>
+<div>
+<dt>Currently Live</dt>
+<dd>{host.currentLive ? "Yes" : "No"}</dd>
+</div>{host.currentLive ? <>
+<div>
+<dt>Eligible reward time</dt>
+<dd>{formatDuration(host.currentLive.eligibleSeconds)}</dd>
+</div>
+<div>
+<dt>Actual publishing time</dt>
+<dd>{formatDuration(host.currentLive.publishingSeconds)}</dd>
+</div>
+<div>
+<dt>Reconnect state</dt>
+<dd>
+<StatusBadge value={host.currentLive.reconnectState} />
+</dd>
+</div>
+<div>
+<dt>Accounting confidence</dt>
+<dd>
+<StatusBadge value={host.currentLive.accountingAccuracy} />
+</dd>
+</div>
+<div>
+<dt>Claimable reward units</dt>
+<dd>{host.currentLive.rewardUnitsGenerated}</dd>
+</div>
+</> : null}</dl>
+</Card>
+      {mayReview && ["PENDING", "REJECTED"].includes(host.status) ? <Card>
+<div className="card-title">
+<div>
+<h2>Review decision</h2>
+<p>Approval verifies the host and maps the user to an agency.</p>
+</div>
+</div>
+<form action={submitHostReview} className="stack-form">
+<input type="hidden" name="hostId" value={host.id} />
+<label>Agency<select name="agencyAccountId" defaultValue={host.agencyId ?? ""}>
+<option value="">Select agency</option>{agencies.map((agency) => <option value={agency.id} key={agency.id}>{agency.name} · {agency.code}</option>)}</select>
+</label>
+<label>Decision<select name="decision" required defaultValue="">
+<option value="" disabled>Select</option>
+<option value="APPROVED">Approve</option>
+<option value="REJECTED">Reject</option>
+</select>
+</label>
+<label>Reason<input name="reason" minLength={5} required placeholder="Verification notes or rejection reason" />
+</label>
+<button className="primary-button" type="submit">Save decision</button>
+</form>
+</Card> : null}
+      {mayReview ? <Card>
+<div className="card-title">
+<div>
+<h2>Account controls</h2>
+<p>Every identity/status change is scoped and written to the audit log.</p>
+</div>
+</div>
+        {privateIdentity ? <form action={submitHostGender} className="stack-form">
+<input type="hidden" name="hostId" value={host.id} />
+          <label>Gender<select name="gender" required defaultValue={host.gender ?? ""}>
+<option value="" disabled>Select</option>
+<option value="FEMALE">Female</option>
+<option value="MALE">Male</option>
+<option value="NON_BINARY">Non-binary</option>
+<option value="PREFER_NOT_TO_SAY">Prefer not to say</option>
+</select>
+</label>
+          <label>Change reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for identity correction" />
+</label>
           <button className="secondary-button" type="submit">Change gender</button>
-        </form><hr className="form-divider" />
-        <div className="card-title"><div><h2>Hosting status</h2><p>Suspending or pausing ends current rooms and blocks new Face Live and Party Audio rooms. Verification status is not changed.</p></div></div>
-        <form action={submitHostStatus} className="stack-form"><input type="hidden" name="hostId" value={host.id} />
-          <label>New hosting status<select name="status" required defaultValue={host.status === "SUSPENDED" || host.status === "INACTIVE" ? "ACTIVE" : "SUSPENDED"}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option><option value="SUSPENDED">Suspended</option></select></label>
-          <label>Hosting status reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for this status change" /></label>
-          <label className="checkbox-line"><input type="checkbox" name="confirmed" value="yes" required />Confirm hosting status change</label>
+        </form> : null}
+<hr className="form-divider" />
+        <div className="card-title">
+<div>
+<h2>Hosting status</h2>
+<p>Suspending or pausing ends current rooms and blocks new Face Live and Party Audio rooms. Verification status is not changed.</p>
+</div>
+</div>
+        <form action={submitHostStatus} className="stack-form">
+<input type="hidden" name="hostId" value={host.id} />
+          <label>New hosting status<select name="status" required defaultValue={host.status === "SUSPENDED" || host.status === "INACTIVE" ? "ACTIVE" : "SUSPENDED"}>
+<option value="ACTIVE">Active</option>
+<option value="INACTIVE">Inactive</option>
+<option value="SUSPENDED">Suspended</option>
+</select>
+</label>
+          <label>Hosting status reason<input name="reason" minLength={5} maxLength={500} required placeholder="Reason for this status change" />
+</label>
+          <label className="checkbox-line">
+<input type="checkbox" name="confirmed" value="yes" required />Confirm hosting status change</label>
           <button className="primary-button" type="submit">Update host</button>
-        </form></Card> : null}</div>
-    <Card><div className="card-title"><div><h2>Private documents</h2><p>Encrypted at rest; each preview and full viewer request rechecks document permission and hierarchy scope.</p></div><FileLock2 size={20} /></div>{!mayReadDocuments ? <p className="quiet-empty">Identity documents are protected for this role.</p> : documents.length ? <div className="document-list">{documents.map((document) => <div key={document.id}><a className={document.mimeType.startsWith("image/") ? "verification-thumb-link" : "verification-file-link"} href={`/api/documents/${document.id}?inline=1`} target="_blank" rel="noreferrer">{document.mimeType.startsWith("image/") ? <Image className="verification-thumb" src={`/api/documents/${document.id}?preview=1`} alt={document.type.replaceAll("_", " ")} width={64} height={64} unoptimized /> : <Eye size={22} />}<span><b>{document.type.replaceAll("_", " ")}</b><small>{document.name} · {(document.size / 1024).toFixed(0)} KB · Tap to inspect</small></span></a><StatusBadge value={document.status} />{mayReviewDocuments ? <details className="row-action document-review"><summary>Review</summary><form action={submitDocumentReview}><input type="hidden" name="documentId" value={document.id} /><input type="hidden" name="ownerId" value={host.id} /><input type="hidden" name="ownerType" value="HOST" /><select name="status" required defaultValue=""><option value="" disabled>Decision</option><option value="VERIFIED">Verified</option><option value="REJECTED">Rejected</option></select><input name="reason" required minLength={5} placeholder="Reason" /><button className="secondary-button" type="submit">Save</button></form></details> : null}</div>)}</div> : <p className="quiet-empty">No documents uploaded.</p>}{mayUpload ? <form action={submitHostDocument} className="document-upload"><input type="hidden" name="hostId" value={host.id} /><select name="documentType" required defaultValue=""><option value="" disabled>Document type</option><option value="GOVERNMENT_ID_FRONT">ID front</option><option value="GOVERNMENT_ID_BACK">ID back</option><option value="PROFILE_PHOTO">Profile photo</option><option value="SUPPORTING_DOCUMENT">Supporting document</option></select><input type="file" name="document" required accept="image/jpeg,image/png,application/pdf" /><button className="secondary-button" type="submit"><Upload size={15} />Upload</button></form> : null}</Card>
+        </form>
+</Card> : null}</div>
+    <Card>
+<div className="card-title">
+<div>
+<h2>Private documents</h2>
+<p>Encrypted at rest; each preview and full viewer request rechecks document permission and hierarchy scope.</p>
+</div>
+<FileLock2 size={20} />
+</div>{!mayReadDocuments ? <p className="quiet-empty">Identity documents are protected for this role.</p> : documents.length ? <div className="document-list">{documents.map((document) => <div key={document.id}>
+<a className={document.mimeType.startsWith("image/") ? "verification-thumb-link" : "verification-file-link"} href={`/api/documents/${document.id}?inline=1`} target="_blank" rel="noreferrer">{document.mimeType.startsWith("image/") ? <Image className="verification-thumb" src={`/api/documents/${document.id}?preview=1`} alt={document.type.replaceAll("_", " ")} width={64} height={64} unoptimized /> : <Eye size={22} />}<span>
+<b>{document.type.replaceAll("_", " ")}</b>
+<small>{document.name} · {(document.size / 1024).toFixed(0)} KB · Tap to inspect</small>
+</span>
+</a>
+<StatusBadge value={document.status} />{mayReviewDocuments ? <details className="row-action document-review">
+<summary>Review</summary>
+<form action={submitDocumentReview}>
+<input type="hidden" name="documentId" value={document.id} />
+<input type="hidden" name="ownerId" value={host.id} />
+<input type="hidden" name="ownerType" value="HOST" />
+<select name="status" required defaultValue="">
+<option value="" disabled>Decision</option>
+<option value="VERIFIED">Verified</option>
+<option value="REJECTED">Rejected</option>
+</select>
+<input name="reason" required minLength={5} placeholder="Reason" />
+<button className="secondary-button" type="submit">Save</button>
+</form>
+</details> : null}</div>)}</div> : <p className="quiet-empty">No documents uploaded.</p>}{mayUpload ? <form action={submitHostDocument} className="document-upload">
+<input type="hidden" name="hostId" value={host.id} />
+<select name="documentType" required defaultValue="">
+<option value="" disabled>Document type</option>
+<option value="GOVERNMENT_ID_FRONT">ID front</option>
+<option value="GOVERNMENT_ID_BACK">ID back</option>
+<option value="PROFILE_PHOTO">Profile photo</option>
+<option value="SUPPORTING_DOCUMENT">Supporting document</option>
+</select>
+<input type="file" name="document" required accept="image/jpeg,image/png,application/pdf" />
+<button className="secondary-button" type="submit">
+<Upload size={15} />Upload</button>
+</form> : null}</Card>
   </>;
 }
 

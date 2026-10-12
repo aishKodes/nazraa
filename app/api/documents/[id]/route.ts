@@ -1,7 +1,7 @@
 import type { RowDataPacket } from "mysql2";
 import { NextResponse } from "next/server";
 import sharp from "sharp";
-import { can } from "@/lib/auth/permissions";
+import { can, canReadPrivateHostIdentity } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { scopeFor, scopeWhere } from "@/lib/db/repositories/accounts";
 import { getHostDetail } from "@/lib/db/repositories/hosts";
@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const document = rows[0];
   if (!document) return new NextResponse("Not found", { status: 404 });
   let permitted = false;
-  if (document.owner_type === "HOST_APPLICATION") permitted = Boolean(await getHostDetail(scope, document.owner_id));
+  if (document.owner_type === "HOST_APPLICATION") permitted = canReadPrivateHostIdentity(account.role) && Boolean(await getHostDetail(scope, document.owner_id));
   else if (document.owner_type === "FACE_VERIFICATION" && can(account.role, "face_verification.read")) {
     const filter = scopeWhere(scope, "user.agency_account_id");
     const [requests] = await db().query<RowDataPacket[]>(

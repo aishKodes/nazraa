@@ -209,8 +209,16 @@ async function main() {
     const liveCompletion = await import("@/lib/db/repositories/mobile-completion");
     const monthlyReset = await import("@/lib/db/repositories/monthly-host-reset");
     const [ownHostRows] = await root.query<RowDataPacket[]>("SELECT id FROM host_profiles WHERE application_user_id = ?", [ownUser.id]);
-    await hostsRepository.updateHostGender({ scope: await refresh(branchAdmin), hostId: String(ownHostRows[0].id), gender: "FEMALE", reason: "QA authorized identity correction" });
-    assert.equal((await hostsRepository.getHostDetail(await refresh(branchAdmin), String(ownHostRows[0].id)))?.gender, "FEMALE");
+    await hostsRepository.updateHostGender({ scope: master, hostId: String(ownHostRows[0].id), gender: "FEMALE", reason: "QA authorized identity correction" });
+    assert.equal((await hostsRepository.getHostDetail(master, String(ownHostRows[0].id)))?.gender, "FEMALE");
+    for (const restricted of [branchAdmin, agency]) {
+      const detail = await hostsRepository.getHostDetail(await refresh(restricted), String(ownHostRows[0].id));
+      assert.equal(detail?.gender, null);
+      assert.equal(detail?.email, null);
+      assert.equal(detail?.mobile, null);
+      assert.equal(detail?.dateOfBirth, null);
+      await assert.rejects(hostsRepository.updateHostGender({scope:await refresh(restricted),hostId:String(ownHostRows[0].id),gender:"MALE",reason:"QA private identity edit denied"}));
+    }
     await assert.rejects(hostsRepository.updateHostGender({ scope: await refresh(adminOther), hostId: String(ownHostRows[0].id), gender: "MALE", reason: "QA foreign branch correction denied" }));
     const [genderAudit] = await root.query<RowDataPacket[]>("SELECT previous_data, new_data FROM audit_logs WHERE target_id = ? AND action = 'host.gender_change'", [ownUser.id]);
     assert.equal(genderAudit.length, 1, "Host gender corrections must be auditable");
@@ -504,7 +512,7 @@ async function main() {
     const matchingDeviceRequest = new Request("http://localhost/api/test", { headers: { authorization: `Bearer ${matchingDeviceToken}` } });
     const unrelatedUserRequest = new Request("http://localhost/api/test", { headers: { authorization: `Bearer ${unrelatedUserToken}` } });
     assert.ok(await mobileSession.authenticateMobileRequest(request));
-    await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS cannot block devices" }), /Only Master or the assigned Country Manager/);
+    await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(branchAdmin), sessionId, reason: "QA Admin cannot block devices" }), /Only authorized monitoring staff/);
     await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cmOther), sessionId, reason: "QA foreign device denied" }));
     await monitoring.blockUserDevice({ scope: await refresh(cm), sessionId, reason: "QA own device blocked" });
     await assert.rejects(mobileSession.authenticateMobileRequest(request), (error: unknown) => error instanceof mobileSession.MobileAccessDeniedError && error.accessCode === "DEVICE_BLOCKED");
@@ -527,7 +535,11 @@ async function main() {
     const [deviceAuditRows] = await root.query<RowDataPacket[]>("SELECT action, actor_account_id, reason FROM audit_logs WHERE target_id = ? ORDER BY created_at", [activeBlockId]);
     assert.deepEqual(deviceAuditRows.map((row) => row.action), ["device.block", "device.unblock"]);
     assert.ok(deviceAuditRows.every((row) => row.actor_account_id === cm.account.id && String(row.reason).startsWith("QA own device")));
-    await assert.rejects(monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS still cannot block" }), /Only Master or the assigned Country Manager/);
+    await monitoring.blockUserDevice({ scope: await refresh(cs), sessionId, reason: "QA CS existing device workflow" });
+    const csDevices = await monitoring.listUserDevices(await refresh(cs), ownUser.id);
+    assert.ok(csDevices[0].blockId);
+    await monitoring.unblockUserDevice({ scope: await refresh(cs), blockId: csDevices[0].blockId!, reason: "QA CS restores device access" });
+    assert.ok(await mobileSession.authenticateMobileRequest(request));
     passed++;
 
     await assert.rejects(
@@ -620,6 +632,36 @@ async function main() {
     await assert.rejects(ops.transitionWithdrawal({ scope: agency, withdrawalId, nextStatus: "UNDER_REVIEW", reason: "QA Agency cannot approve payout" }));
     await assert.rejects(ops.transitionWithdrawal({ scope: await refresh(cmOther), withdrawalId, nextStatus: "UNDER_REVIEW", reason: "QA cross branch payout" }));
     for (const nextStatus of ["UNDER_REVIEW", "APPROVED", "PROCESSING", "COMPLETED"]) await ops.transitionWithdrawal({ scope: await refresh(cm), withdrawalId, nextStatus, providerReference: "QA-NO-REAL-PAYMENT", reason: "QA payout state transition" });
+    const summaryRepository=await import("@/lib/db/repositories/withdrawal-summary");
+    const financeRepository=await import("@/lib/db/repositories/withdrawal-finance");
+    const reportFilter={period:'custom',from:'2020-01-01',to:'2030-12-31'};
+    for(const [role,roleScope] of scopes)if(role!=='MASTER')await assert.rejects(summaryRepository.withdrawalSummary(await refresh(roleScope),reportFilter));
+    const summaryCards=await summaryRepository.withdrawalSummaryCards(master,reportFilter);
+    assert.equal(Number(summaryCards.processed_diamonds),100000);
+    const [savedDistribution]=await root.query<RowDataPacket[]>('SELECT total_usd,host_usd,agency_usd FROM withdrawal_distribution_snapshots WHERE withdrawal_id=?',[withdrawalId]);
+    assert.equal(Number(summaryCards.agency_commission_usd),Number(savedDistribution[0].agency_usd));
+    const countrySummary=await summaryRepository.withdrawalSummary(master,reportFilter);
+    assert.equal(countrySummary.items.length,1);assert.equal(countrySummary.items[0].country,'IN');
+    const agencySummary=await summaryRepository.withdrawalSummary(master,{...reportFilter,country:'IN'},'agency');
+    assert.equal(agencySummary.items[0].agency_id,agency.account.id);
+    const detailSummary=await summaryRepository.withdrawalSummary(master,{...reportFilter,agency:agency.account.publicId},'detail',true);
+    assert.equal(detailSummary.items[0].id,withdrawalId);
+    assert.equal((await summaryRepository.withdrawalSummary(master,{...reportFilter,country:'BD'},'country')).items.length,0);
+    assert.equal((await summaryRepository.withdrawalSummary(master,{...reportFilter,status:'REJECTED'},'country')).items.length,0);
+    assert.equal(Number((await financeRepository.withdrawalCommissionTotals(await refresh(sa))).agency_usd),Number(savedDistribution[0].agency_usd));
+    assert.equal(Number((await financeRepository.withdrawalCommissionTotals(await refresh(saOther))).agency_usd),0);
+    const ownerHostOps=await import("@/lib/db/repositories/host-operations");
+    await assert.rejects(ownerHostOps.transferHostAgency({scope:await refresh(branchAdmin),hostId:String(ownHostRows[0].id),destinationAgencyId:agencyOther.account.id,reason:'QA unauthorized transfer',confirmed:true}));
+    await ownerHostOps.transferHostAgency({scope:master,hostId:String(ownHostRows[0].id),destinationAgencyId:agencyOther.account.id,reason:'QA exact canonical relationship transfer',confirmed:true});
+    assert.equal(await hostsRepository.getHostDetail(await refresh(agency),String(ownHostRows[0].id)),null);
+    assert.equal((await hostsRepository.getHostDetail(await refresh(agencyOther),String(ownHostRows[0].id)))?.agencyId,agencyOther.account.id);
+    assert.equal((await summaryRepository.withdrawalSummary(master,{...reportFilter,agency:agency.account.publicId},'detail',true)).items[0].id,withdrawalId,'historical payouts preserve their original Agency snapshot after transfer');
+    await ownerHostOps.transferHostAgency({scope:master,hostId:String(ownHostRows[0].id),destinationAgencyId:null,reason:'QA remove Agency without deleting Host',confirmed:true});
+    assert.ok(await hostsRepository.getHostDetail(master,String(ownHostRows[0].id)));
+    await ownerHostOps.transferHostAgency({scope:master,hostId:String(ownHostRows[0].id),destinationAgencyId:agency.account.id,reason:'QA restore original Agency fixture',confirmed:true});
+    const boundaries=summaryRepository.withdrawalSummaryFilter({period:'today'},new Date('2026-10-12T01:00:00Z'));
+    assert.deepEqual([boundaries.from,boundaries.to],['2026-10-11 18:30:00.000','2026-10-12 18:30:00.000']);
+    await assert.rejects(summaryRepository.withdrawalSummary(master,{period:'custom',from:'2026-02-31',to:'2026-03-01'}));
     passed++;
 
     const bannerPixels = randomBytes(64 * 64 * 4);

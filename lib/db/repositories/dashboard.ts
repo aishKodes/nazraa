@@ -25,13 +25,14 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
   const ledger = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "actor_account_id");
   const inventory = { clause: "owner_id = ?", values: [scope.account.id] };
   const [rows] = await db().query<(RowDataPacket & {
-    users: number; hosts: number; agencies: number; active_rooms: number; revenue: number;
+    users: number; hosts: number; agencies: number; countries: number; active_rooms: number; revenue: number;
     pending_withdrawals: number; coin_inventory: number;
   })[]>(
     `SELECT
        (SELECT COUNT(*) FROM application_users WHERE ${users.clause}) users,
        (SELECT COUNT(*) FROM host_profiles WHERE ${hosts.clause} AND status IN ('APPROVED','ACTIVE')) hosts,
        (SELECT COUNT(*) FROM platform_accounts WHERE ${accountIds.clause} AND role = 'AGENCY' AND status = 'ACTIVE') agencies,
+       (SELECT COUNT(DISTINCT country_code) FROM platform_accounts WHERE role = 'COUNTRY_MANAGER' AND removed_at IS NULL AND country_code IS NOT NULL) countries,
        (SELECT COUNT(*) FROM live_rooms WHERE ${rooms.clause} AND status = 'ACTIVE') active_rooms,
        (SELECT COALESCE(SUM(money_amount), 0) FROM ledger_transactions WHERE ${ledger.clause} AND asset_type = 'CASH' AND status = 'COMPLETED') revenue,
        (SELECT COUNT(*) FROM withdrawal_requests WHERE ${withdrawals.clause} AND status IN ('PENDING','UNDER_REVIEW')) pending_withdrawals,
@@ -40,6 +41,7 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
   );
   const row = rows[0];
   return {
+    countries: Number(row?.countries ?? 0),
     users: Number(row?.users ?? 0), hosts: Number(row?.hosts ?? 0), agencies: Number(row?.agencies ?? 0),
     activeRooms: Number(row?.active_rooms ?? 0), revenue: Number(row?.revenue ?? 0),
     pendingWithdrawals: Number(row?.pending_withdrawals ?? 0), coinInventory: Number(row?.coin_inventory ?? 0),

@@ -3,11 +3,12 @@ import { ReportControls, ReportPagination, type ReportFilters, reportQuery } fro
 import { requirePermission } from "@/lib/auth/guard";
 import { formatIst, gameManagementReport, type ReportPageInput } from "@/lib/db/repositories/owner-reports";
 import { formatNumber } from "@/lib/utils/format";
+import { can } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
 export default async function GameManagementPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const scope = await requirePermission("reports.export");
+  const scope = await requirePermission("games.read");
   const raw = await searchParams;
   const filters: ReportFilters = { q: typeof raw.q === "string" ? raw.q : "", period: raw.period === "24h" || raw.period === "custom" ? raw.period : "30d", from: typeof raw.from === "string" ? raw.from : "", to: typeof raw.to === "string" ? raw.to : "", page: Math.max(1, Number(raw.page) || 1) };
   const input: ReportPageInput = { ...filters };
@@ -15,7 +16,7 @@ export default async function GameManagementPage({ searchParams }: { searchParam
   let error = "";
   try { data = await gameManagementReport(scope, input); } catch (cause) { error = cause instanceof Error ? cause.message : "Report unavailable."; }
   const q = reportQuery(filters);
-  const exportHref = `/api/reports/games?format=xlsx${q ? `&${q}` : ""}`;
+  const exportHref = can(scope.account.role,'reports.export') ? `/api/reports/games?format=xlsx${q ? `&${q}` : ""}` : undefined;
   return <>
     <SectionHeading title="Game Management" description="Read-only game settlement and COIN-wallet reporting. Game outcomes and balances remain owned by the existing settlement ledger." />
     {error ? <Notice type="error">{error}</Notice> : null}

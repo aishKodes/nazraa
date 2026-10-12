@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from 'next/image';
 import { Search } from "lucide-react";
 import { Pagination } from "@/components/pagination";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
@@ -18,7 +19,7 @@ export default async function HostsPage({ searchParams }: { searchParams: Promis
     {success ? <Notice type="success">{success}</Notice> : null}
     {error ? <Notice type="error">{error}</Notice> : null}
     <Card><form className="filter-bar" action="/dashboard/hosts"><label className="search-field"><Search size={17} /><input name="q" defaultValue={q} placeholder="Search host ID, name, or phone" /><button className="primary-button" type="submit">Search</button></label><span>Page {result.page}</span></form>{hosts.length ? <div className="table-scroll"><table><thead><tr><th>Host</th><th>Agency</th><th>Status</th><th className="align-right">Live hours (30d)</th><th className="align-right">Sessions</th><th className="align-right">Gifts value</th><th>Open</th></tr></thead><tbody>{hosts.map((host) => <tr key={host.id}>
-      <td data-label="Host"><b>{host.fullName}</b><small className="mono block">{host.externalUserId}</small></td>
+      <td data-label="Host">{host.avatarUrl?<Image src={host.avatarUrl} alt="" width={32} height={32} unoptimized className="avatar"/>:null}<b>{host.fullName}</b><small className="mono block">{host.publicId}</small></td>
       <td data-label="Agency">{host.agencyName ?? "Independent"}</td>
       <td data-label="Status"><StatusBadge value={host.status} /></td>
       <td data-label="Live hours" className="align-right">{(host.liveMinutes / 60).toFixed(1)}</td>

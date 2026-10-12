@@ -49,11 +49,15 @@ export async function GET(request: Request, context: { params: Promise<{ report:
   const account = await getSession();
   if (!account) return NextResponse.json({ error: "Sign in required." }, { status: 401, headers: { "Cache-Control": "no-store" } });
   const { report } = await context.params;
+  if ((report === "games" && !can(account.role, "games.read")) ||
+      (report === "live-rewards" && !can(account.role, "live_reports.read")))
+    return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });
   if (report === "coin-transfers") {
     if (!can(account.role, "coins.transfer")) return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });
   } else if (report === "hierarchy") {
     if (!can(account.role, "hierarchy.read")) return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });
-  } else if (!["agency-hosts", "live-rewards", "games"].includes(report) || !can(account.role, "reports.export")) {
+  } else if (!["agency-hosts", "live-rewards", "games"].includes(report) ||
+      (report === "agency-hosts" && !can(account.role, "reports.export"))) {
     return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   if (urlFormat(request) === "xlsx" && !can(account.role, "reports.export")) return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });

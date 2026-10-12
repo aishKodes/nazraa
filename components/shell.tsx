@@ -9,6 +9,7 @@ import { usePathname } from "next/navigation";
 import { Activity, BadgeIndianRupee, Bell, Building2, CircleHelp, ClipboardList, Coins, FileBarChart, Gauge, Gift, Images, Landmark, LayoutDashboard, LogOut, Menu, Network, Radio, ReceiptText, ScanFace, Search, Settings, ShieldAlert, ShoppingBag, UserCog, Users, WalletCards, X } from "lucide-react";
 import { signOut } from "@/app/actions";
 import { roleLabel } from "@/lib/auth/role-hierarchy";
+import { can, type Permission } from "@/lib/auth/permissions";
 import { initials } from "@/lib/utils/format";
 import type { Role, SessionAccount } from "@/types/platform";
 
@@ -55,7 +56,14 @@ const navigationByRole: Record<Role, NavItem[]> = {
   COIN_SELLER: [common.overview, common.wallet, common.commerce, common.transactions, common.coinTransfers],
   // CS work is intentionally concentrated in one search-first workspace.
   // Master still sees every CS action through the platform audit trail.
-  MONITORING_CS: [common.overview, common.monitoring, common.moderation, common.support],
+  MONITORING_CS: [common.overview, common.monitoring, common.moderation, common.liveRewards, common.gameManagement, common.support],
+};
+
+const navigationPermissions: Partial<Record<Route, Permission>> = {
+  "/dashboard/monitoring": "monitoring.read",
+  "/dashboard/face-verification": "face_verification.read",
+  "/dashboard/game-management": "games.read",
+  "/dashboard/live-rewards": "live_reports.read",
 };
 
 const navigationGroups = [
@@ -69,10 +77,13 @@ export function AppShell({ account, children }: { account: SessionAccount; child
   const [menuOpen, setMenuOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
-  const visibleItems = navigationByRole[account.role];
+  const visibleItems = navigationByRole[account.role]
+    .filter(item => !navigationPermissions[item.href] || can(account.role, navigationPermissions[item.href]!))
+    .map(item => account.role === "AGENCY" && item.href === "/dashboard/live-rewards"
+      ? { ...item, label: "Live Report" } : item);
   const visibleHrefs = new Set(visibleItems.map((item) => item.href));
   const visibleGroups = navigationGroups
-    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)) }))
+    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)).map(item => visibleItems.find(visible => visible.href === item.href)!) }))
     .filter((group) => group.items.length);
   const quickSearchTarget = account.role === "COIN_SELLER"
     ? "/dashboard/wallet"

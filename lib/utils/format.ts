@@ -12,7 +12,9 @@ export function formatCurrency(value: number | string | null | undefined, curren
 
 export function formatDate(value: string | Date | null | undefined) {
   if (!value) return "—";
-  return new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  const instant = value instanceof Date ? value : new Date(/^\d{4}-\d{2}-\d{2} \d/.test(value) ? `${value.replace(" ", "T")}Z` : value);
+  if (!Number.isFinite(instant.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }).format(instant);
 }
 
 export function initials(name: string) {

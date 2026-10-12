@@ -21,12 +21,155 @@ export default async function AccountDetailPage({ params, searchParams }: { para
   const [account, documents, parentOptions, descendants] = await Promise.all([getPlatformAccountDetail(scope, id), mayReadDocuments ? listAccountDocuments(scope, id) : Promise.resolve([]), can(scope.account.role, "accounts.roles") ? listParentOptions(scope) : Promise.resolve([]), can(scope.account.role, "accounts.roles") ? listRoleChangeDescendants(scope, id) : Promise.resolve([])]); if (!account) notFound();
   const manageable = account.status !== "DISABLED" && account.id !== scope.account.id && canManageRole(scope.account.role, account.role);
   const manageDocuments = can(scope.account.role, "documents.manage") && manageable;
-  return <><Link href="/dashboard/accounts" className="back-link"><ArrowLeft size={15} />Team accounts</Link><SectionHeading title={account.name} description={`${account.displayRole} · ID ${account.code}`} action={<StatusBadge value={account.status} />} />{success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
-    <div className="split-grid"><Card><div className="card-title"><div><h2>Account details</h2><p>Role identity and hierarchy ownership.</p></div></div><dl className="detail-list"><div><dt>Management ID</dt><dd className="mono">{account.code}</dd></div><div><dt>Parent</dt><dd>{account.parentName ?? "Platform root"}</dd></div><div><dt>Country</dt><dd>{countryName(account.country)}</dd></div><div><dt>Email</dt><dd>{account.email ?? "—"}</dd></div><div><dt>Mobile</dt><dd>{account.mobile ?? "—"}</dd></div><div><dt>Created</dt><dd>{formatDate(account.createdAt)}</dd></div><div><dt>Last login</dt><dd>{formatDate(account.lastLoginAt)}</dd></div></dl></Card><Card><div className="card-title"><div><h2>Document policy</h2><p>Only permission-checked downloads are available.</p></div><FileLock2 size={20} /></div><p className="quiet-empty">Full government identifiers are not shown in tables or URLs. Downloaded evidence is decrypted only for the current authorized request.</p></Card></div>
-    {manageable && can(scope.account.role, "accounts.manage") && ["ACTIVE", "SUSPENDED"].includes(account.status) ? <Card><section id="account-status"><div className="card-title"><div><h2>{account.status === "ACTIVE" ? "Suspend account" : "Reactivate account"}</h2><p>{account.status === "ACTIVE" ? "Temporarily block this management ID from the Control Platform." : "Restore this management ID's Control Platform access."}</p></div></div><AccountStatusForm key={`${account.id}-${account.status}`} accountId={account.id} status={account.status as "ACTIVE" | "SUSPENDED"} /></section></Card> : null}
-    {manageable && can(scope.account.role, "accounts.edit") ? <Card className="create-panel"><details><summary><span><b>Edit account</b></span><small>Contact changes are audited</small></summary><form action={submitAccountEdit} className="admin-form"><input type="hidden" name="accountId" value={account.id} /><div className="form-grid"><label>Full name<input name="fullName" defaultValue={account.name} required minLength={2} /></label><label>Email<input name="email" type="email" defaultValue={account.email ?? ""} /></label><label>Mobile<input name="mobile" defaultValue={account.mobile ?? ""} /></label><label>Country<CountrySelect defaultValue={account.country ?? "IN"} disabled={Boolean(account.country)} />{account.country ? <><input type="hidden" name="countryCode" value={account.country} /><small>Assigned by this account’s country branch.</small></> : null}</label><label className="span-two">Reason<input name="reason" required minLength={5} maxLength={500} /></label></div><button className="primary-button" type="submit">Save account</button></form></details></Card> : null}
-    {manageable && can(scope.account.role, "accounts.roles") ? <Card><section id="change-role"><div className="card-title"><div><h2>Change role</h2><p>Choose the new role, check the suggested assignments, then confirm and save.</p></div></div><AccountRoleForm key={`${account.id}-${account.role}`} actorRole={scope.account.role} account={account} parents={parentOptions} descendants={descendants} /></section></Card> : null}
-    {manageable && can(scope.account.role, "accounts.permanent") ? <Card className="create-panel"><details><summary><span><b>Permanent removal</b></span><small>Master only</small></summary><form action={submitPermanentAccountRemoval} className="admin-form stack-form danger-zone"><input type="hidden" name="accountId" value={account.id} /><label>Reason<input name="reason" required minLength={5} maxLength={500} /></label><label>Type REMOVE<input name="confirmation" required pattern="REMOVE" /></label><button className="danger-button" type="submit">Permanently disable account</button></form></details></Card> : null}
-    <Card><div className="card-title"><div><h2>Private documents</h2><p>Review each uploaded identity file explicitly.</p></div></div>{!mayReadDocuments ? <p className="quiet-empty">Identity documents are protected for this role.</p> : documents.length ? <div className="document-list">{documents.map((document) => <div key={document.id}><span><b>{document.type.replaceAll("_", " ")}</b><small>{document.name} · {(document.size / 1024).toFixed(0)} KB · {formatDate(document.createdAt)}</small></span><StatusBadge value={document.status} /><a className="secondary-button" href={`/api/documents/${document.id}`}><Download size={14} />Download</a>{manageDocuments ? <details className="row-action document-review"><summary>Review</summary><form action={submitDocumentReview}><input type="hidden" name="documentId" value={document.id} /><input type="hidden" name="ownerId" value={account.id} /><input type="hidden" name="ownerType" value="ACCOUNT" /><select name="status" required defaultValue=""><option value="" disabled>Decision</option><option value="VERIFIED">Verified</option><option value="REJECTED">Rejected</option></select><input name="reason" required minLength={5} placeholder="Reason" /><button className="secondary-button" type="submit">Save</button></form></details> : null}</div>)}</div> : <p className="quiet-empty">No identity documents were uploaded for this account.</p>}</Card>
+  return <>
+<Link href="/dashboard/accounts" className="back-link">
+<ArrowLeft size={15} />Team accounts</Link>
+<SectionHeading title={account.name} description={`${account.displayRole} · ID ${account.code}`} action={<StatusBadge value={account.status} />} />{success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
+    <div className="split-grid">
+<Card>
+<div className="card-title">
+<div>
+<h2>Account details</h2>
+<p>Role identity and hierarchy ownership.</p>
+</div>
+</div>
+<dl className="detail-list">
+<div>
+<dt>Management ID</dt>
+<dd className="mono">{account.code}</dd>
+</div>
+<div>
+<dt>Parent</dt>
+<dd>{account.parentName ?? "Platform root"}</dd>
+</div>
+<div>
+<dt>Country</dt>
+<dd>{countryName(account.country)}</dd>
+</div>
+<div>
+<dt>Email</dt>
+<dd>{account.email ?? "—"}</dd>
+</div>
+<div>
+<dt>Mobile</dt>
+<dd>{account.mobile ?? "—"}</dd>
+</div>
+<div>
+<dt>Created</dt>
+<dd>{formatDate(account.createdAt)}</dd>
+</div>
+<div>
+<dt>Last login</dt>
+<dd>{formatDate(account.lastLoginAt)}</dd>
+</div>
+</dl>
+</Card>
+<Card>
+<div className="card-title">
+<div>
+<h2>Document policy</h2>
+<p>Only permission-checked downloads are available.</p>
+</div>
+<FileLock2 size={20} />
+</div>
+<p className="quiet-empty">Full government identifiers are not shown in tables or URLs. Downloaded evidence is decrypted only for the current authorized request.</p>
+</Card>
+</div>
+    {manageable && can(scope.account.role, "accounts.manage") && ["ACTIVE", "SUSPENDED"].includes(account.status) ? <Card>
+<section id="account-status">
+<div className="card-title">
+<div>
+<h2>{account.status === "ACTIVE" ? "Suspend account" : "Reactivate account"}</h2>
+<p>{account.status === "ACTIVE" ? "Temporarily block this management ID from the Control Platform." : "Restore this management ID's Control Platform access."}</p>
+</div>
+</div>
+<AccountStatusForm key={`${account.id}-${account.status}`} accountId={account.id} status={account.status as "ACTIVE" | "SUSPENDED"} />
+</section>
+</Card> : null}
+    {manageable && can(scope.account.role, "accounts.edit") ? <Card className="create-panel">
+<details>
+<summary>
+<span>
+<b>Edit account</b>
+</span>
+<small>Contact changes are audited</small>
+</summary>
+<form action={submitAccountEdit} className="admin-form">
+<input type="hidden" name="accountId" value={account.id} />
+<div className="form-grid">
+<label>Full name<input name="fullName" defaultValue={account.name} required minLength={2} />
+</label>
+<label>Email<input name="email" type="email" defaultValue={account.email ?? ""} />
+</label>
+<label>Mobile<input name="mobile" defaultValue={account.mobile ?? ""} />
+</label>
+<label>Country<CountrySelect defaultValue={account.country ?? "IN"} disabled={Boolean(account.country)} />{account.country ? <>
+<input type="hidden" name="countryCode" value={account.country} />
+<small>Assigned by this account’s country branch.</small>
+</> : null}</label>
+<label className="span-two">Reason<input name="reason" required minLength={5} maxLength={500} />
+</label>
+</div>
+<button className="primary-button" type="submit">Save account</button>
+</form>
+</details>
+</Card> : null}
+    {manageable && can(scope.account.role, "accounts.roles") ? <Card>
+<section id="change-role">
+<div className="card-title">
+<div>
+<h2>Change role</h2>
+<p>Choose the new role, check the suggested assignments, then confirm and save.</p>
+</div>
+</div>
+<AccountRoleForm key={`${account.id}-${account.role}`} actorRole={scope.account.role} account={account} parents={parentOptions} descendants={descendants} />
+</section>
+</Card> : null}
+    {manageable && can(scope.account.role, "accounts.permanent") ? <Card className="create-panel">
+<details>
+<summary>
+<span>
+<b>Permanent Delete / retire account</b>
+</span>
+<small>Master only</small>
+</summary>
+<form action={submitPermanentAccountRemoval} className="admin-form stack-form danger-zone">
+<input type="hidden" name="accountId" value={account.id} />
+<label>Reason<input name="reason" required minLength={5} maxLength={500} />
+</label>
+<label>Type REMOVE<input name="confirmation" required pattern="REMOVE" />
+</label>
+<p>This permanently retires Control access and removes the account from active listings. Required financial/audit history remains intact. Reassign dependants first.</p><button className="danger-button" type="submit">Permanently retire account</button>
+</form>
+</details>
+</Card> : null}
+    <Card>
+<div className="card-title">
+<div>
+<h2>Private documents</h2>
+<p>Review each uploaded identity file explicitly.</p>
+</div>
+</div>{!mayReadDocuments ? <p className="quiet-empty">Identity documents are protected for this role.</p> : documents.length ? <div className="document-list">{documents.map((document) => <div key={document.id}>
+<span>
+<b>{document.type.replaceAll("_", " ")}</b>
+<small>{document.name} · {(document.size / 1024).toFixed(0)} KB · {formatDate(document.createdAt)}</small>
+</span>
+<StatusBadge value={document.status} />
+<a className="secondary-button" href={`/api/documents/${document.id}`}>
+<Download size={14} />Download</a>{manageDocuments ? <details className="row-action document-review">
+<summary>Review</summary>
+<form action={submitDocumentReview}>
+<input type="hidden" name="documentId" value={document.id} />
+<input type="hidden" name="ownerId" value={account.id} />
+<input type="hidden" name="ownerType" value="ACCOUNT" />
+<select name="status" required defaultValue="">
+<option value="" disabled>Decision</option>
+<option value="VERIFIED">Verified</option>
+<option value="REJECTED">Rejected</option>
+</select>
+<input name="reason" required minLength={5} placeholder="Reason" />
+<button className="secondary-button" type="submit">Save</button>
+</form>
+</details> : null}</div>)}</div> : <p className="quiet-empty">No identity documents were uploaded for this account.</p>}</Card>
   </>;
 }

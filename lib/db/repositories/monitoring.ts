@@ -3,29 +3,34 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
-import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
+import { monitoringScopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
+import { can } from "@/lib/auth/permissions";
 
 export async function searchMonitoring(scope: Scope, query: string) {
+  if (!can(scope.account.role,'monitoring.read')) throw new Error('Monitoring access is not permitted.');
   const search = query.trim().slice(0, 120);
   if (!search) return [];
   const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
   const exactId = /^\d{1,12}$/.test(search);
-  const condition = exactId
+  const cs = scope.account.role==='MONITORING_CS';
+  const condition = cs ? (exactId ? '(u.public_id=? OR u.external_user_id=?)' : 'u.full_name LIKE ?') : exactId
     ? "(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)"
     : "(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ? OR u.email LIKE ?)";
-  const searchValues = exactId ? [Number(search), search, `%${search}%`] : [`%${search}%`, `%${search}%`, `%${search}%`];
+  const searchValues = cs ? (exactId ? [Number(search),search] : [`%${search}%`]) : exactId ? [Number(search), search, `%${search}%`] : [`%${search}%`, `%${search}%`, `%${search}%`];
   const [rows] = await db().query<(RowDataPacket & {
     id: string; public_id: number; external_user_id: string; full_name: string; whatsapp_e164: string | null;
     country_code: string | null; account_status: string; face_verification_status: string; is_host: number;
-    host_status: string | null; verification_status: string | null; agency_name: string | null;
+    host_status: string | null; verification_status: string | null; agency_name: string | null; gender:string|null; avatar_url:string|null;
+    agency_public_id:number|null; admin_public_id:number|null; admin_name:string|null;
     room_code: string | null; room_type: string | null; room_status: string | null;
     restriction_id: string | null; restriction_type: string | null; restriction_ends_at: string | null; complaint_count: number; risk_count: number;
   })[]>(
     `SELECT u.id, u.public_id, u.external_user_id, u.full_name, u.whatsapp_e164, u.country_code,
             u.account_status, u.face_verification_status, u.is_host, host.status host_status,
-            host.verification_status, agency.full_name agency_name,
+            host.verification_status, agency.full_name agency_name,agency.public_id agency_public_id,
+            u.gender,u.avatar_url,parent.public_id admin_public_id,parent.full_name admin_name,
             active_room.room_code, active_room.room_type, active_room.status room_status,
             restriction.id restriction_id, restriction.restriction_type, restriction.ends_at restriction_ends_at,
             COALESCE(complaints.complaint_count, 0) complaint_count,
@@ -33,6 +38,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
      FROM application_users u
      LEFT JOIN host_profiles host ON host.application_user_id = u.id
      LEFT JOIN platform_accounts agency ON agency.id = u.agency_account_id
+     LEFT JOIN platform_accounts parent ON parent.id=agency.parent_account_id AND parent.role IN ('ADMIN','BD')
      LEFT JOIN (
        SELECT room.host_application_user_id, room.room_code, room.room_type, room.status
        FROM live_rooms room
@@ -67,7 +73,9 @@ export async function searchMonitoring(scope: Scope, query: string) {
   );
   return rows.map((row) => ({
     id: row.id, publicId: String(row.public_id), externalUserId: row.external_user_id, fullName: row.full_name,
-    whatsapp: row.whatsapp_e164, country: row.country_code, status: row.account_status,
+    whatsapp: cs ? null : row.whatsapp_e164, gender:row.gender, avatarUrl:row.avatar_url,
+    agencyPublicId:row.agency_public_id==null?null:String(row.agency_public_id),adminPublicId:row.admin_public_id==null?null:String(row.admin_public_id),adminName:row.admin_name,
+    country: row.country_code, status: row.account_status,
     faceStatus: row.face_verification_status, isHost: Boolean(row.is_host), hostStatus: row.host_status,
     verificationStatus: row.verification_status, agencyName: row.agency_name,
     roomCode: row.room_code, roomType: row.room_type, roomStatus: row.room_status,
@@ -103,7 +111,8 @@ export async function listModerationHistory(scope: Scope, userIds: string[]) {
 }
 
 export async function listUserDevices(scope: Scope, applicationUserId: string) {
-  const scoped = scopeWhere(scope, "u.agency_account_id");
+  if(!can(scope.account.role,'devices.read')) throw new Error('Device access is not permitted.');
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; device_label: string | null; device_id_hash: string | null; device_identity_kind: string | null;
     last_used_at: string; expires_at: string; revoked_at: string | null;
@@ -225,9 +234,9 @@ export async function unbanDeviceAcrossAccounts(input: { scope: Scope; banId: st
 }
 
 export async function blockUserDevice(input: { scope: Scope; sessionId: string; reason: string }) {
-  if (!['MASTER', 'COUNTRY_MANAGER'].includes(input.scope.account.role)) throw new Error("Only Master or the assigned Country Manager can block a device.");
+  if (!['MASTER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can block a device.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear device block reason.");
-  const scoped = scopeWhere(input.scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; device_id_hash: string | null; device_label: string | null })[]>(
       `SELECT session.id, session.application_user_id, session.device_id_hash, session.device_label
@@ -269,9 +278,9 @@ export async function blockUserDevice(input: { scope: Scope; sessionId: string; 
 }
 
 export async function unblockUserDevice(input: { scope: Scope; blockId: string; reason: string }) {
-  if (!['MASTER', 'COUNTRY_MANAGER'].includes(input.scope.account.role)) throw new Error("Only Master or the assigned Country Manager can unblock a device.");
+  if (!['MASTER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can unblock a device.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear unblock reason.");
-  const scoped = scopeWhere(input.scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; mobile_session_id: string | null; application_user_id: string })[]>(
       `SELECT block.id, block.mobile_session_id, block.application_user_id FROM mobile_device_blocks block

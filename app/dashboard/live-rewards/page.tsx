@@ -4,11 +4,12 @@ import { ReportControls, ReportPagination, type ReportFilters, reportQuery } fro
 import { requirePermission } from "@/lib/auth/guard";
 import { formatIst, liveRewardReport, type ReportPageInput } from "@/lib/db/repositories/owner-reports";
 import { formatNumber } from "@/lib/utils/format";
+import { can } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
 export default async function LiveRewardsPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  const scope = await requirePermission("reports.export");
+  const scope = await requirePermission("live_reports.read");
   const raw = await searchParams;
   const filters: ReportFilters = { q: typeof raw.q === "string" ? raw.q : "", period: raw.period === "24h" || raw.period === "custom" ? raw.period : "30d", from: typeof raw.from === "string" ? raw.from : "", to: typeof raw.to === "string" ? raw.to : "", page: Math.max(1, Number(raw.page) || 1) };
   const input: ReportPageInput = { ...filters };
@@ -16,7 +17,7 @@ export default async function LiveRewardsPage({ searchParams }: { searchParams: 
   let error = "";
   try { data = await liveRewardReport(scope, input); } catch (cause) { error = cause instanceof Error ? cause.message : "Report unavailable."; }
   const q = reportQuery(filters);
-  const exportHref = `/api/reports/live-rewards?format=xlsx${q ? `&${q}` : ""}`;
+  const exportHref = can(scope.account.role,'reports.export') ? `/api/reports/live-rewards?format=xlsx${q ? `&${q}` : ""}` : undefined;
   const summary = data?.summary;
   return <>
     <SectionHeading title="Live Reward Monitoring" description="One row per canonical Face/Video Live session. Durations, eligibility, entitlements and credits come from the existing server ledger." />

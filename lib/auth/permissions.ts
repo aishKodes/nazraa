@@ -50,6 +50,8 @@ export type Permission =
   | "support.read"
   | "support.manage"
   | "reports.export"
+  | "live_reports.read"
+  | "games.read"
   | "audit.read"
   | "risk.read"
   | "risk.manage"
@@ -122,6 +124,26 @@ const grants: Record<Role, Permission[]> = {
     "support.read", "support.manage", "risk.read", "risk.manage", "audit.read",
   ],
 };
+
+// Owner-approved panel boundaries, independent of menu visibility. BD keeps
+// its previous permissions: removing Admin controls is not a BD role rewrite.
+for (const role of ["SUPER_ADMIN", "ADMIN", "AGENCY"] as const) {
+  grants[role] = grants[role].filter(permission =>
+    !["monitoring.read", "face_verification.read", "face_verification.manage"].includes(permission));
+}
+grants.ADMIN = grants.ADMIN.filter(permission =>
+  !["accounts.manage", "accounts.edit"].includes(permission));
+for (const role of ["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "MONITORING_CS"] as const) {
+  grants[role].push("games.read", "live_reports.read");
+}
+grants.AGENCY.push("live_reports.read");
+// Reuse the existing scoped device-control authority; no global device-ban
+// permission is granted to CS or Country by this addition.
+grants.MONITORING_CS.push("devices.read", "devices.manage");
+
+export function canReadPrivateHostIdentity(role: Role) {
+  return role === "MASTER" || role === "COUNTRY_MANAGER" || role === "SUPER_ADMIN" || role === "BD";
+}
 
 export function can(role: Role, permission: Permission) {
   return grants[role].includes(permission);

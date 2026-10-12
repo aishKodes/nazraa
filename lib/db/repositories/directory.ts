@@ -1,4 +1,5 @@
 import "server-only";
+import {canReadPrivateHostIdentity} from '@/lib/auth/permissions';
 
 import type { RowDataPacket } from "mysql2";
 import { can } from "@/lib/auth/permissions";
@@ -19,11 +20,12 @@ type UserRow = RowDataPacket & {
 type HostRow = RowDataPacket & {
   id: string; full_name: string; external_user_id: string; status: string; verification_status: string;
   agency_name: string | null; live_minutes_30d: number; sessions_30d: number; gifts_value_30d: number; document_count: number;
+  public_id:number;avatar_url:string|null;diamonds:number;
 };
 
 type AgencyRow = RowDataPacket & {
   id: string; public_id: number; full_name: string; country_code: string | null; status: string;
-  owner_name: string | null; host_count: number;
+  owner_name: string | null; host_count: number;logo_application_id:string|null;
 };
 
 function pageInput(input: PageRequest = {}) {
@@ -121,7 +123,7 @@ function mapHost(row: HostRow) {
     id: row.id, fullName: row.full_name, externalUserId: row.external_user_id, status: row.status,
     verificationStatus: row.verification_status, agencyName: row.agency_name,
     liveMinutes: Number(row.live_minutes_30d), sessions: Number(row.sessions_30d), gifts: Number(row.gifts_value_30d),
-    documentCount: Number(row.document_count),
+    documentCount: Number(row.document_count),publicId:String(row.public_id),avatarUrl:row.avatar_url,diamonds:Number(row.diamonds),
   };
 }
 
@@ -136,15 +138,19 @@ export async function listHostsPage(scope: Scope, input: PageRequest = {}): Prom
   const values: unknown[] = [...scoped.values];
   if (search) {
     if (/^\d{1,10}$/.test(search)) {
-      filters.push("(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)");
-      values.push(Number(search), search, `${search}%`);
+      filters.push(canReadPrivateHostIdentity(scope.account.role)?"(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)":"(u.public_id=? OR u.external_user_id=?)");
+      values.push(Number(search), search);
+      if(canReadPrivateHostIdentity(scope.account.role))values.push(`${search}%`);
     } else {
-      filters.push("(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ?)");
-      values.push(`${search}%`, `${search}%`);
+      filters.push(canReadPrivateHostIdentity(scope.account.role)?"(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ?)":"u.full_name LIKE ?");
+      values.push(`${search}%`);
+      if(canReadPrivateHostIdentity(scope.account.role))values.push(`${search}%`);
     }
   }
   const [rows] = await db().query<HostRow[]>(
-    `SELECT h.id, u.full_name, u.external_user_id, h.status, h.verification_status, agency.full_name agency_name,
+    `SELECT h.id, u.full_name, u.external_user_id,u.public_id,
+            CASE WHEN avatar.updated_at IS NOT NULL THEN CONCAT('/api/v1/mobile/avatar/',u.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(avatar.updated_at)*1000)) ELSE u.avatar_url END avatar_url,
+            COALESCE(d.available_balance,0) diamonds,h.status, h.verification_status, agency.full_name agency_name,
             COALESCE((
               SELECT SUM(accounting.eligible_seconds_committed)
               FROM live_session_accounting accounting
@@ -161,6 +167,8 @@ export async function listHostsPage(scope: Scope, input: PageRequest = {}): Prom
             h.gifts_value_30d, COALESCE(documents.document_count, 0) document_count
      FROM host_profiles h
      INNER JOIN application_users u ON u.id = h.application_user_id
+     LEFT JOIN application_user_avatars avatar ON avatar.application_user_id=u.id
+     LEFT JOIN wallet_balances d ON d.owner_type='APPLICATION_USER' AND d.owner_id=u.id AND d.asset_type='DIAMOND'
      LEFT JOIN platform_accounts agency ON agency.id = h.agency_account_id
      LEFT JOIN (
        SELECT owner_id, COUNT(*) document_count FROM private_documents
@@ -175,7 +183,7 @@ export async function listHostsPage(scope: Scope, input: PageRequest = {}): Prom
 function mapAgency(row: AgencyRow) {
   return {
     id: row.id, code: String(row.public_id), name: row.full_name, country: row.country_code, status: row.status,
-    owner: row.owner_name, hostCount: Number(row.host_count),
+    owner: row.owner_name, hostCount: Number(row.host_count),logoUrl:row.logo_application_id?`/api/v1/assets/agencies/${row.logo_application_id}`:null,
   };
 }
 
@@ -186,7 +194,7 @@ export async function listAgencies(scope: Scope, limit = 100) {
 export async function listAgenciesPage(scope: Scope, input: PageRequest = {}): Promise<PageResult<ReturnType<typeof mapAgency>>> {
   const { page, pageSize, offset, search } = pageInput(input);
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "agency.id");
-  const filters = ["agency.role = 'AGENCY'", scoped.clause];
+  const filters = ["agency.role = 'AGENCY'", "agency.removed_at IS NULL",scoped.clause];
   const values: unknown[] = [...scoped.values];
   if (search) {
     if (/^\d{1,6}$/.test(search)) {
@@ -199,7 +207,9 @@ export async function listAgenciesPage(scope: Scope, input: PageRequest = {}): P
   }
   const [rows] = await db().query<AgencyRow[]>(
     `SELECT agency.id, agency.public_id, agency.full_name, agency.country_code, agency.status,
-            owner.full_name owner_name, COALESCE(hosts.host_count, 0) host_count
+            owner.full_name owner_name, COALESCE(hosts.host_count, 0) host_count,
+            (SELECT creation.id FROM agency_creation_applications creation WHERE creation.approved_agency_account_id=agency.id
+              AND creation.logo_data IS NOT NULL ORDER BY creation.reviewed_at DESC LIMIT 1) logo_application_id
      FROM platform_accounts agency
      LEFT JOIN platform_accounts owner ON owner.id = agency.parent_account_id
      LEFT JOIN (SELECT agency_account_id, COUNT(*) host_count FROM host_profiles GROUP BY agency_account_id) hosts

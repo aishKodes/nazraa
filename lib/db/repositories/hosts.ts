@@ -6,6 +6,7 @@ import { withTransaction } from "@/lib/db/transaction";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { PreparedDocument } from "@/lib/security/documents";
 import type { Scope } from "@/types/platform";
+import { canReadPrivateHostIdentity } from "@/lib/auth/permissions";
 
 export async function createHostApplication(input: { scope: Scope; applicationUserId: string; legalName: string; countryCode: string; agencyAccountId?: string; governmentIdType: string; governmentIdLast4: string; documents: PreparedDocument[] }) {
   const hostId = randomUUID();
@@ -147,10 +148,20 @@ export async function getHostDetail(scope: Scope, hostId: string) {
      LEFT JOIN platform_accounts a ON a.id = h.agency_account_id
      WHERE h.id = ? AND ${hostScope.clause} LIMIT 1`, [hostId, ...hostScope.values],
   );
+  if (rows[0] && !canReadPrivateHostIdentity(scope.account.role)) {
+    rows[0].date_of_birth = null;
+    rows[0].email = null;
+    rows[0].whatsapp_e164 = null;
+    rows[0].legal_name = null;
+    rows[0].government_id_type = null;
+    rows[0].government_id_last4 = null;
+    if (scope.account.role !== "MONITORING_CS") rows[0].gender = null;
+  }
   return rows[0] ? { id: rows[0].id, applicationUserId: rows[0].application_user_id, publicId: String(rows[0].public_id), legalName: rows[0].legal_name ?? rows[0].full_name, displayName: rows[0].full_name, externalUserId: rows[0].external_user_id, avatarUrl: rows[0].avatar_url, dateOfBirth: rows[0].date_of_birth, gender: rows[0].gender, mobile: rows[0].whatsapp_e164, email: rows[0].email, accountStatus: rows[0].account_status, faceVerification: rows[0].face_verification_status, country: rows[0].country_code, status: rows[0].status, verification: rows[0].verification_status, governmentIdType: rows[0].government_id_type, governmentIdLast4: rows[0].government_id_last4, agencyId: rows[0].agency_account_id, agencyName: rows[0].agency_name, appliedAt: rows[0].applied_at, reviewedAt: rows[0].reviewed_at, reviewReason: rows[0].review_reason, liveMinutes30d: Number(rows[0].live_minutes_30d), sessionCount30d: Number(rows[0].session_count_30d), currentLive: rows[0].current_reconnect_state == null ? null : { eligibleSeconds: Number(rows[0].current_eligible_seconds ?? 0), publishingSeconds: Number(rows[0].current_publishing_seconds ?? 0), reconnectState: String(rows[0].current_reconnect_state), accountingAccuracy: String(rows[0].current_accounting_accuracy ?? 'CONFIRMED'), rewardUnitsGenerated: Number(rows[0].current_reward_units ?? 0) } } : null;
 }
 
 export async function updateHostGender(input: { scope: Scope; hostId: string; gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY"; reason: string }) {
+  if (!canReadPrivateHostIdentity(input.scope.account.role)) throw new Error("Identity correction is not permitted for this role.");
   if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a clear audit reason.");
   const hostScope = scopeWhere(input.scope, "h.agency_account_id");
   await withTransaction(async (connection) => {
@@ -174,6 +185,7 @@ export async function updateHostGender(input: { scope: Scope; hostId: string; ge
 }
 
 export async function listHostDocuments(scope: Scope, hostId: string) {
+  if (!canReadPrivateHostIdentity(scope.account.role)) return [];
   const host = await getHostDetail(scope, hostId);
   if (!host) return [];
   const [rows] = await db().query<(RowDataPacket & { id: string; document_type: string; original_name: string; mime_type: string; byte_size: number; verification_status: string; created_at: string })[]>(

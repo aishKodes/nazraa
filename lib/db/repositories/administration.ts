@@ -295,6 +295,7 @@ async function manageableAccount(scope: Scope, accountId: string, lock = false) 
 }
 
 export async function updateAccountStatus(input: { scope: Scope; accountId: string; expectedStatus?: "ACTIVE" | "SUSPENDED"; nextStatus: "ACTIVE" | "SUSPENDED" | "DISABLED"; reason: string }) {
+  if (input.scope.account.role === "ADMIN") throw new Error("Admin cannot suspend or edit team accounts.");
   if (input.nextStatus === "DISABLED" && input.scope.account.role !== "MASTER") throw new Error("Only Master can permanently deactivate an account.");
   if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a reason of 5 to 500 characters for the status change.");
   await withTransaction(async (connection) => {
@@ -318,6 +319,7 @@ export async function updateAccountStatus(input: { scope: Scope; accountId: stri
 }
 
 export async function updatePlatformAccount(input: { scope: Scope; accountId: string; fullName: string; email?: string; mobile?: string; countryCode: string; reason: string }) {
+  if (input.scope.account.role === "ADMIN") throw new Error("Admin cannot edit team accounts.");
   const target = await manageableAccount(input.scope, input.accountId);
   const [countries] = await db().query<(RowDataPacket & { country_code: string | null; parent_country: string | null; parent_role: Role | null })[]>("SELECT a.country_code, p.country_code parent_country, p.role parent_role FROM platform_accounts a LEFT JOIN platform_accounts p ON p.id = a.parent_account_id WHERE a.id = ?", [target.id]);
   const country = countries[0];
@@ -449,6 +451,7 @@ export async function permanentlyRemovePlatformAccount(input: { scope: Scope; ac
 }
 
 export async function resetAccountPassword(input: { scope: Scope; accountId: string; password: string; reason: string }) {
+  if (input.scope.account.role === "ADMIN") throw new Error("Admin cannot change team passwords.");
   const target = await manageableAccount(input.scope, input.accountId);
   const hash = await bcrypt.hash(input.password, 12);
   await withTransaction(async (connection) => {

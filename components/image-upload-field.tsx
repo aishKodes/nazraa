@@ -18,6 +18,7 @@ export function ImageUploadField({
   const [preview, setPreview] = useState(currentUrl ?? "");
   const [objectUrl, setObjectUrl] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [error,setError]=useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => () => {
@@ -25,7 +26,12 @@ export function ImageUploadField({
   }, [objectUrl]);
 
   function selectFile(file: File) {
-    if (!file.type.match(/^image\/(?:jpeg|png|webp)$/)) return;
+    if (!file.type.match(/^image\/(?:jpeg|png|webp)$/)) {
+      setError("Choose a JPG, PNG or WebP image.");
+      if(inputRef.current)inputRef.current.value="";
+      return;
+    }
+    setError("");
     if (inputRef.current) {
       const transfer = new DataTransfer();
       transfer.items.add(file);
@@ -68,5 +74,6 @@ export function ImageUploadField({
       style={preview ? { backgroundImage: `url(${JSON.stringify(preview)})` } : undefined}
       aria-label={preview ? "Selected image preview" : "No image selected"}
     >{preview ? "" : "Drop an image here or choose a file"}</span>
+    {error?<span role="alert">{error}</span>:null}
   </label>;
 }
