@@ -59,9 +59,12 @@ and no economy, LiveKit routing, DNS or firewall policy was changed by these tes
 
 The owner-selected Play account is now accessible. Current and previous Play
 public signing SHA-1s were verified from downloaded certificates, and the
-existing Google project was inspected. Its Android client registers only the
-direct-APK/upload certificate; approval to add the two Play certificate clients
-is pending. The Web client still matches mobile/server audience configuration.
+existing Google project was inspected. Initially its Android client registered
+only the direct-APK/upload certificate. After explicit owner approval, both
+Play certificate clients were created and verified in the same project for
+`com.nazraa.live`. Existing direct-APK and Web clients remain unchanged; the Web
+client still matches mobile/server audience configuration. No new client secret,
+scope or mobile build was necessary for these public-certificate registrations.
 
 OCI maintenance now works through its existing Cloud Shell RSA key, without
 adding a new firewall rule or exposing/downloading any private key. Running
@@ -71,6 +74,9 @@ guard deferred with 11 participants connected and exited without restarting.
 Valid signed connectivity probe returned 202, and invalid signature,
 body checksum and expired token returned 404. No fake publication evidence was
 inserted. Real provider callback receipt remains unverified until activation.
+A subsequent one-shot recheck still had 9 connected participants and deferred
+without restart. The newly approved temporary /32 SSH rule was not needed or
+created because existing Cloud Shell maintenance access already works.
 
 Actual provider protobuf JSON reproduced another timestamp defect: string Unix
 seconds previously fell back to receipt time. Focused regression now passes and

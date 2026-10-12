@@ -16,10 +16,11 @@ viewer media samples are recorded, not substituted for Android room-ready stats.
 GOOGLE LOGIN ROOT CAUSE: native logout cleanup could overlap the next sign-in;
 source serialization and ordering test pass. Actual 20-scenario login test pending.
 GOOGLE LOGIN: not yet release-verified.
-PLAY-SIGNED OAUTH CONFIG: existing Play account accessed and signing certificates
-verified on 13 October. Google Cloud has the direct-APK certificate registered,
-but neither Play certificate. Adding the two Android registrations is awaiting
-the explicit action-time approval already requested. No credentials were rotated.
+PLAY-SIGNED OAUTH CONFIG: PASS for saved registration. After explicit owner
+approval on 13 October, both verified Play certificates were registered as
+Android clients in the existing Google project for `com.nazraa.live`. Existing
+direct-APK/Web clients, credentials and scopes are unchanged. Actual repeated
+Google login testing remains a separate gate, not implied by configuration PASS.
 
 PK LEFT FALSE RECONNECT: source/widget fix passed; real two-Host QA unverified.
 PK VIDEO STABILITY: real two-Host QA unverified. Owner explicitly declined
@@ -103,8 +104,18 @@ or rewards were deleted.
   `37:B9:D1:63:4F:8C:6E:77:9E:48:BE:B8:2F:2D:54:1E:E9:84:51:78`;
   previous hybrid-classical SHA-1 is
   `3A:7C:63:9C:F0:7C:66:EF:A2:24:D1:BC:A7:3A:53:12:F0:46:9E:6E`.
-  Existing Android OAuth is only the upload/direct-APK SHA-1
+  Initially the only Android OAuth was the upload/direct-APK SHA-1
   `24:84:A4:B2:29:C4:23:DA:7D:E2:90:D2:1B:6A:55:F9:72:C2:40:13`.
+- After explicit approval, created and verified the two Android registrations
+  in `project-d05b0bc6-09c1-40bd-a3a`, both for `com.nazraa.live`:
+  `Nazraa Play signing current` →
+  `615422217131-t9b5so9opnc8q48idp89st2gm405kth8.apps.googleusercontent.com`;
+  `Nazraa Play signing hybrid classical` →
+  `615422217131-c3d2r8cimidq8gc4lihlbfotiph7fd2r.apps.googleusercontent.com`.
+  Saved current fingerprint was reread from its detail view. Both clients are
+  present in the list alongside the unchanged direct-APK and Web clients.
+  Public client IDs are not secrets; no secret was downloaded or rotated.
+  Screenshot: `play-oauth-registered-20261013.jpg` (local evidence only).
 - Existing OCI Cloud Shell RSA identity reaches the production replacement VM.
   No firewall, IAM, credential or paid-resource expansion was necessary.
   Running LiveKit is `v1.13.7`, host networking, zero container restarts since
@@ -117,6 +128,11 @@ or rewards were deleted.
   and exited `LIVEKIT_RESTART_DEFERRED` with 11 participants connected. No
   restart or permanent background job was left running. Activation still
   requires a safe idle window; real users were not disconnected for this fix.
+- A subsequent one-shot activation check still found 9 participants and 7
+  publishers; restart deferred again. Valid signature 202 and all three invalid
+  probes 404 passed against the deployed timestamp-fix receiver. The owner
+  approved an additional temporary /32 SSH rule, but it was unnecessary and
+  was not created because existing Cloud Shell SSH works.
 - Actual signed VPS connectivity probe: valid 202; bad signature, tampered body
   and expired token each 404. Probe uses an unsupported empty event and creates
   no media/reward record. These tests do not substitute for real provider delivery.
@@ -130,8 +146,15 @@ or rewards were deleted.
   internal profile APK built and installed on emulator-5554; this is not a
   newly distributed APK/AAB and does not establish new runtime QA by itself.
 
-REMAINING: approval for the two Play Android OAuth registrations; safe activation
-and actual signed-provider delivery of the staged webhook; twenty real Google
+REMAINING: safe activation and actual signed-provider delivery of the staged
+webhook; twenty real Google
 login scenarios and measured Android startup/Home/Face latency. Two-Host PK
 runtime remains explicitly unverified, with further account waiting waived by
 the owner. Public release stays 2.4.77+7389, not newly certified/replaced.
+
+OAuth audience is still External/Testing with no manually configured scopes or
+test users. Mobile uses only Google Sign-In identity authentication, not Gmail,
+Drive or other API-scope authorization. Google's [documented basic-identity
+exception](https://support.google.com/cloud/answer/15549945?hl=en) permits that
+flow without a test-user allowlist; this is not evidence of a successful new
+Play-signed login. Publishing mode/branding were not changed in this update.
