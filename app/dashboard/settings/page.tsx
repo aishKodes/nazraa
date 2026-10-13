@@ -1,3 +1,6 @@
+import { getStartupCampaign } from "@/lib/db/repositories/startup-campaign";
+import { StartupCampaignControls } from "@/components/startup-campaign-controls";
+import { publishFaceQuality } from "@/app/media-product-actions";
 import { LockKeyhole, ShieldCheck } from "lucide-react";
 import {
   submitCommerceSettings,
@@ -30,6 +33,7 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ error?: string; success?: string }> }) {
   const scope = await requirePermission("settings.manage");
   const isMaster = scope.account.role === "MASTER";
+  const startupCampaign = isMaster ? await getStartupCampaign() : null;
   const [{ error, success }, settings, completion, liveRewardDiagnostics, faceStartDiagnostics] = await Promise.all([
     searchParams,
     getSystemSettings(),
@@ -37,6 +41,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     isMaster ? getLiveRewardDiagnostics(30) : Promise.resolve(null),
     isMaster ? getFaceLiveStartOutcomeDiagnostics(30) : Promise.resolve(null),
   ]);
+  const mediaFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as Record<string, unknown> | undefined;
+  const faceQuality = mediaFeatures?.faceQuality as Record<string, unknown> | undefined;
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
@@ -115,6 +121,22 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </Card>
     </div>
 
+    {isMaster && <Card className="settings-card">
+      <div className="card-title"><div><h2>Launch Media / Startup Campaign</h2><p>Brief cached creative. Never blocks authentication or startup on network downloads.</p></div></div>
+      <StartupCampaignControls campaign={startupCampaign} />
+    </Card>}
+    {isMaster && <Card className="settings-card">
+      <div className="card-title"><div><h2>LiveKit Face quality / Beauty</h2><p>720p by default. Changes apply on the next room join; no media restart or economy change.</p></div></div>
+      <form action={publishFaceQuality} className="form-grid">
+        <label>Quality V2<select name="enabled" defaultValue={String(faceQuality?.enabled !== false)}><option value="true">Enabled</option><option value="false">Rollback: existing 2.7 Mbps VP8</option></select></label>
+        <label>Codec<select name="codec" defaultValue={String(faceQuality?.codec ?? "VP8")}><option>AUTO</option><option>VP8</option><option>H264</option></select></label>
+        {[["highBitrate", "HIGH max bps", 3500000, 2400000, 3500000], ["mediumBitrate", "MEDIUM max bps", 2700000, 2000000, 2800000], ["lowBitrate", "Congested max bps", 1500000, 800000, 2000000], ["highFps", "HIGH FPS", 30, 24, 30], ["mediumFps", "MEDIUM FPS", 24, 20, 30]].map(([key, label, fallback, min, max]) => <label key={String(key)}>{label}<input name={String(key)} type="number" required min={Number(min)} max={Number(max)} defaultValue={Number(faceQuality?.[String(key)] ?? fallback)} /></label>)}
+        <label>Native beauty intensity scale<input name="beautyScale" type="number" step=".05" min="0" max="1.4" required defaultValue={Number(mediaFeatures?.naturalBeautyScale ?? 1)} /></label>
+        <label>Audio Room seats-first layout<select name="audioRoomLayoutV2" defaultValue={String(mediaFeatures?.audioRoomLayoutV2 !== false)}><option value="true">Enabled: compact chat</option><option value="false">Rollback: expanded inline chat</option></select></label>
+        <label className="span-two">Reason<input name="reason" minLength={5} maxLength={500} required /></label>
+        <button className="primary-button">Save media quality</button>
+      </form>
+    </Card>}
     <Card className="settings-card">
       <div className="card-title"><div><h2>Withdrawal economics</h2><p>Applied only when a withdrawal is completed. Historic payout snapshots never change.</p></div></div>
       <form action={submitWithdrawalEconomy} className="form-grid">

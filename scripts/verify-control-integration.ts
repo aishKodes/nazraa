@@ -56,6 +56,17 @@ async function main() {
     const masterAccount = await accounts.accountByManagementId("100001");
     assert.ok(masterAccount);
     const master = await accounts.scopeFor(masterAccount);
+    const startup = await import("@/lib/db/repositories/startup-campaign");
+    assert.equal(await startup.saveStartupCampaign(master, {enabled:false, durationMs:1500, kind:"IMAGE"}), null);
+    const campaignImage = await sharp({create:{width:360,height:640,channels:3,background:'#371773'}}).png().toBuffer();
+    const campaign = await startup.saveStartupCampaign(master, {enabled:true,durationMs:1500,kind:"IMAGE",file:new File([new Uint8Array(campaignImage)],"qa-startup.png",{type:"image/png"})});
+    assert.ok(campaign?.enabled && campaign.checksum.length === 64);
+    const [campaignAssets] = await root.query<RowDataPacket[]>("SELECT byte_size, image_data FROM startup_campaign_assets WHERE id = ?",[campaign.assetId]);
+    assert.equal(createHash("sha256").update(campaignAssets[0].image_data).digest("hex"),campaign.checksum);
+    const disabledCampaign = await startup.saveStartupCampaign(master, {enabled:false,durationMs:1500,kind:"IMAGE"});
+    assert.equal(disabledCampaign?.enabled,false);
+    assert.equal(disabledCampaign?.assetId,campaign.assetId);
+    passed++;
     // Exercise the deployment-only config alignment on an existing legacy
     // setting, not just an empty newly provisioned database. It must be
     // replay-safe and must never replace unrelated media/economy config.

@@ -1,4 +1,5 @@
 import "server-only";
+import { saveOwnerRoomProfile } from "./room-profile";
 import { publicApiOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 
 import { randomInt, randomUUID } from "crypto";
@@ -976,6 +977,8 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, business_date, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?)",
       [randomUUID(), roomId, identity.userId, roomType, businessDateFor(liveRules.timezone), rewardRuleRows[0].id],
     );
+    await connection.execute("UPDATE live_session_accounting SET presentation_snapshot = ? WHERE room_id = ? AND presentation_snapshot IS NULL", [JSON.stringify({ title: input.title, themeIndex: input.themeIndex, themeEnabled: input.themeEnabled, seatCount: input.seatCount }), roomId]);
+    if (roomType === "PARTY") await saveOwnerRoomProfile(connection, identity.userId, input);
     await connection.execute(
       "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', ?, FALSE)",
       [roomId, identity.userId, roomType === "PARTY" ? "PARTY_OWNER" : "HOST"],

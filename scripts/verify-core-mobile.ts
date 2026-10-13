@@ -19,8 +19,10 @@ registerHooks({
 
 async function main() {
   const database = `nazraa_mobile_qa_${Date.now()}`;
+  const port = Number(process.env.NAZRAA_LOCAL_QA_DB_PORT ?? 3306);
   const root = await mysql.createConnection({
     host: "127.0.0.1",
+    port,
     user: "root",
     multipleStatements: true,
   });
@@ -30,6 +32,7 @@ async function main() {
   await root.query(`USE \`${database}\``);
   global.nazraaPool = mysql.createPool({
     host: "127.0.0.1",
+    port,
     user: "root",
     database,
     decimalNumbers: true,
@@ -433,6 +436,11 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if (process.env.NAZRAA_QA_ONLY_AUDIO === "1") {
+      const audioUpgrade = await import("./audio-room-upgrade-tests");
+      await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
+      return;
+    }
     const faceMaster = await import("./face-live-master-tests");
     await faceMaster.verifyFaceLiveMaster(root, user, owner);
     const guest = await user("QA Audience");
@@ -3174,20 +3182,35 @@ async function main() {
         | "greedy_lion",
       bets: Record<string, number>,
     ) {
-      const before = await product.gameSharedRoundState(owner, game);
+      let before = await product.gameSharedRoundState(owner, game);
       // The QA call can land during DRAWING/RESULT. Keep this deterministic
       // without sleeping by reopening only this temporary database round.
-      await root.execute(
+      let requestId = randomUUID();
+      let placed: Awaited<ReturnType<typeof product.placeSharedGameBets>> | undefined;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await root.execute(
         "UPDATE game_shared_rounds SET betting_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 30 SECOND), drawing_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 31 SECOND), result_ends_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 32 SECOND) WHERE id = ?",
         [before.round.id],
       );
-      const requestId = randomUUID();
-      const placed = await product.placeSharedGameBets(owner, {
-        requestId,
-        game,
-        roundId: before.round.id,
-        bets,
-      });
+        try {
+          placed = await product.placeSharedGameBets(owner, {
+            requestId, game, roundId: before.round.id, bets,
+          });
+          break;
+        } catch (error) {
+          // Fixture-only: the global clock can advance N+1 between our read
+          // and command. Confirm the rejected command left no durable debit.
+          // Production's stale-round rejection remains unchanged.
+          if (!(error instanceof Error) || !/Betting has closed/.test(error.message)) throw error;
+          const [receipts] = await root.query<RowDataPacket[]>(
+            "SELECT id FROM game_shared_bet_requests WHERE request_id = ?", [requestId]);
+          assert.equal(receipts.length, 0, "Rejected stale QA round must roll back");
+          if (attempt === 2) throw error;
+          before = await product.gameSharedRoundState(owner, game);
+          requestId = randomUUID();
+        }
+      }
+      assert.ok(placed, "QA fixture must place a fresh authoritative bet");
       const repeated = await product.placeSharedGameBets(owner, {
         requestId,
         game,
@@ -5082,6 +5105,9 @@ async function main() {
     console.log(
       "PASS Agency lifecycle: owners remain Hosts; own Agency authorizes Live; male and female owners get the same once-daily 3,500 reward; membership lifecycle and Master approval preserved",
     );
+
+    const audioUpgrade = await import("./audio-room-upgrade-tests");
+    await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
 
     if (process.env.NAZRAA_QA_KEEP === "1") {
       const fixtures = [];

@@ -55,3 +55,14 @@ export async function publishRoomRealtimeEvent(
     // apparent failure that a client might retry. HTTP reconciliation remains.
   }
 }
+
+/** Canonical small presentation delta; older clients see the same settings invalidation. */
+export async function publishRoomConfigEvent(config: {roomCode: string; version: number; title: string; seatCount: number; themeIndex: number; themeEnabled: boolean}) {
+  try {
+    const redis = await roomRedis();
+    await redis?.publish(`room:${config.roomCode}`, JSON.stringify({
+      type: "ROOM_CHANGED", event: "ROOM_CONFIG_UPDATED", topic: "settings",
+      roomCode: config.roomCode, serverNow: Date.now(), config,
+    }));
+  } catch { /* Durable config wins; reconnect/narrow reconciliation repairs delivery. */ }
+}

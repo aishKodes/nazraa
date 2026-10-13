@@ -137,6 +137,8 @@ import {
 } from "@/lib/db/repositories/mobile-safety";
 
 export const dynamic = "force-dynamic";
+import { ownerRoomProfile, roomPresentation } from "@/lib/db/repositories/room-profile";
+import { publishRoomConfigEvent } from "@/lib/services/room-realtime-events";
 import { faceLiveSocial, invalidateFaceLiveSocial } from "@/lib/db/repositories/face-live-social";
 
 // These routes run on the media critical path and can be called every two
@@ -147,6 +149,8 @@ const mediaCriticalResources = new Set([
   "room-join",
   "pk-battle",
   "face-live-social",
+  "room-profile",
+  "room-config",
   "room-presence",
   "room-media-bootstrap",
 ]);
@@ -1294,6 +1298,11 @@ export async function POST(
         }
         return NextResponse.json(result);
       }
+      if (resource === "room-profile") return NextResponse.json(await ownerRoomProfile(identity));
+      if (resource === "room-config") {
+        const parsed = z.object({roomCode: z.string().trim().min(3).max(80)}).parse(body);
+        return NextResponse.json(await roomPresentation(identity, parsed.roomCode));
+      }
       if (resource === "face-live-social") {
         const parsed = z.object({ roomCode: z.string().trim().min(3).max(80) }).parse(body);
         return NextResponse.json(await faceLiveSocial(identity, parsed.roomCode), { headers: { "Cache-Control": "private, no-store" } });
@@ -1477,6 +1486,8 @@ export async function POST(
         const parsed = z
           .object({
             roomCode: z.string().trim().min(3).max(80),
+            title: z.string().trim().min(3).max(80).optional(),
+            seatCount: z.union([z.literal(8), z.literal(10), z.literal(20)]).optional(),
             themeIndex: z.number().int().min(0).max(20).optional(),
             themeEnabled: z.boolean().optional(),
             pkRequestsEnabled: z.boolean().optional(),
@@ -1492,7 +1503,7 @@ export async function POST(
           })
           .parse(body);
         const result = await updateRoomSettings(identity, parsed);
-        notifyRoom(parsed.roomCode, "settings");
+        await publishRoomConfigEvent(result);
         return NextResponse.json(result);
       }
       if (resource === "room-chat") {

@@ -1,4 +1,5 @@
 import "server-only";
+import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomUUID } from "crypto";
@@ -333,6 +334,7 @@ function roomMediaDelivery(
       passivePlaybackResourceMode: "cdn" as const,
       viewerTransport: "livekit" as const,
       faceSingleLayer720Enabled: features.faceSingleLayer720Enabled !== false,
+      faceQuality: jsonObject(features.faceQuality),
       naturalBeauty: {
         enabled:
           settingEnabled(features.nazraaNaturalBeautyEnabled) ||
@@ -340,6 +342,7 @@ function roomMediaDelivery(
             settingEnabled(features.nazraaNaturalBeautyReviewerQaEnabled)),
         landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
         defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
+        intensityScale: Math.max(0, Math.min(1.4, Number(features.naturalBeautyScale ?? 1))),
       },
       playbackProtocol: "livekit" as const,
       passiveEventDelaySeconds: 0,
@@ -2109,8 +2112,15 @@ export async function refreshRoomPresence(
   // keys. A concurrent MariaDB ER_CHECKREAD must roll back the whole attempt
   // before retrying, never demote a valid Guest because a snapshot raced.
   const presence = await withIdempotentTransaction(async (connection) => {
+    if (serializedPresence) {
+      const [roomLocks] = await connection.query<RowDataPacket[]>('SELECT id FROM live_rooms WHERE room_code = ? LIMIT 1 FOR UPDATE', [roomCode]);
+      if (roomLocks[0]) {
+        await connection.query('SELECT application_user_id FROM live_room_members WHERE room_id = ? AND application_user_id = ? FOR UPDATE', [roomLocks[0].id, identity.userId]);
+        await connection.query("SELECT id FROM live_session_accounting WHERE room_id = ? AND status = 'ACTIVE' FOR UPDATE", [roomLocks[0].id]);
+      }
+    }
     const [rows] = await connection.query<RowDataPacket[]>(
-      `SELECT room.id, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
+      `SELECT room.id, room.title, room.seat_count, room.config_version, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.seat_session_id, member.seat_version,
               EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = member.application_user_id) is_face_admin,
               member.muted, member.muted_by_staff,
@@ -2149,7 +2159,7 @@ export async function refreshRoomPresence(
        LEFT JOIN host_reward_rules reward_rule ON reward_rule.id = accounting.reward_rule_id
        LEFT JOIN system_settings room_features ON room_features.setting_key = 'mobile.room_features'
        LEFT JOIN live_media_mix_tasks mixer ON mixer.room_id = room.id
-       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1${serializedPresence ? " FOR UPDATE" : ""}`,
+       WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') LIMIT 1`,
       [identity.userId, roomCode],
     );
     if (!rows[0]) {
@@ -2869,6 +2879,9 @@ export async function refreshRoomPresence(
       chatLocked: Boolean(rows[0].chat_locked),
       themeIndex: Number(rows[0].theme_index),
       themeEnabled: Boolean(rows[0].theme_enabled),
+      title: String(rows[0].title),
+      seatCount: Number(rows[0].seat_count),
+      configVersion: Number(rows[0].config_version),
       audioJoinRequestsEnabled: Boolean(rows[0].audio_join_requests_enabled),
       liveRewardProgress:
         rows[0].room_role === "OWNER" &&
@@ -4135,6 +4148,8 @@ export async function updateRoomSettings(
   identity: MobileIdentity,
   input: {
     roomCode: string;
+    title?: string;
+    seatCount?: number;
     themeIndex?: number;
     themeEnabled?: boolean;
     pkRequestsEnabled?: boolean;
@@ -4150,6 +4165,11 @@ export async function updateRoomSettings(
     const [rows] = await connection.query<
       (RowDataPacket & {
         room_id: string;
+        host_id: string;
+        title: string;
+        seat_count: number;
+        room_type: string;
+        config_version: number;
         actor_role: string;
         theme_index: number;
         theme_enabled: number;
@@ -4161,7 +4181,7 @@ export async function updateRoomSettings(
         top_application_user_id: string | null;
       })[]
     >(
-      `SELECT room.id room_id, member.room_role actor_role, room.theme_index, room.chat_locked,
+      `SELECT room.id room_id, room.host_application_user_id host_id, room.title, room.seat_count, room.room_type, room.config_version, member.room_role actor_role, room.theme_index, room.chat_locked,
               room.password_hash, room.password_length, room.theme_enabled, room.pk_requests_enabled, room.audio_join_requests_enabled, room.top_application_user_id
        FROM live_rooms room INNER JOIN live_room_members member ON member.room_id = room.id
          AND member.application_user_id = ? AND member.left_at IS NULL
@@ -4183,6 +4203,16 @@ export async function updateRoomSettings(
       !/^(\d{4}|\d{6}|\d{10})$/.test(input.password)
     )
       throw new Error("Use a 4, 6, or 10 digit room password.");
+    if ((input.title != null || input.seatCount != null) && room.room_type !== 'PARTY') throw new Error('Room appearance is available for Audio Rooms.');
+    if (input.seatCount != null) {
+      const [occupied] = await connection.query<RowDataPacket[]>('SELECT seat_index FROM live_room_members WHERE room_id = ? AND left_at IS NULL AND seat_index IS NOT NULL FOR UPDATE', [room.room_id]);
+      assertSafeAudioLayout(input.seatCount, occupied.map((row) => Number(row.seat_index)));
+    }
+    const title = input.title ?? room.title;
+    const seatCount = input.seatCount ?? Number(room.seat_count);
+    const version = Number(room.config_version) + 1;
+    // Initial presentation is immutable even when current room settings change.
+    await connection.execute('UPDATE live_session_accounting SET presentation_snapshot = ? WHERE room_id = ? AND presentation_snapshot IS NULL', [JSON.stringify({title: room.title, seatCount: Number(room.seat_count), themeIndex: Number(room.theme_index), themeEnabled: Boolean(room.theme_enabled)}), room.room_id]);
     const passwordHash = input.removePassword
       ? null
       : input.password
@@ -4209,10 +4239,11 @@ export async function updateRoomSettings(
       topUserId = topRows[0].id;
     }
     await connection.execute(
-      `UPDATE live_rooms SET theme_index = ?, theme_enabled = ?, pk_requests_enabled = ?, audio_join_requests_enabled = ?, chat_locked = ?, password_hash = ?, password_length = ?, top_application_user_id = ?,
+      `UPDATE live_rooms SET title = ?, seat_count = ?, config_version = ?, theme_index = ?, theme_enabled = ?, pk_requests_enabled = ?, audio_join_requests_enabled = ?, chat_locked = ?, password_hash = ?, password_length = ?, top_application_user_id = ?,
          privacy = IF(? IS NULL, IF(privacy = 'LOCKED', 'PUBLIC', privacy), 'LOCKED')
        WHERE id = ?`,
       [
+        title, seatCount, version,
         input.themeIndex ?? Number(room.theme_index),
         input.themeEnabled ?? Boolean(room.theme_enabled),
         input.pkRequestsEnabled ?? Boolean(room.pk_requests_enabled),
@@ -4226,7 +4257,9 @@ export async function updateRoomSettings(
         room.room_id,
       ],
     );
+    if (room.room_type === 'PARTY') await saveOwnerRoomProfile(connection, room.host_id, {title, seatCount, themeIndex: input.themeIndex ?? Number(room.theme_index), themeEnabled: input.themeEnabled ?? Boolean(room.theme_enabled)});
     return {
+      roomCode: input.roomCode, version, title, seatCount,
       themeIndex: input.themeIndex ?? Number(room.theme_index),
       themeEnabled: input.themeEnabled ?? Boolean(room.theme_enabled),
       pkRequestsEnabled:
