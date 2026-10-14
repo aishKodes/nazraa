@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS party_board_seat_segments (
   ended_at DATETIME(3) NULL,
   end_reason VARCHAR(64) NULL,
   active_key VARCHAR(73) GENERATED ALWAYS AS
-    (IF(ended_at IS NULL,CONCAT(room_id,':',application_user_id),NULL)) STORED,
+    (IF(ended_at IS NULL,CONCAT(RTRIM(room_id),':',RTRIM(application_user_id)),NULL)) STORED,
   UNIQUE KEY uq_party_board_active (active_key),
   INDEX idx_party_board_user_start (application_user_id,started_at),
   INDEX idx_party_board_room_end (room_id,ended_at),

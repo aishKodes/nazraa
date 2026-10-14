@@ -14,4 +14,4 @@
     const [adopted]=await c.query('SELECT COUNT(*) total FROM party_board_seat_segments');
     console.log(JSON.stringify({schema:'0101',adoptedCurrentSeats:Number(adopted[0].total),pastTimeInvented:false,economyMediaRulesUnchanged:true}));
   }finally{await c.end();}
-})().catch(error=>{console.log('SCOPED_MIGRATION_FAILED',error.code||'GUARD_FAILED');process.exitCode=1;});
+})().catch(error=>{console.log('SCOPED_MIGRATION_FAILED',['UNEXPECTED_SCHEMA','UNEXPECTED_RULE_CHANGE'].includes(error.message)?error.message:{name:error.name,code:error.code,errno:error.errno,sqlState:error.sqlState});process.exitCode=1;});
