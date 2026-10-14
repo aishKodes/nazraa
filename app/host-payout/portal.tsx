@@ -1,6 +1,7 @@
 "use client";
 import Script from "next/script";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { payoutJsonRequest, payoutUiMessage } from "@/lib/client/payout-request";
 type PayoutData = {
   host: { id: string; name: string };
   availableDiamonds: number;
@@ -58,17 +59,20 @@ export default function HostPayoutPortal() {
   const button = useRef<HTMLDivElement>(null),
     requestIdentity = useRef<string | null>(null);
   const load = useCallback(async () => {
+    setError("");
     try {
-      const r = await fetch("/api/host-payout", { cache: "no-store" }),
-        v = await r.json();
-      if (!r.ok) throw new Error(v.message);
+      const v = await payoutJsonRequest<{
+        data: PayoutData | null;
+        challenge: { csrf: string; nonce: string };
+        googleClientId: string;
+      }>("/api/host-payout", { cache: "no-store" }, "Could not load Host payouts. Please retry.");
       setData(v.data);
       setCsrf(v.challenge.csrf);
       setNonce(v.challenge.nonce);
       setClient(v.googleClientId);
       setLoaded(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load Host payouts.");
+      setError(payoutUiMessage(e, "Could not load Host payouts. Please retry."));
       setLoaded(true);
     }
   }, []);
@@ -80,17 +84,14 @@ export default function HostPayoutPortal() {
       setBusy(true);
       setError("");
       try {
-        const r = await fetch("/api/host-payout", {
+        return await payoutJsonRequest("/api/host-payout", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Nazraa-Csrf": csrf,
           },
           body: JSON.stringify(payload),
-        });
-        const v = await r.json();
-        if (!r.ok) throw new Error(v.message);
-        return v;
+        }, "This action could not be completed. Please retry.");
       } finally {
         setBusy(false);
       }
@@ -101,7 +102,7 @@ export default function HostPayoutPortal() {
     const google = (window as unknown as { google?: GoogleApi }).google;
     if (!ready || !google || !client || !nonce || data || !button.current)
       return;
-    button.current.replaceChildren();
+    const node = button.current;
     google.accounts.id.initialize({
       client_id: client,
       nonce,
@@ -109,15 +110,26 @@ export default function HostPayoutPortal() {
       callback: (v) => {
         void action({ action: "login", credential: v.credential })
           .then(() => load())
-          .catch((e) => setError(e.message));
+          .catch((e) => setError(payoutUiMessage(e, "Sign-in could not complete. Please retry.")));
       },
     });
-    google.accounts.id.renderButton(button.current, {
-      theme: "outline",
-      size: "large",
-      text: "signin_with",
-      width: 280,
-    });
+    let renderedWidth = 0;
+    const render = () => {
+      const width = Math.max(200, Math.min(280, Math.floor(node.clientWidth)));
+      if (width === renderedWidth) return;
+      renderedWidth = width;
+      node.replaceChildren();
+      google.accounts.id.renderButton(node, {
+        theme: "outline",
+        size: "large",
+        text: "signin_with",
+        width,
+      });
+    };
+    render();
+    const observer = new ResizeObserver(render);
+    observer.observe(node);
+    return () => observer.disconnect();
   }, [ready, client, nonce, data, action, load]);
   async function submit(
     e: React.FormEvent<HTMLFormElement>,
@@ -156,9 +168,7 @@ export default function HostPayoutPortal() {
       await load();
     } catch (e) {
       setError(
-        e instanceof Error
-          ? e.message
-          : "Could not complete this action. Please retry.",
+        payoutUiMessage(e, "Could not complete this action. Please retry."),
       );
     }
   }
@@ -179,7 +189,7 @@ export default function HostPayoutPortal() {
             onClick={() => {
               void action({ action: "logout" })
                 .then(load)
-                .catch((e) => setError(e.message));
+                .catch((e) => setError(payoutUiMessage(e, "Sign-out could not complete. Please retry.")));
             }}
           >
             Sign out

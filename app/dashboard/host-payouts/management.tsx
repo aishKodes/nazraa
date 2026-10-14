@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { payoutJsonRequest, payoutUiMessage } from "@/lib/client/payout-request";
 type Row = {
   id: string;
   requestId: string;
@@ -58,15 +59,14 @@ export default function PayoutManagement() {
     [destination, setDestination] = useState(""),
     [notice, setNotice] = useState("");
   const load = useCallback(async () => {
+    setError("");
     try {
-      const r = await fetch(`/api/host-payout-management?${query}`, {
+      const v = await payoutJsonRequest<Data>(`/api/host-payout-management?${query}`, {
           cache: "no-store",
-        }),
-        v = await r.json();
-      if (!r.ok) throw new Error(v.message);
+        }, "Could not load payouts. Please retry.");
       setData(v);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not load payouts.");
+      setError(payoutUiMessage(e, "Could not load payouts. Please retry."));
     }
   }, [query]);
   useEffect(() => {
@@ -76,19 +76,17 @@ export default function PayoutManagement() {
     setBusy(true);
     setError("");
     try {
-      const r = await fetch("/api/host-payout-management", {
+      await payoutJsonRequest("/api/host-payout-management", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
-        }),
-        v = await r.json();
-      if (!r.ok) throw new Error(v.message);
+        }, "Could not save payout. Please retry.");
       setNotice("Saved. Accounting snapshot and audit history preserved.");
       await load();
       setSelected(null);
       setDestination("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save payout.");
+      setError(payoutUiMessage(e, "Could not save payout. Please retry."));
     } finally {
       setBusy(false);
     }
@@ -280,16 +278,15 @@ export default function PayoutManagement() {
           <button
             disabled={busy}
             onClick={() => {
-              void fetch(
+              void payoutJsonRequest<{ destination: string }>(
                 `/api/host-payout-management?destination=${selected.id}`,
                 { cache: "no-store" },
+                "Could not load the secure account. Please retry.",
               )
-                .then(async (r) => {
-                  const v = await r.json();
-                  if (!r.ok) throw new Error(v.message);
+                .then((v) => {
                   setDestination(v.destination);
                 })
-                .catch((e) => setError(e.message));
+                .catch((e) => setError(payoutUiMessage(e, "Could not load the secure account. Please retry.")));
             }}
           >
             View secure account snapshot
