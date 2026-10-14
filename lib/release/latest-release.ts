@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.79";
-const releaseBuild = 7391;
+const releaseVersion = "2.4.80";
+const releaseBuild = 7392;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.79/Nazraa-Live-2.4.79-7391-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.80/Nazraa-Live-2.4.80-7392-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,14 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 224_277_953,
-  sha256: "1f117d59c3d50d3ccaee59084d2f5429c28821b77180651a1ebdf5faa697757b",
+  apkSizeBytes: 224_310_925,
+  sha256: "44f670dcb7baa887ab4129e7657859019531d047751dfcc4358cf46960210bcb",
   releaseDate: "2026-10-14",
   releaseNotes: [
-    "Hardens LiveKit media recovery and repairs the native beauty frame pool without changing reward rules.",
-    "Saves Audio Room names, themes and layouts; adds live appearance editing, local room sound and shared supporter rankings.",
-    "Fixes Gift catalog refresh and supports brief cached startup campaigns controlled by Master.",
-    "Removes ZEGO mobile SDK dependencies; the existing LiveKit infrastructure remains unchanged.",
+    "Repairs Agency removal, same-Agency rejoin and transfer requests without deleting Host history.",
+    "Adds durable Party Board History with daily time, valid days, monthly targets and session details.",
+    "Preserves existing LiveKit media, Live rewards, games, Gifts and mobile cash-out restrictions.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
