@@ -1283,6 +1283,11 @@ async function main() {
     await rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:false});
     assert.equal((await rooms.refreshRoomPresence(roomAdmin,roomCode)).roomRole,'audience');
     await rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:true});
+    for(let attempt=0;attempt<10;attempt++) {
+      await Promise.all([rooms.joinLiveRoom(roomAdmin,roomCode),rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:false})]);
+      assert.equal((await rooms.refreshRoomPresence(roomAdmin,roomCode)).roomRole,'audience','a concurrent join must not resurrect a revoked Admin grant');
+      await rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:true});
+    }
     console.log('PASS persistent Party Admin: +25h/+7d, stale member/relogin/restart/reentry fixtures, Admin Leave Seat, manual revoke, owner-only grant, atomic two-user seat race; global expirations unchanged.');
 
     // Kick Out is a scoped room block. It must close this membership and media

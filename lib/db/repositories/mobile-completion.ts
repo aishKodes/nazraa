@@ -1399,7 +1399,7 @@ export async function joinLiveRoom(
 ) {
   const access = LiveAccessPolicyService.for(identity).join;
   if (!access.allowed) throw new Error(access.reason);
-  return withTransaction(async (connection) => {
+  return withIdempotentTransaction(async (connection) => {
     const [rooms] = await connection.query<
       (RowDataPacket & {
         id: string;
@@ -1452,8 +1452,10 @@ export async function joinLiveRoom(
     let requestedRole =
       room.host_application_user_id === identity.userId ? "OWNER" : "AUDIENCE";
     if(room.room_type==='PARTY' && requestedRole!=='OWNER') {
-      const [admins]=await connection.query<RowDataPacket[]>('SELECT 1 FROM party_room_admins WHERE room_id=? AND application_user_id=? AND revoked_at IS NULL',[room.id,identity.userId]);
-      if(admins.length) requestedRole='ADMIN';
+      // Lock the canonical grant until the membership upsert commits. A
+      // concurrent manual revoke must not be overwritten by a stale join.
+      const [admins]=await connection.query<RowDataPacket[]>('SELECT revoked_at FROM party_room_admins WHERE room_id=? AND application_user_id=? FOR UPDATE',[room.id,identity.userId]);
+      if(admins.length && admins[0].revoked_at==null) requestedRole='ADMIN';
     }
     const requestedMediaRole =
       room.room_type === "PARTY"
@@ -1481,7 +1483,7 @@ export async function joinLiveRoom(
         requestedRole === "AUDIENCE",
       ],
     );
-    if(room.room_type==='PARTY' && requestedRole==='ADMIN') await connection.execute("UPDATE live_room_members SET room_role='ADMIN' WHERE room_id=? AND application_user_id=?",[room.id,identity.userId]);
+    if(room.room_type==='PARTY' && requestedRole!=='OWNER') await connection.execute("UPDATE live_room_members SET room_role=IF(?='ADMIN','ADMIN',IF(seat_index IS NULL,'AUDIENCE','SPEAKER')) WHERE room_id=? AND application_user_id=?",[requestedRole,room.id,identity.userId]);
     const [members] = await connection.query<
       (RowDataPacket & { room_role: string; media_role: string;seat_index:number|null;seat_session_id:string|null })[]
     >(
@@ -3536,7 +3538,7 @@ export async function setRoomAdmin(
   identity: MobileIdentity,
   input: { roomCode: string; targetPublicId: string; makeAdmin: boolean },
 ) {
-  return withTransaction(async (connection) => {
+  return withIdempotentTransaction(async (connection) => {
     const [rooms] = await connection.query<
       (RowDataPacket & {
         id: string;
