@@ -377,24 +377,25 @@ export default function HostPayoutPortal() {
           max-width: 1160px;
           margin: auto;
           padding: 28px 20px 60px;
-          color: #eee8ff;
+          min-height: 100vh;
+          color: #241734;
         }
         header {
           display: flex;
           gap: 24px;
           align-items: center;
           flex-wrap: wrap;
-          border-bottom: 1px solid #423354;
+          border-bottom: 1px solid #ddd5e5;
           padding-bottom: 20px;
         }
         header a {
           font-weight: 900;
-          color: #eea5da;
+          color: #9d286f;
           text-decoration: none;
         }
         header span {
           flex: 1;
-          color: #c4b8d4;
+          color: #665875;
           font-size: 14px;
         }
         h1 {
@@ -408,7 +409,7 @@ export default function HostPayoutPortal() {
           padding: 32px 0;
         }
         .eyebrow {
-          color: #eea5da;
+          color: #9d286f;
           letter-spacing: 3px;
           font-size: 12px;
           font-weight: 800;
@@ -418,6 +419,7 @@ export default function HostPayoutPortal() {
           border: 1px solid #4b385c;
           border-radius: 20px;
           background: #21172e;
+          color: #eee8ff;
           margin-bottom: 20px;
         }
         .metrics,
@@ -438,8 +440,14 @@ export default function HostPayoutPortal() {
         .metrics span,
         p,
         small {
-          color: #c9bfd5;
+          color: #62526f;
           line-height: 1.6;
+        }
+        .panel p,
+        .panel small,
+        .panel span,
+        .panel label {
+          color: #d1c5df;
         }
         label {
           display: grid;
@@ -476,6 +484,7 @@ export default function HostPayoutPortal() {
           padding: 16px;
           border-radius: 12px;
           background: #253e35;
+          color: #f5f0fa;
         }
         .error {
           background: #562b3b;
@@ -500,9 +509,12 @@ export default function HostPayoutPortal() {
         }
         footer {
           margin-top: 30px;
-          color: #c9bfd5;
+          color: #62526f;
         }
         a {
+          color: #9d286f;
+        }
+        .panel a {
           color: #efbddd;
         }
         @media (max-width: 700px) {
