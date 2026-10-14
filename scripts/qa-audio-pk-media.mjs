@@ -40,7 +40,8 @@ async function received(label){for(let i=0;i<30;i++){if((counts.get(label)?.ener
 try{
  for(const name of roomNames)await admin.createRoom({name,emptyTimeout:60,maxParticipants:20});
  const red=await join(roomNames[0],'qa-red-host',true),redSeat=await join(roomNames[0],'qa-red-seat',true),blue=await join(roomNames[1],'qa-blue-host',true),blueSeat=await join(roomNames[1],'qa-blue-seat',true);
- const redHostPub=await publish(red,330),redSeatPub=await publish(redSeat,440),blueHostPub=await publish(blue,550),blueSeatPub=await publish(blueSeat,660);
+ const redHostPub=await publish(red,330),redSeatPub=await publish(redSeat,440),blueHostPub=await publish(blue,550);
+ let blueSeatPub=await publish(blueSeat,660);
  await join(roomNames[0],'qa-red-listener',false);await join(roomNames[1],'qa-blue-listener',false);
  await join(roomNames[1],'apk:qa-red-opponent-bridge',false);await join(roomNames[0],'apk:qa-blue-opponent-bridge',false);
  for(const label of ['apk:qa-red-opponent-bridge<-qa-blue-host','apk:qa-red-opponent-bridge<-qa-blue-seat','apk:qa-blue-opponent-bridge<-qa-red-host','apk:qa-blue-opponent-bridge<-qa-red-seat'])await received(label);
@@ -50,13 +51,18 @@ try{
  const mutedEnd=counts.get('apk:qa-red-opponent-bridge<-qa-blue-seat').energy;
  assert.equal(mutedEnd,mutedStart,'Muted seated mic must not cross to the other Board');
  const hostBefore=counts.get('apk:qa-red-opponent-bridge<-qa-blue-host').energy;await delay(500);assert(counts.get('apk:qa-red-opponent-bridge<-qa-blue-host').energy>hostBefore,'Other Host continues during seat mute');
- await admin.mutePublishedTrack(roomNames[1],'qa-blue-seat',blueSeatPub.sid,false);await delay(1200);assert(counts.get('apk:qa-red-opponent-bridge<-qa-blue-seat').energy>mutedEnd,'Seat unmute restores cross audio');
+ // Production correctly forbids an administrator remotely unmuting somebody.
+ // This SDK has no local mute API; republish from that same participant instead.
+ // It additionally proves the opposing receiver rebinds a changed track SID.
+ await blueSeat.localParticipant.unpublishTrack(blueSeatPub.sid);
+ blueSeatPub=await publish(blueSeat,660);
+ await received('apk:qa-red-opponent-bridge<-qa-blue-seat');
  const sids=[redHostPub.sid,redSeatPub.sid,blueHostPub.sid,blueSeatPub.sid];
  await admin.removeParticipant(roomNames[0],'apk:qa-blue-opponent-bridge');await admin.removeParticipant(roomNames[1],'apk:qa-red-opponent-bridge');
  for(const [name,identity,sid] of [[roomNames[0],'qa-red-host',sids[0]],[roomNames[0],'qa-red-seat',sids[1]],[roomNames[1],'qa-blue-host',sids[2]],[roomNames[1],'qa-blue-seat',sids[3]]]){
    const participant=await admin.getParticipant(name,identity);assert(participant.tracks.some(t=>t.sid===sid),'Base publisher/track must survive PK-only cleanup');
  }
- console.log(JSON.stringify({actualCrossHostAudio:true,actualCrossSeatedAudio:true,mutedSeatSilence:true,unmuteRecovered:true,basePublisherTrackSidsPreserved:true,participants:8,rooms:2,receivedStreams:[...counts.values()].filter(c=>c.energy>100000).length,secretLogged:false}));
+ console.log(JSON.stringify({actualCrossHostAudio:true,actualCrossSeatedAudio:true,mutedSeatSilence:true,seatRepublishRecovered:true,remoteUnmuteSecurityUnchanged:true,basePublisherTrackSidsPreserved:true,participants:8,rooms:2,receivedStreams:[...counts.values()].filter(c=>c.energy>100000).length,secretLogged:false}));
  void before;
 }finally{
  running=false;
