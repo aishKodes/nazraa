@@ -132,6 +132,7 @@ export async function submitWithdrawalTransition(formData: FormData) {
     redirect(`/dashboard/withdrawals?error=${encodeURIComponent(error instanceof Error ? error.message : "Status update failed.")}`);
   }
   revalidatePath("/dashboard/withdrawals");
+  revalidatePath('/dashboard/withdrawals/summary');
   revalidatePath("/dashboard");
   redirect("/dashboard/withdrawals?success=Withdrawal+status+updated.");
 }

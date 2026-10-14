@@ -7,6 +7,7 @@ import {
 } from "@/lib/auth/mobile-session";
 import { publicMobileConfig } from "@/lib/db/repositories/mobile";
 import { mobileLiveHistory } from "@/lib/db/repositories/mobile-live-history";
+import {mobilePartyBoardHistory} from '@/lib/db/repositories/party-board-history';
 import { mobileEffectManifest } from "@/lib/db/repositories/mobile-effect-manifest";
 import {
   activeRoomPage,
@@ -344,6 +345,10 @@ export async function GET(
             "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
           },
         });
+      }
+      if (resource === "party-board-history") {
+        const url=new URL(request.url);
+        return NextResponse.json(await mobilePartyBoardHistory(identity,{before:url.searchParams.get('before')??undefined,day:url.searchParams.get('day')??undefined}),{headers:{'Cache-Control':'private, no-store'}});
       }
       if (resource === "live-history") {
         const before = z

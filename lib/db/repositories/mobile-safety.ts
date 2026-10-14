@@ -180,6 +180,8 @@ export async function deleteAuthenticatedAccount(identity: MobileIdentity) {
     await connection.execute("DELETE FROM user_follows WHERE follower_application_user_id = ? OR followed_application_user_id = ?", [identity.userId, identity.userId]);
     await connection.execute("DELETE FROM agency_follows WHERE application_user_id = ?", [identity.userId]);
     await connection.execute("DELETE FROM owner_room_profiles WHERE owner_application_user_id = ?", [identity.userId]);
+    await connection.execute('DELETE d FROM party_board_segment_days d JOIN party_board_seat_segments s ON s.id=d.segment_id WHERE s.application_user_id=?',[identity.userId]);
+    await connection.execute('DELETE FROM party_board_seat_segments WHERE application_user_id=?',[identity.userId]);
     await connection.execute("UPDATE live_session_accounting SET presentation_snapshot = NULL WHERE host_application_user_id = ?", [identity.userId]);
     await connection.execute("DELETE FROM private_message_blocks WHERE blocker_application_user_id = ? OR blocked_application_user_id = ?", [identity.userId, identity.userId]);
     await connection.execute("UPDATE host_profiles SET status = 'INACTIVE', verification_status = 'UNVERIFIED' WHERE application_user_id = ?", [identity.userId]);

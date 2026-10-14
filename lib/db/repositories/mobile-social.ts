@@ -114,7 +114,7 @@ async function agencyOwnedByIdentity(connection: PoolConnection, identity: Mobil
 
 export async function applyToJoinAgency(identity: MobileIdentity, publicId: string) {
   return withTransaction(async (connection) => {
-    const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [identity.userId]);
+    const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!users[0]) throw new Error("Your Nazraa account was not found.");
     if (users[0].agency_account_id) throw new Error("Your Agency Owner must remove you before you can join another Agency.");
     const ownedAgency = await agencyOwnedByIdentity(connection, identity);
@@ -125,7 +125,7 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
                WHERE owner.id = agency.application_user_id OR owner.external_user_id = agency.application_user_id
                   OR CAST(owner.public_id AS CHAR) = agency.application_user_id LIMIT 1) owner_user_id
        FROM platform_accounts agency
-       WHERE agency.public_id = ? AND agency.role = 'AGENCY' AND agency.status = 'ACTIVE' LIMIT 1`,
+       WHERE agency.public_id = ? AND agency.role = 'AGENCY' AND agency.status = 'ACTIVE' AND agency.removed_at IS NULL LIMIT 1`,
       [publicId],
     );
     if (!agencies[0]) throw new Error("No active Agency was found with that six-digit ID.");
@@ -139,9 +139,17 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
       "SELECT application_user_id FROM agency_membership_application_keys WHERE application_user_id = ? AND agency_account_id = ? FOR UPDATE",
       [identity.userId, agencies[0].id],
     );
+    // The user row serializes all applications, including different Agencies.
+    // Terminal applications are history, not a permanent blacklist. Repair
+    // legacy Master removals that cleared the mapping but left APPROVED rows.
+    await connection.execute(`UPDATE agency_membership_applications SET status='REMOVED',
+      ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP(3)),
+      end_reason=COALESCE(end_reason,'Reconciled: no current Agency membership')
+      WHERE application_user_id=? AND status='APPROVED'`,[identity.userId]);
     const [existingTargetApplications] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(
       `SELECT id, status FROM agency_membership_applications
-       WHERE application_user_id = ? AND agency_account_id = ? LIMIT 1 FOR UPDATE`,
+       WHERE application_user_id = ? AND agency_account_id = ? AND status='PENDING'
+       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
       [identity.userId, agencies[0].id],
     );
     if (existingTargetApplications[0]) {
@@ -242,11 +250,14 @@ export async function reviewOwnAgencyJoin(identity: MobileIdentity, input: { app
       [input.applicationId, agency.id],
     );
     const application = applications[0];
-    if (!application || application.status !== "PENDING") throw new Error("That join request is no longer pending.");
+    if (!application) throw new Error("That join request is not available in your Agency.");
+    if (application.status === input.decision) return {status: input.decision.toLowerCase(),alreadyExisted:true};
+    if (application.status !== "PENDING") throw new Error("That join request is no longer pending.");
     const reason = input.reason?.trim() || (input.decision === "APPROVED" ? "Accepted by Agency Owner" : "Rejected by Agency Owner");
     if (input.decision === "APPROVED") {
-      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
+      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null; account_status:string })[]>("SELECT agency_account_id,account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
       if (!users[0]) throw new Error("The applicant account no longer exists.");
+      if (users[0].account_status!=='ACTIVE') throw new Error('The applicant account is not active.');
       if (users[0].agency_account_id) throw new Error("The applicant already belongs to an Agency.");
       const [pendingCreations] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [application.application_user_id]);
       if (pendingCreations.length) throw new Error("The applicant has a pending Agency creation application.");

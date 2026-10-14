@@ -4,6 +4,7 @@ import { pruneDisconnectedFaceGuests } from "@/lib/db/repositories/mobile-comple
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import { publishRoomRealtimeEvent } from "@/lib/services/room-realtime-events";
 import { invalidateFaceLiveSocial } from "@/lib/db/repositories/face-live-social";
+import {maintainPartyBoardHistory} from '@/lib/db/repositories/party-board-history';
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ export async function GET(request: Request) {
   }
   try {
     await pruneInactiveRooms();
+    await maintainPartyBoardHistory();
     const cleaned = await pruneDisconnectedFaceGuests();
     const media = new LiveKitRoomAdmin();
     for (const room of cleaned) {

@@ -5,7 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
-import { loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { loadWithdrawalEconomy,expectedWithdrawalUsd } from "@/lib/db/repositories/withdrawal-economy";
 import {REPORT_EXPORT_LIMIT,formatIst as exportRowDate} from '@/lib/db/repositories/owner-reports';
 
 export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string,exportAll=false) {
@@ -27,7 +27,9 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
             COALESCE(finance.country_manager_inr, 0) country_manager_inr,
             COALESCE(finance.company_inr, 0) company_inr
             ,COALESCE(finance.total_usd,0) total_usd,COALESCE(finance.host_usd,0) host_usd,
-            COALESCE(finance.agency_usd,0) agency_usd
+            COALESCE(finance.agency_usd,0) agency_usd,COALESCE(finance.super_admin_usd,0) super_admin_usd,
+            COALESCE(finance.admin_usd,0) admin_usd,COALESCE(finance.bd_usd,0) bd_usd,
+            COALESCE(finance.country_manager_usd,0) country_manager_usd,COALESCE(finance.company_usd,0) company_usd
      FROM platform_accounts agency
      LEFT JOIN application_users host ON host.agency_account_id = agency.id AND host.account_status != 'BANNED'
      LEFT JOIN wallet_balances wallet
@@ -43,7 +45,9 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
               SUM(distribution.bd_inr) bd_inr,
               SUM(distribution.country_manager_inr) country_manager_inr,
               SUM(distribution.company_inr) company_inr
-              ,SUM(distribution.total_usd) total_usd,SUM(distribution.host_usd) host_usd,SUM(distribution.agency_usd) agency_usd
+              ,SUM(distribution.total_usd) total_usd,SUM(distribution.host_usd) host_usd,SUM(distribution.agency_usd) agency_usd,
+              SUM(distribution.super_admin_usd) super_admin_usd,SUM(distribution.admin_usd) admin_usd,SUM(distribution.bd_usd) bd_usd,
+              SUM(distribution.country_manager_usd) country_manager_usd,SUM(distribution.company_usd) company_usd
        FROM withdrawal_distribution_snapshots distribution
        INNER JOIN withdrawal_hierarchy_snapshots hierarchy ON hierarchy.withdrawal_id = distribution.withdrawal_id
        INNER JOIN withdrawal_requests request ON request.id = distribution.withdrawal_id AND request.status = 'COMPLETED'
@@ -52,11 +56,23 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
      WHERE agency.role = 'AGENCY' AND agency.removed_at IS NULL AND ${scopedAgencies.clause}${selectedFilter}
      GROUP BY agency.id, agency.public_id, agency.full_name, finance.total_withdrawn,
               finance.host_payout_inr, finance.agency_commission_inr, finance.super_admin_inr,
-              finance.admin_inr, finance.bd_inr, finance.country_manager_inr, finance.company_inr,finance.total_usd,finance.host_usd,finance.agency_usd
+              finance.admin_inr, finance.bd_inr, finance.country_manager_inr, finance.company_inr,finance.total_usd,finance.host_usd,finance.agency_usd,
+              finance.super_admin_usd,finance.admin_usd,finance.bd_usd,finance.country_manager_usd,finance.company_usd
      ORDER BY agency.full_name, agency.public_id LIMIT 500`,
     [...scopedAgencies.values,...selectedValues],
   ), loadWithdrawalEconomy()]);
   const agencyRows = agencyResult[0];
+  // Whole slabs are calculated per Host, exactly as requests are validated;
+  // pooling several sub-slab balances would overstate expected withdrawal.
+  const [expectations]=await db().query<RowDataPacket[]>(`SELECT u.agency_account_id,
+    SUM(FLOOR(COALESCE(w.available_balance,0)/?))*? eligible_diamonds
+    FROM application_users u LEFT JOIN wallet_balances w ON w.owner_type='APPLICATION_USER' AND w.owner_id=u.id AND w.asset_type='DIAMOND'
+    JOIN platform_accounts agency ON agency.id=u.agency_account_id
+    WHERE u.account_status<>'BANNED' AND ${scopedAgencies.clause} GROUP BY u.agency_account_id`,[economy.slabDiamonds,economy.slabDiamonds,...scopedAgencies.values]);
+  const [states]=await db().query<RowDataPacket[]>(`SELECT COALESCE(h.agency_account_id,w.agency_account_id) agency_id,w.status,SUM(w.amount) diamonds,COUNT(*) requests,SUM(MOD(w.amount,?)<>0) invalid_slabs
+    FROM withdrawal_requests w LEFT JOIN withdrawal_hierarchy_snapshots h ON h.withdrawal_id=w.id
+    JOIN platform_accounts agency ON agency.id=COALESCE(h.agency_account_id,w.agency_account_id)
+    WHERE ${scopedAgencies.clause} GROUP BY COALESCE(h.agency_account_id,w.agency_account_id),w.status`,[economy.slabDiamonds,...scopedAgencies.values]);
   const agencies = agencyRows.map((row) => ({
     id: String(row.id), publicId: String(row.public_id), name: String(row.full_name),
     hostCount: Number(row.host_count), availableDiamonds: Number(row.available_diamonds),
@@ -66,6 +82,10 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
     bdInr: Number(row.bd_inr), countryManagerInr: Number(row.country_manager_inr),
     companyInr: Number(row.company_inr),
     availableCoins:Number(row.available_coins),totalUsd:Number(row.total_usd),hostUsd:Number(row.host_usd),agencyUsd:Number(row.agency_usd),
+    superAdminUsd:Number(row.super_admin_usd),adminUsd:Number(row.admin_usd),bdUsd:Number(row.bd_usd),countryManagerUsd:Number(row.country_manager_usd),companyUsd:Number(row.company_usd),
+    expected:expectedWithdrawalUsd(Number(expectations.find(e=>e.agency_account_id===row.id)?.eligible_diamonds??0),economy),
+    eligibleWithdrawalDiamonds:Number(expectations.find(e=>e.agency_account_id===row.id)?.eligible_diamonds??0),
+    states:states.filter(s=>s.agency_id===row.id).map(s=>({status:String(s.status),diamonds:Number(s.diamonds),requests:Number(s.requests),expected:['PENDING','UNDER_REVIEW','APPROVED','PROCESSING'].includes(s.status)&&!Number(s.invalid_slabs)?expectedWithdrawalUsd(Number(s.diamonds),economy):null})),
   }));
   const selectedAgency = requestedAgencyId
     ? agencies.find((agency) => agency.id === requestedAgencyId || agency.publicId === requestedAgencyId)
@@ -119,9 +139,12 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
               distribution.host_inr, distribution.agency_inr, distribution.super_admin_inr,
               distribution.admin_inr, distribution.bd_inr, distribution.country_manager_inr,
               distribution.company_inr, distribution.completed_at
+              ,status_dates.approved_at,status_dates.processing_at
        FROM withdrawal_requests request
        INNER JOIN withdrawal_hierarchy_snapshots hierarchy ON hierarchy.withdrawal_id = request.id
        LEFT JOIN withdrawal_distribution_snapshots distribution ON distribution.withdrawal_id = request.id
+       LEFT JOIN (SELECT withdrawal_id,MIN(IF(to_status='APPROVED',created_at,NULL)) approved_at,
+         MIN(IF(to_status='PROCESSING',created_at,NULL)) processing_at FROM withdrawal_status_history GROUP BY withdrawal_id) status_dates ON status_dates.withdrawal_id=request.id
        WHERE hierarchy.agency_account_id = ?
        ORDER BY request.requested_at DESC,request.id LIMIT ${exportAll?REPORT_EXPORT_LIMIT+1:1000}`,
       [selectedAgency.id],
@@ -138,6 +161,7 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
       totalWithdrawn: Number(row.total_withdrawn), hostPayoutInr: Number(row.host_payout_inr),
       agencyCommissionInr: Number(row.agency_commission_inr), withdrawalCount: Number(row.withdrawal_count),
       hostUsd:Number(row.host_usd),agencyUsd:Number(row.agency_usd),
+      expected:expectedWithdrawalUsd(Math.floor(Number(row.available_diamonds)/economy.slabDiamonds)*economy.slabDiamonds,economy),
     })),
     withdrawals: withdrawalRows[0].map((row) => Object.fromEntries(
       Object.entries(row).map(([key, value]) => [key, typeof value === "bigint" ? Number(value) : value]),
@@ -169,26 +193,27 @@ export async function agencyWithdrawalCsv(scope: Scope, agencyId: string) {
   const agency = finance.agencies.find((item) => item.id === finance.selectedAgency!.id)!;
   const summaryColumns = [
     "agency_public_id", "agency_name", "host_count", "available_diamonds", "pending_diamonds",
-    "total_withdrawn_diamonds", "host_payout_inr", "agency_commission_inr", "super_admin_inr",
+    "total_withdrawn_diamonds", "host_usd","agency_usd","expected_host_usd","expected_agency_usd", "host_payout_inr", "agency_commission_inr", "super_admin_inr",
     "admin_inr", "bd_inr", "country_manager_inr", "company_inr",
   ];
   const summary = {
     agency_public_id: agency.publicId, agency_name: agency.name, host_count: agency.hostCount,
     available_diamonds: agency.availableDiamonds, pending_diamonds: agency.pendingDiamonds,
     total_withdrawn_diamonds: agency.totalWithdrawn, host_payout_inr: agency.hostPayoutInr,
+    host_usd:agency.hostUsd,agency_usd:agency.agencyUsd,expected_host_usd:agency.expected.host,expected_agency_usd:agency.expected.agency,
     agency_commission_inr: agency.agencyCommissionInr, super_admin_inr: agency.superAdminInr,
     admin_inr: agency.adminInr, bd_inr: agency.bdInr, country_manager_inr: agency.countryManagerInr,
     company_inr: agency.companyInr,
   };
   const hostColumns = [
     "host_public_id", "host_name", "available_diamonds", "pending_diamonds", "next_target",
-    "total_withdrawn_diamonds", "host_payout_inr", "agency_commission_inr", "withdrawal_count",
+    "total_withdrawn_diamonds", "host_usd", "agency_usd", "expected_host_usd", "expected_agency_usd", "host_payout_inr", "agency_commission_inr", "withdrawal_count",
   ];
   const columns = [
     "withdrawal_code", "host_public_id", "host_name", "agency_public_id", "agency_name",
     "bd_public_id", "bd_name", "admin_public_id", "admin_name", "super_admin_public_id",
     "super_admin_name", "country_manager_public_id", "country_manager_name", "amount", "status",
-    "requested_at", "completed_at", "provider_reference", "slab_diamonds", "slab_count",
+    "requested_at","reviewed_at","approved_at","processing_at", "completed_at", "provider_reference", "slab_diamonds", "slab_count",
     "total_usd_cents_per_slab", "host_usd_cents_per_slab", "agency_usd_cents_per_slab",
     "super_admin_usd_cents_per_slab", "admin_usd_cents_per_slab", "bd_usd_cents_per_slab",
     "country_manager_usd_cents_per_slab", "company_usd_cents_per_slab",
@@ -205,7 +230,7 @@ export async function agencyWithdrawalCsv(scope: Scope, agencyId: string) {
     hostColumns.map(csvCell).join(","),
     ...finance.hosts.map((host) => [
       host.publicId, host.name, host.availableDiamonds, host.pendingDiamonds, host.nextTarget,
-      host.totalWithdrawn, host.hostPayoutInr, host.agencyCommissionInr, host.withdrawalCount,
+      host.totalWithdrawn, host.hostUsd, host.agencyUsd, host.expected.host, host.expected.agency, host.hostPayoutInr, host.agencyCommissionInr, host.withdrawalCount,
     ].map(csvCell).join(",")),
     "",
     "Withdrawal details",

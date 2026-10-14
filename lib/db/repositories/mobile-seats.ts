@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
+import {beginPartyBoardSeat,closePartyBoardSegments} from './party-board-history';
 
 type SeatMember = RowDataPacket & {
   application_user_id?: string;
@@ -77,6 +78,11 @@ async function assignSeat(
   const previousState = seatState(input.member);
   const previousSeat = input.member.seat_index;
   const previousVersion = Number(input.member.seat_version ?? 0);
+  if(previousSeat===input.seatIndex&&input.member.seat_session_id) {
+    await beginPartyBoardSeat(connection,input.roomId,input.userId,input.member.seat_session_id,input.seatIndex);
+    return {seatSessionId:input.member.seat_session_id,seatVersion:previousVersion};
+  }
+  await closePartyBoardSegments(connection,input.roomId,input.userId,'SEAT_REASSIGNED');
   const seatSessionId = randomUUID();
   const seatVersion = previousVersion + 1;
   await connection.execute(
@@ -113,6 +119,7 @@ async function assignSeat(
     desiredMicState: "MIC_ON",
     eventSource: input.eventSource,
   });
+  await beginPartyBoardSeat(connection,input.roomId,input.userId,seatSessionId,input.seatIndex);
   return { seatSessionId, seatVersion };
 }
 
@@ -145,6 +152,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
         return { status: "stale_ignored", seatIndex: room.seat_index, seatSessionId: room.seat_session_id, seatVersion: Number(room.seat_version) };
       }
       const prior = room as SeatMember;
+      await closePartyBoardSegments(connection,String(room.id),identity.userId,'USER_LEFT_SEAT');
       const nextVersion = Number(prior.seat_version ?? 0) + 1;
       await connection.execute("UPDATE live_room_members SET seat_index = NULL, seat_session_id = NULL, seat_version = ?, muted = TRUE, media_publishing = FALSE, room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role), media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'PASSIVE_LISTENER') WHERE room_id = ? AND application_user_id = ?", [nextVersion, room.id, identity.userId]);
       await connection.execute("UPDATE live_seat_requests SET status = 'EXPIRED' WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);

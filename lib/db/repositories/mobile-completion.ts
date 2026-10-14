@@ -1,4 +1,5 @@
 import "server-only";
+import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
@@ -84,6 +85,7 @@ async function terminateAuthoritativeSeat(
     [input.roomId, input.userId],
   );
   const seat = rows[0];
+  await closePartyBoardSegments(connection,input.roomId,input.userId,input.terminationReason);
   if (!seat || (seat.seat_index == null && seat.seat_session_id == null)) return false;
   const nextVersion = Number(seat.seat_version ?? 0) + 1;
   await connection.execute(
@@ -1456,6 +1458,7 @@ export async function joinLiveRoom(
         : requestedRole === "OWNER"
           ? "HOST"
           : "PASSIVE_VIEWER";
+    if(room.room_type==='PARTY')await expireAbsentPartyBoardSegments(connection,identity.userId);
     await connection.execute(
       `INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, left_at, last_seen_at)
        VALUES (?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP(3))
@@ -1474,15 +1477,16 @@ export async function joinLiveRoom(
       ],
     );
     const [members] = await connection.query<
-      (RowDataPacket & { room_role: string; media_role: string })[]
+      (RowDataPacket & { room_role: string; media_role: string;seat_index:number|null;seat_session_id:string|null })[]
     >(
-      "SELECT room_role, media_role FROM live_room_members WHERE room_id = ? AND application_user_id = ? LIMIT 1",
+      "SELECT room_role, media_role,seat_index,seat_session_id FROM live_room_members WHERE room_id = ? AND application_user_id = ? LIMIT 1",
       [room.id, identity.userId],
     );
     const joined = {
       role: String(members[0].room_role).toLowerCase(),
       mediaRole: String(members[0].media_role).toLowerCase(),
     };
+    if(room.room_type==='PARTY'&&members[0].seat_index!=null&&members[0].seat_session_id)await beginPartyBoardSeat(connection,room.id,identity.userId,members[0].seat_session_id,Number(members[0].seat_index));
     // The native passive player needs this compact snapshot immediately after
     // joining.  Keep it on the same borrowed connection instead of releasing
     // the join transaction and competing for Hostinger's intentionally tiny
@@ -1578,6 +1582,7 @@ export async function leaveLiveRoom(
         "UPDATE live_session_accounting SET host_application_user_id = ? WHERE room_id = ? AND status = 'ACTIVE'",
         [successor.application_user_id, room.id],
       );
+      await reconcilePartyBoardOwner(connection,room.id);
       await connection.execute(
         "UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ?",
         [room.id, identity.userId],
@@ -2119,6 +2124,7 @@ export async function refreshRoomPresence(
         await connection.query("SELECT id FROM live_session_accounting WHERE room_id = ? AND status = 'ACTIVE' FOR UPDATE", [roomLocks[0].id]);
       }
     }
+    if(membership?.room_type==='PARTY')await expireAbsentPartyBoardSegments(connection,identity.userId);
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.title, room.seat_count, room.config_version, room.chat_locked, room.theme_index, room.theme_enabled, room.audio_join_requests_enabled, room.room_type,
               member.room_role, member.media_role, member.seat_index, member.seat_session_id, member.seat_version,
@@ -2194,6 +2200,7 @@ export async function refreshRoomPresence(
       rows[0].room_type === "PARTY"
         ? null
         : await loadFaceLiveRules(connection);
+    if(rows[0].room_type==='PARTY'&&rows[0].seat_index!=null&&rows[0].seat_session_id)await beginPartyBoardSeat(connection,rows[0].id,identity.userId,rows[0].seat_session_id,Number(rows[0].seat_index));
     const faceLiveSchedule = faceLiveRules
       ? evaluateFaceLiveSchedule(
           faceLiveRules,
@@ -4722,6 +4729,7 @@ export async function finalizeLiveSession(
     // Closing a room is terminal for every occupied Party seat. Record each
     // termination before marking membership left so no later reconnect can
     // resurrect a stale microphone permission.
+    await closePartyBoardSegments(connection,session.room_id,undefined,'ROOM_ENDED');
     const [occupiedSeats] = await connection.query<
       (RowDataPacket & { application_user_id: string })[]
     >(

@@ -4946,12 +4946,10 @@ async function main() {
       joiner,
       createdAgencyPublicId,
     );
-    assert.equal(rejectedRetry.id, firstJoin.id);
-    assert.equal(
-      rejectedRetry.status,
-      "rejected",
-      "a rejected application retry must return its authoritative state without inserting a duplicate",
-    );
+    assert.notEqual(rejectedRetry.id, firstJoin.id,'A deliberate retry after rejection is a new persistent request');
+    assert.equal(rejectedRetry.status,'pending');
+    assert.equal((await social.applyToJoinAgency(joiner,createdAgencyPublicId)).id,rejectedRetry.id,'Repeated pending clicks are idempotent');
+    await social.reviewOwnAgencyJoin(agencyOwner,{applicationId:rejectedRetry.id,decision:'REJECTED',reason:'Resolve second isolated QA application'});
     const acceptedJoiner = await user("QA Accepted Agency Joiner");
     await social.applyToJoinAgency(acceptedJoiner, createdAgencyPublicId);
     const secondJoin = (
@@ -5007,6 +5005,14 @@ async function main() {
     assert.equal(removedHost[0].agency_account_id, null);
     assert.equal(removedMembership[0].status, "REMOVED");
     assert.ok(removedMembership[0].ended_at);
+    const rejoin=await social.applyToJoinAgency(acceptedJoiner,createdAgencyPublicId);
+    assert.notEqual(rejoin.id,secondJoin.id);assert.equal(rejoin.status,'pending');
+    const duplicateRejoin=await Promise.all(Array.from({length:5},()=>social.applyToJoinAgency(acceptedJoiner,createdAgencyPublicId)));
+    assert(duplicateRejoin.every(r=>r.id===rejoin.id));
+    await social.reviewOwnAgencyJoin(agencyOwner,{applicationId:rejoin.id,decision:'APPROVED'});
+    await social.reviewOwnAgencyJoin(agencyOwner,{applicationId:rejoin.id,decision:'APPROVED'});
+    assert.equal((await product.mobileBootstrap(acceptedJoiner)).agency?.id,createdAgencyPublicId);
+    await social.removeOwnAgencyHost(agencyOwner,{targetPublicId:acceptedJoiner.publicId,reason:'Remove again for cross-Agency QA'});
 
     const rejectedAgencyInput = {
       ...agencyInput,
@@ -5092,6 +5098,14 @@ async function main() {
       1,
     );
     const otherAgencyPublicId = String(otherAgencyRows[0].public_id);
+    const crossJoin=await social.applyToJoinAgency(acceptedJoiner,otherAgencyPublicId);
+    await assert.rejects(social.applyToJoinAgency(acceptedJoiner,createdAgencyPublicId),/active or pending/);
+    await social.reviewOwnAgencyJoin(otherAgencyOwner,{applicationId:crossJoin.id,decision:'APPROVED'});
+    assert.equal((await product.mobileBootstrap(acceptedJoiner)).agency?.id,otherAgencyPublicId);
+    assert(!(await social.agencyOwnerSnapshot(agencyOwner)).hosts.some(h=>h.user.id===acceptedJoiner.publicId));
+    const [membershipHistory]=await root.query<RowDataPacket[]>('SELECT status FROM agency_membership_applications WHERE application_user_id=?',[acceptedJoiner.userId]);
+    assert.equal(membershipHistory.filter(r=>r.status==='APPROVED').length,1);
+    assert.equal(membershipHistory.filter(r=>r.status==='REMOVED').length,2);
     await social.applyToJoinAgency(joiner, otherAgencyPublicId);
     assert.equal(
       (await social.agencyApplicationsForUser(joiner)).some(
@@ -5108,6 +5122,8 @@ async function main() {
 
     const audioUpgrade = await import("./audio-room-upgrade-tests");
     await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
+    const boardTests=await import('./party-board-history-tests');
+    await boardTests.verifyPartyBoardHistory(root,user,owner);
 
     if (process.env.NAZRAA_QA_KEEP === "1") {
       const fixtures = [];

@@ -137,6 +137,14 @@ function usd(centsPerSlab: number, slabs: number) {
   return ((centsPerSlab * slabs) / 100).toFixed(2);
 }
 
+/** Control-only estimate using the same configured slabs/allocations as
+ * finalizeWithdrawalDistribution. Paid history uses its saved snapshot. */
+export function expectedWithdrawalUsd(diamonds:number,economy:WithdrawalEconomy) {
+  if(!Number.isSafeInteger(diamonds)||diamonds<0||diamonds%economy.slabDiamonds!==0)throw new Error('Expected withdrawals require configured whole Diamond slabs.');
+  const slabs=diamonds/economy.slabDiamonds;
+  return {total:Number(usd(economy.totalUsdCents,slabs)),host:Number(usd(economy.hostUsdCents,slabs)),agency:Number(usd(economy.agencyUsdCents,slabs))};
+}
+
 function inr(centsPerSlab: number, slabs: number, rate: number) {
   return ((centsPerSlab * slabs * rate) / 100).toFixed(2);
 }

@@ -1,4 +1,5 @@
 import "server-only";
+import {reconcilePartyBoardTerminals} from './party-board-history';
 import { enqueueFaceSuspensionPush } from "@/lib/services/fcm-push-service";
 import { randomUUID } from "crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
@@ -204,17 +205,21 @@ const withdrawalTransitions: Record<string, string[]> = {
 };
 
 export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: string; nextStatus: string; reason: string; providerReference?: string }) {
-  if (!can(input.scope.account.role, "withdrawals.review")) throw new Error("Your role cannot review withdrawals.");
+  if (input.scope.account.role !== 'MASTER' || !can(input.scope.account.role, "withdrawals.review")) throw new Error("Only Master can change withdrawal status.");
   if (!input.reason.trim()) throw new Error("A review reason is required.");
   if (input.nextStatus === "COMPLETED" && (input.providerReference?.trim().length ?? 0) < 3) throw new Error("A payout provider reference is required before completion.");
   return withTransaction(async (connection) => {
     const filter = scopeWhere(input.scope, "agency_account_id");
-    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; agency_account_id: string | null; withdrawal_code: string; payout_method_id: string | null })[]>(
-      `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
+    const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; agency_account_id: string | null; withdrawal_code: string; payout_method_id: string | null; provider_reference: string|null })[]>(
+      `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id,provider_reference FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
     );
     const request = rows[0];
     if (!request) throw new Error("Withdrawal was not found in your permitted hierarchy.");
+    if(request.status===input.nextStatus) {
+      if(input.nextStatus==='COMPLETED'&&request.provider_reference!==input.providerReference?.trim())throw new Error('This withdrawal is already paid with another reference.');
+      return {previousStatus:request.status,nextStatus:input.nextStatus,alreadyExisted:true};
+    }
     if (!withdrawalTransitions[request.status]?.includes(input.nextStatus)) {
       throw new Error(`Cannot move a ${request.status.toLowerCase()} withdrawal to ${input.nextStatus.toLowerCase()}.`);
     }
@@ -264,7 +269,7 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
     await connection.execute("INSERT INTO mobile_notifications (id, application_user_id, notification_type, title, message, action_target) VALUES (?, ?, 'WITHDRAWAL', 'Withdrawal updated', ?, 'wallet/withdrawals')", [randomUUID(), request.application_user_id, `${request.withdrawal_code} is now ${input.nextStatus.toLowerCase().replaceAll("_", " ")}.`]);
     await audit(connection, {
       actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "withdrawal.transition", module: "withdrawals", targetType: "withdrawal", targetId: request.id,
-      previous: { status: request.status, wallet: walletBefore }, next: { status: input.nextStatus, wallet: walletAfter }, reason: input.reason.trim(),
+      previous: { status: request.status, amount:request.amount, agencyId:request.agency_account_id,hostId:request.application_user_id,wallet: walletBefore }, next: { status: input.nextStatus,amount:request.amount,providerReference:input.providerReference?.trim()||request.provider_reference, wallet: walletAfter }, reason: input.reason.trim(),
     });
     return { previousStatus: request.status, nextStatus: input.nextStatus };
   });
@@ -943,6 +948,7 @@ export async function updateRoomStatus(input: { scope: Scope; roomId: string; st
     if (!rows[0] || !["ACTIVE", "LOCKED"].includes(rows[0].status)) throw new Error("Only an active or locked room in your scope can be changed.");
     if (rows[0].status === input.status || (rows[0].status === "LOCKED" && input.status === "LOCKED")) throw new Error("Choose a valid new room status.");
     await connection.execute("UPDATE live_rooms SET status = ?, ended_at = IF(?, CURRENT_TIMESTAMP(3), ended_at) WHERE id = ?", [input.status, input.status === "ENDED" ? 1 : 0, input.roomId]);
+    if(input.status==='ENDED')await reconcilePartyBoardTerminals(connection,undefined,input.roomId);
     await audit(connection, { actorId: input.scope.account.id, actorRole: input.scope.account.role, action: "room.status_change", module: "rooms", targetType: "live_room", targetId: input.roomId, previous: { status: rows[0].status }, next: { status: input.status }, reason: input.reason });
   });
 }

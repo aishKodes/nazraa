@@ -1,4 +1,5 @@
 import "server-only";
+import {closePartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile } from "./room-profile";
 import { publicApiOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 
@@ -285,6 +286,8 @@ export async function pruneInactiveRooms() {
        WHERE member.room_id IN (${placeholders})`,
       ids,
     );
+    const [endedBoards]=await connection.query<RowDataPacket[]>(`SELECT id FROM live_rooms WHERE id IN (${placeholders}) AND status='ENDED'`,ids);
+    for(const board of endedBoards)await closePartyBoardSegments(connection,board.id,undefined,'ROOM_TIMEOUT');
     await connection.execute(
       `UPDATE live_session_accounting accounting
        INNER JOIN live_rooms room ON room.id = accounting.room_id AND room.status = 'ENDED'

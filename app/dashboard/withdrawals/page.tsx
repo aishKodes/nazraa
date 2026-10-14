@@ -16,7 +16,7 @@ import { requirePermission } from "@/lib/auth/guard";
 import { listPayoutMethodReviews } from "@/lib/db/repositories/mobile-administration";
 import { listWithdrawalsPage } from "@/lib/db/repositories/operations";
 import { withdrawalFinance,withdrawalCommissionTotals } from "@/lib/db/repositories/withdrawal-finance";
-import { formatCurrency, formatDate, formatNumber } from "@/lib/utils/format";
+import { formatDate, formatNumber } from "@/lib/utils/format";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +27,7 @@ export default async function WithdrawalsPage({
 }) {
   const scope = await requirePermission("withdrawals.read");
   const { error, success, page: rawPage, agencyId } = await searchParams;
-  const canReview = can(scope.account.role, "withdrawals.review");
+  const canReview = scope.account.role === 'MASTER' && can(scope.account.role, "withdrawals.review");
   const isAdmin=scope.account.role==='ADMIN';
   const [result, payoutMethods, finance,commissionTotals] = await Promise.all([
     listWithdrawalsPage(scope, {
@@ -38,6 +38,7 @@ export default async function WithdrawalsPage({
     scope.account.role==='SUPER_ADMIN'?withdrawalCommissionTotals(scope):Promise.resolve(null),
   ]);
   const withdrawals = result.items;
+  const dollars=(value:number)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(value);
   return (
     <>
       <SectionHeading
@@ -52,7 +53,7 @@ export default async function WithdrawalsPage({
         <>
           <div className="section-subheading">
             <h2>Agency earnings</h2>
-            <p>Diamonds are withdrawable Host/Agency earnings. Commissions appear only after payment is completed.</p>
+            <p>Expected values use current configured whole-Host Diamond slabs. Paid values use saved USD snapshots. No mobile cash-out is enabled. Agency targets are unavailable unless canonically configured.</p>
           </div>
           <Card>
             <div className="table-scroll">
@@ -63,13 +64,9 @@ export default async function WithdrawalsPage({
                   <td className="align-right">{formatNumber(agency.hostCount)}</td>
                   <td className="align-right">{formatNumber(agency.availableDiamonds)} diamonds</td>
                   <td className="align-right">{formatNumber(agency.totalWithdrawn)}</td>
-                  {isAdmin?<><td>{formatNumber(agency.availableCoins)}</td><td>{formatNumber(agency.pendingDiamonds)}</td><td>${agency.totalUsd.toFixed(2)}</td><td>${agency.hostUsd.toFixed(2)}</td><td>${agency.agencyUsd.toFixed(2)}</td><td>Canonical Agency target not configured</td></>:<><td className="align-right">{formatCurrency(agency.hostPayoutInr)}</td><td className="align-right">{formatCurrency(agency.agencyCommissionInr)}</td></>}
+                  {isAdmin?<><td>{formatNumber(agency.availableCoins)}</td><td>{formatNumber(agency.pendingDiamonds)}</td><td>${agency.totalUsd.toFixed(2)}</td><td>${agency.hostUsd.toFixed(2)}</td><td>${agency.agencyUsd.toFixed(2)}</td><td>Canonical Agency target not configured</td></>:<><td className="align-right">{dollars(agency.hostUsd)}</td><td className="align-right">{dollars(agency.agencyUsd)}</td></>}
                   {scope.account.role === "MASTER" ? <>
-                    <td className="align-right">{formatCurrency(agency.superAdminInr)}</td>
-                    <td className="align-right">{formatCurrency(agency.adminInr)}</td>
-                    <td className="align-right">{formatCurrency(agency.bdInr)}</td>
-                    <td className="align-right">{formatCurrency(agency.countryManagerInr)}</td>
-                    <td className="align-right">{formatCurrency(agency.companyInr)}</td>
+                    <td className="align-right">{dollars(agency.superAdminUsd)}</td><td className="align-right">{dollars(agency.adminUsd)}</td><td className="align-right">{dollars(agency.bdUsd)}</td><td className="align-right">{dollars(agency.countryManagerUsd)}</td><td className="align-right">{dollars(agency.companyUsd)}</td>
                   </> : null}
                   <td><a className="table-link" href={`/dashboard/withdrawals?agencyId=${agency.id}`}>Open</a></td>
                 </tr>)}</tbody>
@@ -80,6 +77,7 @@ export default async function WithdrawalsPage({
       ) : null}
       {finance.selectedAgency ? (
         <>
+          <Card><h2>{finance.selectedAgency.name} · expected withdrawal</h2><p>Current available balance estimate · saved requests across all periods. No new payout formula or Agency target is introduced.</p><div className="metric-grid"><div><small>Eligible whole-Host Diamonds</small><h3>{formatNumber(finance.selectedAgency.eligibleWithdrawalDiamonds)}</h3></div><div><small>Expected Host component</small><h3>{dollars(finance.selectedAgency.expected.host)}</h3></div><div><small>Expected Agency component</small><h3>{dollars(finance.selectedAgency.expected.agency)}</h3></div></div><div className="table-scroll"><table><thead><tr><th>Status</th><th>Requests</th><th>Submitted Diamonds</th><th>Expected Host USD</th><th>Expected Agency USD</th></tr></thead><tbody>{finance.selectedAgency.states.map(state=><tr key={state.status}><td><StatusBadge value={state.status}/></td><td>{state.requests}</td><td>{formatNumber(state.diamonds)}</td><td>{state.expected?dollars(state.expected.host):'Use paid snapshot below'}</td><td>{state.expected?dollars(state.expected.agency):'Use paid snapshot below'}</td></tr>)}</tbody></table></div><p>Expected amounts are not guarantees; completed payouts retain their original saved calculation. Agency target / achievement: not configured.</p></Card>
           <div className="section-subheading">
             <h2>{finance.selectedAgency.name} · Hosts</h2>
             <p>{isAdmin?'Current Diamonds, pending submissions, next configured withdrawal slab and saved Host USD. Assigned Agency targets are not configured.':'Current earnings, next withdrawal target, completed Host payout and Agency commission.'}</p>
@@ -94,30 +92,30 @@ export default async function WithdrawalsPage({
                 <td className="align-right">{formatNumber(host.pendingDiamonds)}</td>
                 <td className="align-right">{formatNumber(host.nextTarget)}</td>
                 <td className="align-right">{formatNumber(host.totalWithdrawn)}</td>
-                <td className="align-right">{isAdmin?`$${host.hostUsd.toFixed(2)}`:formatCurrency(host.hostPayoutInr)}</td>
-                {!isAdmin?<td className="align-right">{formatCurrency(host.agencyCommissionInr)}</td>:null}
+                <td className="align-right">{dollars(host.hostUsd)}<small className="block">Expected {dollars(host.expected.host)}</small></td>
+                {!isAdmin?<td className="align-right">{dollars(host.agencyUsd)}</td>:null}
               </tr>)}</tbody>
             </table></div> : <EmptyState title="No Hosts" detail="No active Host is assigned to this Agency." />}
           </Card>
           {finance.withdrawals.length ? <Card>
-            <div className="card-title"><div><h2>Permanent payout breakdown</h2><p>The exact hierarchy, USD split, FX rate and INR amounts captured for every request.</p></div></div>
+            <div className="card-title"><div><h2>Permanent payout breakdown</h2><p>The original hierarchy and saved USD allocations. Legacy FX/INR audit values remain in exports; historical records are not recalculated.</p></div></div>
             <div className="table-scroll"><table>
-              <thead><tr><th>Withdrawal</th><th>Host / hierarchy</th><th>Status</th><th className="align-right">Diamonds</th><th className="align-right">{isAdmin?'Total Dollar Work':'Host'}</th>{isAdmin?<><th>Host Dollar</th><th>Agency Dollar</th></>:<><th className="align-right">Agency</th><th className="align-right">SA</th><th className="align-right">Admin</th><th className="align-right">BD</th><th className="align-right">CM</th><th className="align-right">Company</th></>}<th>{isAdmin?'Completed (IST)':'FX / completed'}</th></tr></thead>
+              <thead><tr><th>Withdrawal</th><th>Host / hierarchy</th><th>Status</th><th className="align-right">Diamonds</th><th className="align-right">{isAdmin?'Total Dollar Work':'Host'}</th>{isAdmin?<><th>Host Dollar</th><th>Agency Dollar</th></>:<><th className="align-right">Agency</th><th className="align-right">SA</th><th className="align-right">Admin</th><th className="align-right">BD</th><th className="align-right">CM</th><th className="align-right">Company</th></>}<th>Approved / processed / reference</th></tr></thead>
               <tbody>{finance.withdrawals.map((item) => <tr key={String(item.withdrawal_id)}>
                 <td><b className="mono">{String(item.withdrawal_code)}</b><small className="block">{formatDate(item.requested_at as string)}</small></td>
                 <td><b>{String(item.host_name)}</b><small className="mono block">{String(item.host_public_id)}</small><small className="block">{[item.agency_name, item.bd_name, item.admin_name, item.super_admin_name, item.country_manager_name].filter(Boolean).map(String).join(" → ") || "Unassigned"}</small></td>
                 <td><StatusBadge value={String(item.status)} /></td>
                 <td className="align-right">{formatNumber(Number(item.amount))}</td>
-                <td className="align-right">{isAdmin?(item.total_usd==null?'Pending':`$${Number(item.total_usd).toFixed(2)}`):item.host_inr == null ? "Pending" : formatCurrency(Number(item.host_inr))}</td>
+                <td className="align-right">{item.host_usd==null?'Not recorded':dollars(Number(isAdmin?item.total_usd:item.host_usd))}</td>
                 {isAdmin?<><td>{item.host_usd==null?'Pending':`$${Number(item.host_usd).toFixed(2)}`}</td><td>{item.agency_usd==null?'Pending':`$${Number(item.agency_usd).toFixed(2)}`}</td></>:<>
-                <td className="align-right">{item.agency_inr == null ? "—" : formatCurrency(Number(item.agency_inr))}</td>
-                <td className="align-right">{item.super_admin_inr == null ? "—" : formatCurrency(Number(item.super_admin_inr))}</td>
-                <td className="align-right">{item.admin_inr == null ? "—" : formatCurrency(Number(item.admin_inr))}</td>
-                <td className="align-right">{item.bd_inr == null ? "—" : formatCurrency(Number(item.bd_inr))}</td>
-                <td className="align-right">{item.country_manager_inr == null ? "—" : formatCurrency(Number(item.country_manager_inr))}</td>
-                <td className="align-right">{item.company_inr == null ? "—" : formatCurrency(Number(item.company_inr))}</td>
+                <td className="align-right">{item.agency_usd == null ? "—" : dollars(Number(item.agency_usd))}</td>
+                <td className="align-right">{item.super_admin_usd == null ? "—" : dollars(Number(item.super_admin_usd))}</td>
+                <td className="align-right">{item.admin_usd == null ? "—" : dollars(Number(item.admin_usd))}</td>
+                <td className="align-right">{item.bd_usd == null ? "—" : dollars(Number(item.bd_usd))}</td>
+                <td className="align-right">{item.country_manager_usd == null ? "—" : dollars(Number(item.country_manager_usd))}</td>
+                <td className="align-right">{item.company_usd == null ? "—" : dollars(Number(item.company_usd))}</td>
                 </>}
-                <td>{!isAdmin?(item.usd_inr_rate == null ? "Not completed" : `$1 = ₹${Number(item.usd_inr_rate).toFixed(2)}`):null}<small className="block">{formatDate(item.completed_at as string | null)}</small></td>
+                <td><small className="block">Approved: {formatDate(item.approved_at as string|null)}</small><small className="block">Processed: {formatDate(item.completed_at as string | null)}</small><small className="mono">{String(item.provider_reference??'—')}</small></td>
               </tr>)}</tbody>
             </table></div>
           </Card> : null}

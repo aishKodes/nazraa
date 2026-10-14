@@ -71,6 +71,16 @@ export async function transferHostAgency(input:{scope:Scope;hostId:string;destin
     const next=destination?.id??null; if(host.agency_account_id===next) throw new Error('This is already the current Agency association.');
     await connection.execute('UPDATE application_users SET agency_account_id=? WHERE id=?',[next,host.application_user_id]);
     await connection.execute('UPDATE host_profiles SET agency_account_id=? WHERE id=?',[next,host.id]);
+    await connection.execute(`UPDATE agency_membership_applications SET status='REMOVED',
+      ended_by=?,ended_at=CURRENT_TIMESTAMP(3),end_reason=?
+      WHERE application_user_id=? AND status='APPROVED' AND (? IS NULL OR agency_account_id<>?)`,
+      [input.scope.account.id,reason,host.application_user_id,next,next]);
+    // A Master transfer resolves pending requests explicitly, never leaves an
+    // invisible pending membership blocking the next legitimate application.
+    await connection.execute(`UPDATE agency_membership_applications SET status='REJECTED',
+      reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP(3),review_reason=?
+      WHERE application_user_id=? AND status='PENDING'`,
+      [input.scope.account.id,`Resolved by Master Agency reassignment: ${reason}`,host.application_user_id]);
     await connection.execute(`INSERT INTO audit_logs (id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
       VALUES (?,?,'MASTER','host.agency_transfer','hosts','host',?,?,?,?)`,
       [randomUUID(),input.scope.account.id,host.id,JSON.stringify({agencyAccountId:host.agency_account_id}),JSON.stringify({agencyAccountId:next}),reason]);

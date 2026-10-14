@@ -83,9 +83,14 @@ export async function reviewAgencyJoin(input: { scope: Scope; applicationId: str
       [input.applicationId, ...scoped.values],
     );
     const application = rows[0];
-    if (!application || application.status !== "PENDING") throw new Error("That pending join application is not available in your scope.");
+    if (!application) throw new Error("That join application is not available in your scope.");
+    if (application.status === input.decision) return;
+    if (application.status !== "PENDING") throw new Error("That join application is no longer pending.");
     if (input.decision === "APPROVED") {
-      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
+      const [agency] = await connection.query<RowDataPacket[]>("SELECT id FROM platform_accounts WHERE id=? AND role='AGENCY' AND status='ACTIVE' AND removed_at IS NULL LIMIT 1",[application.agency_account_id]);
+      if (!agency.length) throw new Error("The Agency is no longer available for joining.");
+      const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null; account_status:string })[]>("SELECT agency_account_id,account_status FROM application_users WHERE id = ? LIMIT 1 FOR UPDATE", [application.application_user_id]);
+      if (!users[0] || users[0].account_status!=='ACTIVE') throw new Error('The applicant account is not active.');
       if (users[0]?.agency_account_id) throw new Error("The user is already linked to an Agency.");
       const [pendingCreations] = await connection.query<RowDataPacket[]>("SELECT id FROM agency_creation_applications WHERE application_user_id = ? AND status = 'PENDING' LIMIT 1", [application.application_user_id]);
       if (pendingCreations.length) throw new Error("Resolve the user's pending Agency creation application first.");

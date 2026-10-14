@@ -132,7 +132,7 @@ export async function mobileLiveHistory(
   const pageDates = allDates.slice(0, pageSize);
   const placeholders = pageDates.map(() => "?").join(",");
   const [liveRows, sentRows, receivedRows] = pageDates.length === 0
-    ? [[], [], []]
+    ? [[[]], [[]], [[]]]
     : await Promise.all([
         db().query<SecondsRow[]>(
           `SELECT business_date,
