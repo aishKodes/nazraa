@@ -336,9 +336,10 @@ export async function listHostPayouts(
   viewer: PayoutViewer,
   filters: PayoutFilters = {},
   limit = 200,
+  connection?: PoolConnection,
 ) {
   const f = filterFor(viewer, filters);
-  const [rows] = await db().query<RowDataPacket[]>(
+  const [rows] = await (connection ?? db()).query<RowDataPacket[]>(
     `SELECT w.id,w.withdrawal_code requestId,w.application_user_id hostId,w.amount diamonds,w.status,w.requested_at requestedAt,w.provider_reference paymentReference,w.review_reason note,
     s.host_public_id hostPublicId,s.host_name hostName,s.agency_public_id agencyPublicId,s.agency_name agencyName,s.country_code country,s.host_usd hostUsd,s.agency_usd agencyUsd,s.company_usd companyUsd,s.payout_type payoutType,s.payout_masked payoutAccount,s.rule_snapshot rule,s.approved_at approvedAt,s.paid_at paidAt,s.reversed_at reversedAt,s.agency_paid_at agencyPaidAt,s.agency_reversed_at agencyReversedAt,s.agency_payment_reference agencyPaymentReference
     FROM withdrawal_requests w JOIN host_payout_snapshots s ON s.withdrawal_id=w.id WHERE ${f.where} ORDER BY w.requested_at DESC,w.id DESC LIMIT ?`,
@@ -403,7 +404,7 @@ export async function hostPayoutPage(userId: string) {
         Math.floor(availableDiamonds / rule.slabDiamonds) * Number(rule.hostUsd)
       ).toFixed(2),
       accounts,
-      history: await listHostPayouts({ userId }),
+      history: await listHostPayouts({ userId },{},200,c),
     };
   });
 }
