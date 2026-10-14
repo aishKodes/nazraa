@@ -101,6 +101,7 @@ export default function HostPayoutPortal() {
     const google = (window as unknown as { google?: GoogleApi }).google;
     if (!ready || !google || !client || !nonce || data || !button.current)
       return;
+    button.current.replaceChildren();
     google.accounts.id.initialize({
       client_id: client,
       nonce,
@@ -286,6 +287,12 @@ export default function HostPayoutPortal() {
                 <button disabled={busy || !data.accounts.length}>
                   {busy ? "Processing…" : "Request payout"}
                 </button>
+                <button type="button" disabled={busy} onClick={()=>{
+                  if(!window.confirm('Check your payout history first. Start a separate new request rather than retry the pending request?'))return;
+                  sessionStorage.removeItem(`nazraa-payout-pending:${data.host.id}`);
+                  requestIdentity.current=null;
+                  setMessage('A separate new request is ready. Existing payout records are unchanged.');
+                }}>Start a separate new request</button>
               </form>
             </section>
             <section className="panel">

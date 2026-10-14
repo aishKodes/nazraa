@@ -131,9 +131,13 @@ export default function PayoutManagement() {
           <article className="panel" key={key}>
             <small>{title}</small>
             <h2>
-              {key.endsWith("Usd")
-                ? dollars(data?.summary[key] ?? 0)
-                : Number(data?.summary[key] ?? 0).toLocaleString("en-IN")}
+              {!data
+                ? error
+                  ? "Unavailable"
+                  : "Loading…"
+                : key.endsWith("Usd")
+                  ? dollars(data.summary[key] ?? 0)
+                  : Number(data.summary[key] ?? 0).toLocaleString("en-IN")}
             </h2>
           </article>
         ))}
@@ -232,8 +236,8 @@ export default function PayoutManagement() {
                     {r.agencyReversedAt
                       ? `Reversed ${date(r.agencyReversedAt)}`
                       : r.agencyPaidAt
-                      ? `Paid ${date(r.agencyPaidAt)}`
-                      : "Not paid"}
+                        ? `Paid ${date(r.agencyPaidAt)}`
+                        : "Not paid"}
                   </small>
                 </td>
                 {data.isMaster && <td>{dollars(r.companyUsd)}</td>}
@@ -323,7 +327,11 @@ export default function PayoutManagement() {
                           Mark Agency commission paid
                         </option>
                       )}
-                    {selected.agencyPaidAt && !selected.agencyReversedAt && <option value="agency-reverse">Record Agency payment reversal</option>}
+                    {selected.agencyPaidAt && !selected.agencyReversedAt && (
+                      <option value="agency-reverse">
+                        Record Agency payment reversal
+                      </option>
+                    )}
                   </>
                 )}
               </select>

@@ -71,6 +71,11 @@ async function audit(
     ],
   );
 }
+export async function assertHostPayoutEligibility(userId: string) {
+  return withTransaction(async (c) => {
+    await host(c, userId);
+  });
+}
 export async function saveHostPayoutAccount(
   userId: string,
   input: { type: "BANK" | "UPI"; displayName: string; destination: string },
@@ -230,7 +235,10 @@ export async function requestHostPayout(
         agency?.public_id ?? null,
         agency?.full_name ?? null,
         rule.slabDiamonds,
-        JSON.stringify({...presentation,payoutBeneficiaryName:String(method.display_name)}),
+        JSON.stringify({
+          ...presentation,
+          payoutBeneficiaryName: String(method.display_name),
+        }),
         total,
         hostUsd,
         agencyUsd,
@@ -417,12 +425,12 @@ export async function payoutDestination(master: SessionAccount, id: string) {
       {},
       "Authorized private destination access.",
     );
-    const destination=decryptPrivateText({
+    const destination = decryptPrivateText({
       encryptedData: r.payout_encrypted_data,
       iv: r.payout_encryption_iv,
       tag: r.payout_encryption_tag,
     });
-    return `${r.beneficiary ? `Beneficiary: ${String(r.beneficiary)}\n` : ''}${destination}`;
+    return `${r.beneficiary ? `Beneficiary: ${String(r.beneficiary)}\n` : ""}${destination}`;
   });
 }
 export async function manageHostPayout(

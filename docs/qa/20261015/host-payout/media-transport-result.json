@@ -1,0 +1,15 @@
+{
+  "environment": "production LiveKit; two disposable synthetic QA rooms",
+  "participants": 8,
+  "receivedStreams": 12,
+  "actualCrossHostAudio": true,
+  "actualCrossSeatedAudio": true,
+  "mutedSeatSilence": true,
+  "seatRepublishRecovered": true,
+  "remoteUnmuteSecurityUnchanged": true,
+  "basePublisherTrackSidsPreservedAfterPkCleanup": true,
+  "leaveSeatStopsPublish": true,
+  "leaveSeatPreservesSubscription": true,
+  "qaRoomsCleanedUp": true,
+  "secretLogged": false
+}

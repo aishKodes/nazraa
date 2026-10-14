@@ -5,7 +5,10 @@ import { SignJWT, jwtVerify } from "jose";
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
 import { verifyGoogleIdentity } from "./google-identity";
-import { PayoutError } from "@/lib/db/repositories/host-payouts";
+import {
+  PayoutError,
+  assertHostPayoutEligibility,
+} from "@/lib/db/repositories/host-payouts";
 const sessionCookie = "nazraa_host_payout_session",
   csrfCookie = "nazraa_host_payout_csrf",
   nonceCookie = "nazraa_host_payout_nonce";
@@ -63,6 +66,7 @@ export async function loginHostPayout(idToken: string) {
       "Sign in with the Google account used in your existing Nazraa account.",
     );
   const userId = String(users[0].id);
+  await assertHostPayoutEligibility(userId);
   const token = await new SignJWT({ purpose: "HOST_PAYOUT" })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(userId)

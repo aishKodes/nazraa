@@ -135,10 +135,18 @@ export async function GET(request: Request) {
         },
       });
     }
+    const rule = portalPayoutRule(await loadWithdrawalEconomy());
     return reply({
       rows,
       summary: await hostPayoutSummary({ account }, filters),
-      rule: portalPayoutRule(await loadWithdrawalEconomy()),
+      rule:
+        account.role === "MASTER"
+          ? rule
+          : {
+              slabDiamonds: rule.slabDiamonds,
+              hostUsd: rule.hostUsd,
+              agencyUsd: rule.agencyUsd,
+            },
       isMaster: account.role === "MASTER",
     });
   } catch (e) {
