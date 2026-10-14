@@ -62,7 +62,18 @@ try{
  for(const [name,identity,sid] of [[roomNames[0],'qa-red-host',sids[0]],[roomNames[0],'qa-red-seat',sids[1]],[roomNames[1],'qa-blue-host',sids[2]],[roomNames[1],'qa-blue-seat',sids[3]]]){
    const participant=await admin.getParticipant(name,identity);assert(participant.tracks.some(t=>t.sid===sid),'Base publisher/track must survive PK-only cleanup');
  }
- console.log(JSON.stringify({actualCrossHostAudio:true,actualCrossSeatedAudio:true,mutedSeatSilence:true,seatRepublishRecovered:true,remoteUnmuteSecurityUnchanged:true,basePublisherTrackSidsPreserved:true,participants:8,rooms:2,receivedStreams:[...counts.values()].filter(c=>c.energy>100000).length,secretLogged:false}));
+ // Exact server permission operation used by Party Leave/Remove Seat.
+ // Revoke publish without disconnecting the participant or its subscriptions.
+ await admin.updateParticipant(roomNames[0],'qa-red-seat',{permission:{canSubscribe:true,canPublish:false,canPublishData:false,canPublishSources:[]}});
+ await delay(1200);
+ const departed=await admin.getParticipant(roomNames[0],'qa-red-seat');
+ assert.equal(departed.permission.canPublish,false);
+ assert.equal(departed.permission.canSubscribe,true);
+ assert.equal(departed.tracks.length,0,'Leave Seat must stop microphone publication');
+ const heardBefore=counts.get('qa-red-seat<-qa-red-host').energy;
+ await delay(500);
+ assert(counts.get('qa-red-seat<-qa-red-host').energy>heardBefore,'Former speaker stays connected and hears the Host');
+ console.log(JSON.stringify({actualCrossHostAudio:true,actualCrossSeatedAudio:true,mutedSeatSilence:true,seatRepublishRecovered:true,remoteUnmuteSecurityUnchanged:true,basePublisherTrackSidsPreserved:true,leaveSeatStopsPublish:true,leaveSeatPreservesSubscription:true,participants:8,rooms:2,receivedStreams:[...counts.values()].filter(c=>c.energy>100000).length,secretLogged:false}));
  void before;
 }finally{
  running=false;
