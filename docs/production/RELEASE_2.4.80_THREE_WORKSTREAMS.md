@@ -1,9 +1,10 @@
 # Nazraa 2.4.80+7392 — three owner-scoped workstreams
 
-Status: implementation and automated release gates PASS; VPS deployment and
-public distribution NOT yet completed. The Mac locked during authenticated
-Hostinger web-console access. Direct key-only SSH still times out during banner
-exchange. No public update pointer was changed and the GitHub artifact is DRAFT.
+Status: **DEPLOYED AND PUBLISHED — 14 October 2026**. All three owner-scoped
+workstreams are deployed on the existing VPS. Signed release **2.4.80+7392** is
+available from https://nazralive.in/download and the published GitHub release.
+The public APK was downloaded and its SHA-256 verified against the exact APK
+installed and smoke-tested on Android 16. No second mobile rebuild was required.
 
 ## Scope and root causes
 
@@ -50,13 +51,26 @@ exchange. No public update pointer was changed and the GitHub artifact is DRAFT.
   month rollover, date/session details and unchanged Live History.
 - Role matrix PASS; PK streak policy 9 cases PASS; game RTP model PASS.
 - Signed exact APK installed on `emulator-5554`, API 36. Existing login and Home
-  retained; live production Face viewer video visibly received. This is not a
-  claim of physical audio-quality or new server-ledger UI validation.
+  retained; live production Face viewer video visibly received; a production
+  Party room entered without a user-visible error. Both rooms were left normally.
+  The new Party Board History screen loaded the production API, correct targets
+  and genuine empty state. Existing Live History loaded actual prior activity
+  without an error. These observations are not a physical audio-quality test.
+- After deployment, read-only production verification found **2 real Party
+  attendance segments**, **1 active**, **40,594 persisted milliseconds** in one
+  closed day part, and **0 own-board violations**. These are anonymous aggregate
+  observations, not synthetic production activity. Both history query plans used
+  `ref` access: `idx_party_board_day_user` and `idx_party_board_user_start`.
+- The existing room-maintenance route returned HTTP 200 and `status: complete`.
+- Withdrawal authorization, storage, transaction and route integrations passed.
+  The expired Master browser session was not used to claim a fresh manual
+  finance-button test; no real production balances or Agency assignments were
+  changed solely to manufacture a test pass.
 
 Logs: `docs/qa/20261014/three-workstreams/`. Face proof is in a private subfolder;
 do not publish that screenshot or any private source/backup archive.
 
-## Artifacts built, not distributed
+## Published artifacts
 
 - APK: `/Users/aishwaryam/nazra2/dist/Nazraa-Live-2.4.80-7392-release.apk`
   - 224,310,925 bytes
@@ -65,37 +79,85 @@ do not publish that screenshot or any private source/backup archive.
   - 177,535,737 bytes
   - SHA-256 `5ba979b58ff8289e66762e9a8569107be2700826c833f20d0f68dfa02a88e578`
 - Package `com.nazraa.live`; target SDK 36; existing signing unchanged.
-- GitHub `aishKodes/Nazraa-Releases`, `v2.4.80`: DRAFT with APK uploaded;
-  GitHub SHA digest equals local artifact. Do NOT publish before VPS gates.
+- Public download page: https://nazralive.in/download
+- GitHub release: https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.4.80
+- Public APK: https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.80/Nazraa-Live-2.4.80-7392-release.apk
+- GitHub release is published, not draft. GitHub digest and the downloaded public
+  binary both match the tested local APK. The signed AAB is retained locally.
+- Website version, build, file size, download URL and checksum are updated.
+  Public-page proof is `docs/qa/20261014/three-workstreams/public-download-2.4.80-verified.png`.
 
-## Remaining deployment sequence
+## Completed safe production deployment
 
-1. Unlock Mac; reopen the existing Hostinger console. Current root shell URL
-   observed `https://mum2.hostingervps.com/2843/`, checkout `/opt/nazraa/app-next`.
-2. Read `/opt/nazraa/backups/three-workstreams-qa/predeploy.log`. The approved
-   existing offsite backup was started in the background via
-   `scripts/qa-three-workstreams-predeploy-backup.py`; verify
-   `PREDEPLOY_BACKUP_VERIFIED` before applying anything. Do not start two dumps.
-3. Run `qa-stage-three-workstreams.py`. It guards HEAD `875d341`, old release
-   2.4.79, verified backup, patch SHA, and non-overwrite rollback directory.
-   It preserves full existing source/owner edits and tags current API image
-   `nazraa-api:rollback-before-2.4.80`. No reset/pull-over-dirty-tree.
-4. Copy only migration 0101 into current API container `/tmp/nazraa-0101-party-board.sql`;
-   run `qa-migrate-party-board-history.cjs` there. It validates schema 0100,
-   uses MariaDB local server secrets internally, verifies critical config
-   hashes unchanged and records migration 0101. No historic attendance invented.
-5. Build/start only the API service from existing compose; do not restart
-   LiveKit, Redis, database, Caddy, realtime or worker. Verify health/cron;
-   current worker calls the updated existing maintenance route.
-6. Smoke exact APK against updated Party Board History, real empty Live History
-   and Agency UI; verify ledger persistence and terminal handling, without
-   altering real financial balances or membership.
-7. Publish draft APK; update tested public release metadata to version/build,
-   exact path, size and checksum above; deploy site metadata; run guarded
-   `qa-publish-2.4.80-mobile-version.cjs`. Keep minimum/media/economy rules.
-8. Verify public download and GitHub hash, record page screenshot, update this
-   report with actual deployed status. No new mobile rebuild is necessary.
+1. Verified existing private OCI predeploy backup
+   `production/nazraa-predeploy-20261014T105739Z.sql.gz`: **4,756,562,815 bytes**;
+   upload checksum and object head passed. The existing transport encryption and
+   OCI at-rest encryption apply; no new client-side encryption is claimed.
+   The predeploy snapshot remains excluded from nightly lifecycle deletion.
+2. Guarded source staging preserved existing dirty source and owner files in
+   `/opt/nazraa/backups/release-2.4.80/`, with previous source, image and metadata.
+   Rollback image: `nazraa-api:rollback-before-2.4.80`.
+   There was no Git reset or pull over the production working tree.
+3. The first MariaDB DDL attempt rejected an indexed generated key concatenating
+   raw CHAR UUIDs before creating either new table. The key was corrected to
+   `CONCAT(RTRIM(room_id), ':', RTRIM(application_user_id))`, avoiding SQL-mode
+   dependent padding. This follows MariaDB's
+   [generated-column consistency guidance](https://mariadb.com/docs/server/reference/sql-statements/data-definition/create/generated-columns).
+   Core integration was rerun successfully after the correction.
+4. Migration `0101_party_board_seat_history.sql` is recorded on the production
+   MariaDB. No historic attendance was invented. Critical configuration hashes
+   were checked unchanged by the guarded migrator.
+5. Only the API container was rebuilt/recreated from the existing compose. API
+   health is HTTP 200. LiveKit, Redis, database, Caddy, realtime and worker were
+   not restarted. The existing worker uses the updated maintenance route.
+6. Deployed implementation overlays: `e447a85` (three workstreams), `8492648`
+   (MariaDB compatibility), `17a1cce` (public release metadata). Deployment scripts
+   and initial evidence were saved in `8614418`; production checkout HEAD remains
+   `875d341` with preserved intentional source overlays, not a misleading reset.
+7. Production latest version is **2.4.80**; minimum remains **2.1.0** and update
+   URL is https://nazralive.in/download. Provider remains **LIVEKIT** and reconnect
+   grace remains **300 seconds**. Rewards, gender eligibility, daily cap, Live
+   window, wallet economics and media routing are unchanged.
 
-No unrelated media SDK, transport, rewards, wallet rules, DNS or infrastructure
-was changed by this implementation. Production currently remains 2.4.79 until
-the above migration and exact-release server checks have passed.
+Production build logs are retained privately at
+`/opt/nazraa/backups/release-2.4.80/api-build.log` and
+`/opt/nazraa/backups/release-2.4.80/public-release-build.log`.
+The safe aggregate verifier is `scripts/qa-read-2.4.80-release.cjs`; it prints no
+credentials or individual attendance records.
+
+## Owner acceptance status
+
+### Host → Agency
+
+Remove, same-Agency rejoin, different-Agency join, real persistent request,
+rejected retry, duplicate pending protection, canonical single membership and
+historical preservation: **PASS** in database/repository integration. Misleading
+"Request to Master" join feedback is fixed; existing Master Agency-creation
+approval remains unchanged.
+
+### Withdrawal Control
+
+Agency expected amount and own scope; Master approve/reject/process/pay;
+idempotency; audit; saved USD/hierarchy export and canonical calculator reuse:
+**PASS** in the Control integration and role matrix. No new payout formula or
+mobile withdrawal change. Unconfigured targets/components are explicitly
+unavailable, not guessed.
+
+### Party Board History
+
+Own exclusion, other-board/muted/short-session accumulation, 50-minute daily
+target, incomplete-day preservation, independent 24 valid days and 20 hours,
+monthly completion, midnight split, backend authority, persistent account-based
+history, date list, session drilldown and empty state: **PASS**. Reconnect
+duplicates: **NO**. Actual production attendance persistence also observed.
+
+### Regression and limitations
+
+Face viewer and Party entry exact-APK smoke: **PASS**. Party seat lifecycle,
+Live History, Gifts/Diamonds and canonical Agency mapping integrations: **PASS**.
+Live History UI/calculations were **not modified**; its separate one-line
+empty-response correction was explicitly owner-approved. No physical audio
+quality measurement or fresh manual Master payout execution is claimed.
+
+Known release blockers: **NONE**. No unrelated business logic, media SDK,
+transport, rewards, wallet rule, DNS or infrastructure was changed.
