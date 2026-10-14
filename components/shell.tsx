@@ -28,6 +28,7 @@ const common = {
   commerce: { href: "/dashboard/commerce", label: "Coin orders", icon: ShoppingBag },
   transactions: { href: "/dashboard/transactions", label: "Transactions", icon: ReceiptText },
   withdrawals: { href: "/dashboard/withdrawals", label: "Withdrawals", icon: Landmark },
+  hostPayouts: { href: "/dashboard/host-payouts", label: "Host Payouts", icon: Landmark },
   rooms: { href: "/dashboard/rooms", label: "Live rooms", icon: Radio },
   face: { href: "/dashboard/face-verification", label: "Verification", icon: ScanFace },
   gifts: { href: "/dashboard/gifts", label: "Gifts", icon: Gift },
@@ -68,7 +69,7 @@ const navigationPermissions: Partial<Record<Route, Permission>> = {
 
 const navigationGroups = [
   { label: "Core", items: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
-  { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.coinTransfers, common.withdrawals] },
+  { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.coinTransfers, common.withdrawals, common.hostPayouts] },
   { label: "Safety", items: [common.monitoring, common.moderation, common.rooms, common.face, common.risk, common.support, common.audit] },
   { label: "Platform", items: [common.reports, common.agencyReport, common.hierarchyReport, common.liveRewards, common.gameManagement, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
 ] satisfies { label: string; items: NavItem[] }[];
@@ -78,6 +79,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
   const visibleItems = navigationByRole[account.role]
+    .concat(['MASTER','AGENCY'].includes(account.role) ? [common.hostPayouts] : [])
     .filter(item => !navigationPermissions[item.href] || can(account.role, navigationPermissions[item.href]!))
     .map(item => account.role === "AGENCY" && item.href === "/dashboard/live-rewards"
       ? { ...item, label: "Live Report" } : item);

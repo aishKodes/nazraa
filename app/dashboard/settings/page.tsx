@@ -141,14 +141,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <div className="card-title"><div><h2>Withdrawal economics</h2><p>Applied only when a withdrawal is completed. Historic payout snapshots never change.</p></div></div>
       <form action={submitWithdrawalEconomy} className="form-grid">
         <label>Diamond slab<input name="slabDiamonds" type="number" min="1" required defaultValue={withdrawal.slabDiamonds} /></label>
-        <label>Total USD cents / slab<input name="totalUsdCents" type="number" min="1" required defaultValue={withdrawal.totalUsdCents} /></label>
-        <label>Host USD cents<input name="hostUsdCents" type="number" min="0" required defaultValue={withdrawal.hostUsdCents} /></label>
-        <label>Agency USD cents<input name="agencyUsdCents" type="number" min="0" required defaultValue={withdrawal.agencyUsdCents} /></label>
-        <label>Super Admin USD cents<input name="superAdminUsdCents" type="number" min="0" required defaultValue={withdrawal.superAdminUsdCents} /></label>
-        <label>Admin USD cents<input name="adminUsdCents" type="number" min="0" required defaultValue={withdrawal.adminUsdCents} /></label>
-        <label>BD USD cents<input name="bdUsdCents" type="number" min="0" required defaultValue={withdrawal.bdUsdCents} /></label>
-        <label>Country Manager USD cents<input name="countryManagerUsdCents" type="number" min="0" required defaultValue={withdrawal.countryManagerUsdCents} /></label>
-        <label>Company USD cents<input name="companyUsdCents" type="number" min="0" required defaultValue={withdrawal.companyUsdCents} /></label>
+        <label>Total USD / slab<input name="totalUsd" type="number" min="0.01" step="0.01" required defaultValue={(withdrawal.totalUsdCents/100).toFixed(2)} /></label>
+        <label>Host USD<input name="hostUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.hostUsdCents/100).toFixed(2)} /></label>
+        <label>Agency USD<input name="agencyUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.agencyUsdCents/100).toFixed(2)} /></label>
+        <label>Legacy Super Admin USD<input name="superAdminUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.superAdminUsdCents/100).toFixed(2)} /></label>
+        <label>Legacy Admin USD<input name="adminUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.adminUsdCents/100).toFixed(2)} /></label>
+        <label>Legacy BD USD<input name="bdUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.bdUsdCents/100).toFixed(2)} /></label>
+        <label>Legacy Country Manager USD<input name="countryManagerUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.countryManagerUsdCents/100).toFixed(2)} /></label>
+        <label>Legacy Company USD<input name="companyUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.companyUsdCents/100).toFixed(2)} /></label>
         <label>USD → INR rate<input name="usdInrRate" type="number" min="0.01" max="1000" step="0.000001" required defaultValue={withdrawal.usdInrRate} /></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the withdrawal configuration changing?" /></label>
         <label>Confirm<button className="primary-button" type="submit">Save withdrawal economics</button></label>

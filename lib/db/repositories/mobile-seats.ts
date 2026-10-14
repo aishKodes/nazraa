@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
+import { MobileAccessDeniedError } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
 import {beginPartyBoardSeat,closePartyBoardSegments} from './party-board-history';
 
@@ -124,7 +125,7 @@ async function assignSeat(
 }
 
 export async function actOnRoomSeat(identity: MobileIdentity, input: {
-  roomCode: string; action: "request" | "accept" | "reject" | "assign" | "leave" | "lock" | "unlock";
+  roomCode: string; action: "request" | "accept" | "reject" | "assign" | "leave" | "remove" | "lock" | "unlock";
   seatIndex?: number; targetPublicId?: string; seatSessionId?: string; seatVersion?: number;
 }) {
   return withTransaction(async (connection) => {
@@ -147,24 +148,36 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
        WHERE room_id = ? AND left_at IS NOT NULL AND seat_index IS NOT NULL`,
       [room.id],
     );
-    if (input.action === "leave") {
-      if (!expectedSeatMatches(room as SeatMember, input.seatSessionId, input.seatVersion)) {
+    if (input.action === "leave" || input.action === "remove") {
+      let prior = room as SeatMember;
+      let targetUserId = identity.userId;
+      let targetPublicId = identity.publicId;
+      if (input.action === "remove") {
+        if (!["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the Room Owner or a Room Admin can remove a member from a seat.");
+        const [targets] = await connection.query<RowDataPacket[]>(`SELECT m.*,u.public_id FROM live_room_members m JOIN application_users u ON u.id=m.application_user_id WHERE m.room_id=? AND u.public_id=? AND m.left_at IS NULL FOR UPDATE`, [room.id,input.targetPublicId ?? ""]);
+        const target=targets[0];
+        if(!target) throw new Error("This member is no longer in the room.");
+        if(target.room_role==='OWNER' && target.application_user_id!==identity.userId) throw new Error("The Room Owner cannot be removed from their seat.");
+        prior=target as SeatMember; targetUserId=String(target.application_user_id);targetPublicId=String(target.public_id);
+      }
+      if (!expectedSeatMatches(prior, input.seatSessionId, input.seatVersion)) {
         return { status: "stale_ignored", seatIndex: room.seat_index, seatSessionId: room.seat_session_id, seatVersion: Number(room.seat_version) };
       }
-      const prior = room as SeatMember;
-      await closePartyBoardSegments(connection,String(room.id),identity.userId,'USER_LEFT_SEAT');
+      if(prior.seat_index==null) return {status:'left',targetPublicId,seatVersion:Number(prior.seat_version ?? 0)};
+      await closePartyBoardSegments(connection,String(room.id),targetUserId,input.action==='remove'?'STAFF_REMOVED_SEAT':'USER_LEFT_SEAT');
       const nextVersion = Number(prior.seat_version ?? 0) + 1;
-      await connection.execute("UPDATE live_room_members SET seat_index = NULL, seat_session_id = NULL, seat_version = ?, muted = TRUE, media_publishing = FALSE, room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role), media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'PASSIVE_LISTENER') WHERE room_id = ? AND application_user_id = ?", [nextVersion, room.id, identity.userId]);
-      await connection.execute("UPDATE live_seat_requests SET status = 'EXPIRED' WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
-      await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND can_publish = TRUE", [room.id, identity.userId]);
-      await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND usage_type = 'PARTY_SPEAKER_RTC'", [room.id, identity.userId]);
+      await connection.execute("UPDATE live_room_members SET seat_index = NULL, seat_session_id = NULL, seat_version = ?, muted = TRUE, media_publishing = FALSE, room_role = IF(room_role = 'SPEAKER', 'AUDIENCE', room_role), media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'PASSIVE_LISTENER') WHERE room_id = ? AND application_user_id = ?", [nextVersion, room.id, targetUserId]);
+      await connection.execute("UPDATE live_seat_requests SET status = 'EXPIRED' WHERE room_id = ? AND application_user_id = ?", [room.id, targetUserId]);
+      await connection.execute("UPDATE live_media_access_grants SET revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND can_publish = TRUE", [room.id, targetUserId]);
+      await connection.execute("UPDATE livekit_media_access_grants SET revoked_at=COALESCE(revoked_at,CURRENT_TIMESTAMP(3)) WHERE room_id=? AND application_user_id=? AND publish_mode<>'none'",[room.id,targetUserId]);
+      await connection.execute("UPDATE live_media_usage SET ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)) WHERE room_id = ? AND application_user_id = ? AND usage_type = 'PARTY_SPEAKER_RTC'", [room.id, targetUserId]);
       await recordSeatTransition(connection, {
-        roomId: String(room.id), userId: identity.userId, seatIndex: prior.seat_index,
+        roomId: String(room.id), userId: targetUserId, seatIndex: prior.seat_index,
         seatSessionId: prior.seat_session_id, seatVersion: nextVersion,
         previousState: seatState(prior), nextState: "UNSEATED", desiredMicState: "MUTED",
-        eventSource: "ROOM_SEAT_LEAVE", terminationReason: "USER_LEFT_SEAT",
+        eventSource: input.action==='remove'?'ROOM_SEAT_REMOVE':"ROOM_SEAT_LEAVE", terminationReason: input.action==='remove'?'STAFF_REMOVED_SEAT':"USER_LEFT_SEAT",
       });
-      return { status: "left", seatVersion: nextVersion };
+      return { status: "left", targetPublicId, seatVersion: nextVersion };
     }
     if (input.action === "lock" || input.action === "unlock") {
       if (!["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the Room Owner or a Room Admin can lock seats.");
@@ -192,19 +205,16 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       const index = input.seatIndex;
       if (index == null || !Number.isInteger(index) || index < 0 || index >= Number(room.seat_count)) throw new Error("Choose an available seat.");
       const [locked] = await connection.query<RowDataPacket[]>("SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ? LIMIT 1", [room.id, index]);
-      if (locked.length) throw new Error("That seat is locked by room staff.");
+      if (locked.length) throw new MobileAccessDeniedError("SEAT_LOCKED", "This seat is locked and cannot be occupied.");
       const [occupied] = await connection.query<RowDataPacket[]>("SELECT application_user_id FROM live_room_members WHERE room_id = ? AND seat_index = ? AND application_user_id != ? AND left_at IS NULL", [room.id, index, identity.userId]);
-      if (occupied.length) throw new Error("That seat is already reserved. Choose another seat.");
-      if (["OWNER", "ADMIN"].includes(room.room_role)) {
+      if (occupied.length) throw new MobileAccessDeniedError("SEAT_TAKEN", "This seat is no longer available.");
+      {
         const assignment = await assignSeat(connection, {
           roomId: String(room.id), userId: identity.userId, seatIndex: index,
-          eventSource: "ROOM_SEAT_SELF_ASSIGN", member: room as SeatMember,
+          eventSource: "ROOM_SEAT_AUTO_JOIN", member: room as SeatMember,
         });
         return { status: "accepted", seatIndex: index, ...assignment };
       }
-      await connection.execute("INSERT INTO live_seat_requests (room_id, application_user_id, seat_index) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE seat_index = VALUES(seat_index), status = 'PENDING', requested_at = CURRENT_TIMESTAMP(3)", [room.id, identity.userId, index]);
-      await connection.execute("UPDATE live_room_members SET media_role = 'MIC_REQUESTED', media_publishing = FALSE WHERE room_id = ? AND application_user_id = ? AND room_role = 'AUDIENCE'", [room.id, identity.userId]);
-      return { status: "pending", seatIndex: index };
     }
     if (!["OWNER", "ADMIN"].includes(room.room_role)) throw new Error("Only the room owner or a room admin can decide mic requests.");
     if (input.action === "assign") {

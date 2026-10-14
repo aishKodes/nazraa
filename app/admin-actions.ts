@@ -2494,6 +2494,12 @@ export async function submitCommerceSettings(formData: FormData) {
 
 export async function submitWithdrawalEconomy(formData: FormData) {
   const scope = await requirePermission("settings.manage");
+  const values = Object.fromEntries(formData);
+  for (const name of ['total','host','agency','superAdmin','admin','bd','countryManager','company']) {
+    const raw=String(values[`${name}Usd`]??'');
+    if(!/^\d+(\.\d{1,2})?$/.test(raw))redirect(destination('/dashboard/settings','error','Use USD amounts with at most two decimals.'));
+    const [whole,fraction='']=raw.split('.');values[`${name}UsdCents`]=String(Number(whole)*100+Number(fraction.padEnd(2,'0')));
+  }
   const parsed = z
     .object({
       slabDiamonds: z.coerce.number().int().positive(),
@@ -2508,7 +2514,7 @@ export async function submitWithdrawalEconomy(formData: FormData) {
       usdInrRate: z.coerce.number().positive().max(1000),
       reason: z.string().trim().min(5).max(500),
     })
-    .safeParse(Object.fromEntries(formData));
+    .safeParse(values);
   if (!parsed.success)
     redirect(
       destination(

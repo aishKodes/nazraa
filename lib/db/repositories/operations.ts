@@ -211,11 +211,12 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
   return withTransaction(async (connection) => {
     const filter = scopeWhere(input.scope, "agency_account_id");
     const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; agency_account_id: string | null; withdrawal_code: string; payout_method_id: string | null; provider_reference: string|null })[]>(
-      `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id,provider_reference FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
+      `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id,provider_reference,request_channel FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
     );
     const request = rows[0];
     if (!request) throw new Error("Withdrawal was not found in your permitted hierarchy.");
+    if((request as RowDataPacket).request_channel==='HOST_WEB')throw new Error('Manage this request in Host Payouts; its approved USD snapshot must not be recalculated.');
     if(request.status===input.nextStatus) {
       if(input.nextStatus==='COMPLETED'&&request.provider_reference!==input.providerReference?.trim())throw new Error('This withdrawal is already paid with another reference.');
       return {previousStatus:request.status,nextStatus:input.nextStatus,alreadyExisted:true};

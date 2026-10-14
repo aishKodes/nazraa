@@ -68,6 +68,7 @@ import {
   authorizeLiveKitRoom,
 } from "@/lib/services/livekit-room-authority";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
+import {partyRoomAdmins} from '@/lib/db/repositories/party-room-admins';
 import {
   isLiveKitConfigured,
   mediaProviderFor,
@@ -381,6 +382,10 @@ export async function GET(
       }
       if (!mediaCriticalResources.has(resource))
         await expireEndedVipMemberships();
+      if(resource==='room-admins') {
+        const roomCode=z.string().min(3).max(80).parse(new URL(request.url).searchParams.get('roomCode'));
+        return NextResponse.json(await partyRoomAdmins(identity,roomCode),{headers:{'Cache-Control':'private, no-store'}});
+      }
       if (resource === "rooms") {
         const after = z
           .string()
@@ -598,6 +603,7 @@ export async function POST(
               "reject",
               "assign",
               "leave",
+              "remove",
               "lock",
               "unlock",
             ]),
@@ -608,6 +614,9 @@ export async function POST(
           })
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
+        if(mediaProviderFor(identity)==='LIVEKIT' && result.status==='left') {
+          await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(parsed.roomCode, result.targetPublicId ?? identity.publicId, false);
+        }
         notifyRoom(parsed.roomCode, "seat");
         scheduleMixerSync(
           parsed.roomCode,

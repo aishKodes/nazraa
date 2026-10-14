@@ -35,7 +35,12 @@ export async function verifyAudioPartyPk(root:Connection,user:(name:string)=>Pro
   await pk.audioPkAction(red,{roomCode:redCode,sessionId:id,action:'END'});
   assert.equal((await pk.audioPkSnapshot(blue,blueCode)).session,null);
  }
+ // Random selection is genuine; isolate available targets in this QA database
+ // rather than assuming the random picker chooses Blue among unrelated fixtures.
+ const [otherBoards]=await root.query<RowDataPacket[]>("SELECT id FROM live_rooms WHERE room_type='PARTY' AND room_code NOT IN (?,?) AND pk_requests_enabled=TRUE",[redCode,blueCode]);
+ for(const board of otherBoards)await root.execute('UPDATE live_rooms SET pk_requests_enabled=FALSE WHERE id=?',[board.id]);
  const random=await pk.audioPkInvite(red,{roomCode:redCode,mode:'RANDOM',durationMinutes:5,requestId:randomUUID()});
+ for(const board of otherBoards)await root.execute('UPDATE live_rooms SET pk_requests_enabled=TRUE WHERE id=?',[board.id]);
  await pk.audioPkAction(blue,{roomCode:blueCode,sessionId:random.id,action:'ACCEPT'});
  const [boards]=await root.query<RowDataPacket[]>('SELECT id,room_code FROM live_rooms WHERE room_code IN (?,?)',[redCode,blueCode]);
  const redId=String(boards.find(r=>r.room_code===redCode)!.id);

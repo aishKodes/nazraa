@@ -436,6 +436,11 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if(process.env.NAZRAA_QA_ONLY_PAYOUT==='1') {
+      const agency=(await accounts.accountByManagementId(String(qaAgency.publicId)))!;
+      await (await import('./host-payout-tests')).verifyHostPayouts(root,user,master.account,agency);
+      return;
+    }
     if (process.env.NAZRAA_QA_ONLY_AUDIO === "1") {
       const audioUpgrade = await import("./audio-room-upgrade-tests");
       await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
@@ -1144,7 +1149,8 @@ async function main() {
       animationQueueLength: 3,
       messageDeliveryLatencyMs: 145,
     });
-    assert.equal(before.seatRequests?.[0].userId, guest.publicId);
+    assert.equal(before.seatRequests?.filter(r=>r.status==='pending').length, 0);
+    assert.equal((await rooms.refreshRoomPresence(guest,roomCode)).seatIndex,0,'unlocked seat claims immediately');
     const [runtimeDiagnostics] = await root.query<RowDataPacket[]>(
       `SELECT connection_phase, reconnect_count, publish_state, playback_state,
               active_speakers, passive_viewers, animation_queue_length,
@@ -1191,11 +1197,6 @@ async function main() {
         targetPublicId: guest.publicId,
       }),
     );
-    await seats.actOnRoomSeat(roomAdmin, {
-      roomCode,
-      action: "accept",
-      targetPublicId: guest.publicId,
-    });
     const accepted = await rooms.refreshRoomPresence(guest, roomCode);
     assert.equal(accepted.roomRole, "speaker");
     assert.equal(accepted.seatIndex, 0);
@@ -1230,13 +1231,12 @@ async function main() {
     });
     await seats.actOnRoomSeat(owner, {
       roomCode,
-      action: "reject",
+      action: "remove",
       targetPublicId: guest.publicId,
     });
     assert.equal(
-      (await rooms.refreshRoomPresence(guest, roomCode)).seatRequests?.[0]
-        .status,
-      "rejected",
+      (await rooms.refreshRoomPresence(guest, roomCode)).seatIndex,
+      null,
     );
     await seats.actOnRoomSeat(owner, {
       roomCode,
@@ -1265,8 +1265,25 @@ async function main() {
       [],
     );
     console.log(
-      "PASS seat permissions: Couple Seats stay empty; per-seat Lock/Unlock persists server-side; request/accept, assignment, rejection, leave and foreign denial",
+      "PASS seats: immediate automatic claim; locks, assignment, remove-from-seat, leave and unauthorized denial",
     );
+    const claimRace=await Promise.allSettled([
+      seats.actOnRoomSeat(guest,{roomCode,action:'request',seatIndex:3}),
+      seats.actOnRoomSeat(roomAdmin,{roomCode,action:'request',seatIndex:3}),
+    ]);
+    assert.equal(claimRace.filter(r=>r.status==='fulfilled').length,1,'one transaction wins simultaneous seat claim');
+    for(const member of [guest,roomAdmin])await seats.actOnRoomSeat(member,{roomCode,action:'leave'});
+    assert.equal((await rooms.refreshRoomPresence(roomAdmin,roomCode)).roomRole,'admin','Admin Leave Seat keeps authority');
+    for(const hours of [25,168]) {
+      await root.execute('UPDATE party_room_admins SET granted_at=CURRENT_TIMESTAMP(3)-INTERVAL ? HOUR WHERE application_user_id=?',[hours,roomAdmin.userId]);
+      await root.execute("UPDATE live_room_members SET room_role='AUDIENCE',left_at=CURRENT_TIMESTAMP(3) WHERE application_user_id=? AND room_id=(SELECT id FROM live_rooms WHERE room_code=?)",[roomAdmin.userId,roomCode]);
+      assert.equal((await rooms.joinLiveRoom(roomAdmin,roomCode)).role,'admin','grant survives stale presence, restart/relogin/reentry and days');
+    }
+    await assert.rejects(rooms.setRoomAdmin(guest,{roomCode,targetPublicId:stranger.publicId,makeAdmin:true}),/Only the room owner/);
+    await rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:false});
+    assert.equal((await rooms.refreshRoomPresence(roomAdmin,roomCode)).roomRole,'audience');
+    await rooms.setRoomAdmin(owner,{roomCode,targetPublicId:roomAdmin.publicId,makeAdmin:true});
+    console.log('PASS persistent Party Admin: +25h/+7d, stale member/relogin/restart/reentry fixtures, Admin Leave Seat, manual revoke, owner-only grant, atomic two-user seat race; global expirations unchanged.');
 
     // Kick Out is a scoped room block. It must close this membership and media
     // grant, deny only this room's re-entry, remain visible to staff, and be
@@ -1277,7 +1294,7 @@ async function main() {
     });
     await assert.rejects(
       rooms.joinLiveRoom(guest, roomCode),
-      /blocked you from this Live/,
+      /banned from this room/,
     );
     const blockedUsers = await rooms.listRoomBlockedUsers(owner, roomCode);
     assert.equal(blockedUsers.blockedUsers.length, 1);
@@ -4642,6 +4659,8 @@ async function main() {
         agencyCsv.includes("Host balances") &&
         agencyCsv.includes("Withdrawal details"),
     );
+    assert.equal(agencyCsv.includes('usd_cents'),false,'exports present fractional USD, never a separate minor-unit field');
+    assert.equal(agencyCsv.includes('_inr'),false,'legacy financial data stays stored; exports are USD-only');
     const bankWithdrawal = await product.createWithdrawalRequest(
       rewardHost,
       100000,
@@ -4705,6 +4724,7 @@ async function main() {
     console.log(
       "PASS retained withdrawal infrastructure: historical payout paths tested; Play-v1 user switch restored off and enforced",
     );
+    await (await import('./host-payout-tests')).verifyHostPayouts(root,user,master.account,agencyScope.account);
 
     const ownerExit = await rooms.leaveLiveRoom(owner, roomCode);
     assert.equal(ownerExit.transferredTo, roomAdmin.publicId);

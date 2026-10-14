@@ -129,10 +129,10 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
       `SELECT request.id, request.withdrawal_code, request.amount, request.status, request.requested_at,
               request.reviewed_at, request.provider_reference, hierarchy.*,
               distribution.slab_diamonds, distribution.slab_count, distribution.total_usd,
-              distribution.total_usd_cents_per_slab, distribution.host_usd_cents_per_slab,
-              distribution.agency_usd_cents_per_slab, distribution.super_admin_usd_cents_per_slab,
-              distribution.admin_usd_cents_per_slab, distribution.bd_usd_cents_per_slab,
-              distribution.country_manager_usd_cents_per_slab, distribution.company_usd_cents_per_slab,
+              distribution.total_usd_cents_per_slab/100 total_usd_per_slab, distribution.host_usd_cents_per_slab/100 host_usd_per_slab,
+              distribution.agency_usd_cents_per_slab/100 agency_usd_per_slab, distribution.super_admin_usd_cents_per_slab/100 super_admin_usd_per_slab,
+              distribution.admin_usd_cents_per_slab/100 admin_usd_per_slab, distribution.bd_usd_cents_per_slab/100 bd_usd_per_slab,
+              distribution.country_manager_usd_cents_per_slab/100 country_manager_usd_per_slab, distribution.company_usd_cents_per_slab/100 company_usd_per_slab,
               distribution.host_usd, distribution.agency_usd, distribution.super_admin_usd,
               distribution.admin_usd, distribution.bd_usd, distribution.country_manager_usd,
               distribution.company_usd, distribution.usd_inr_rate, distribution.total_inr,
@@ -193,8 +193,8 @@ export async function agencyWithdrawalCsv(scope: Scope, agencyId: string) {
   const agency = finance.agencies.find((item) => item.id === finance.selectedAgency!.id)!;
   const summaryColumns = [
     "agency_public_id", "agency_name", "host_count", "available_diamonds", "pending_diamonds",
-    "total_withdrawn_diamonds", "host_usd","agency_usd","expected_host_usd","expected_agency_usd", "host_payout_inr", "agency_commission_inr", "super_admin_inr",
-    "admin_inr", "bd_inr", "country_manager_inr", "company_inr",
+    "total_withdrawn_diamonds", "host_usd","agency_usd","expected_host_usd","expected_agency_usd",
+    "super_admin_usd", "admin_usd", "bd_usd", "country_manager_usd", "company_usd",
   ];
   const summary = {
     agency_public_id: agency.publicId, agency_name: agency.name, host_count: agency.hostCount,
@@ -204,22 +204,22 @@ export async function agencyWithdrawalCsv(scope: Scope, agencyId: string) {
     agency_commission_inr: agency.agencyCommissionInr, super_admin_inr: agency.superAdminInr,
     admin_inr: agency.adminInr, bd_inr: agency.bdInr, country_manager_inr: agency.countryManagerInr,
     company_inr: agency.companyInr,
+    super_admin_usd:agency.superAdminUsd,admin_usd:agency.adminUsd,bd_usd:agency.bdUsd,country_manager_usd:agency.countryManagerUsd,company_usd:agency.companyUsd,
   };
   const hostColumns = [
     "host_public_id", "host_name", "available_diamonds", "pending_diamonds", "next_target",
-    "total_withdrawn_diamonds", "host_usd", "agency_usd", "expected_host_usd", "expected_agency_usd", "host_payout_inr", "agency_commission_inr", "withdrawal_count",
+    "total_withdrawn_diamonds", "host_usd", "agency_usd", "expected_host_usd", "expected_agency_usd", "withdrawal_count",
   ];
   const columns = [
     "withdrawal_code", "host_public_id", "host_name", "agency_public_id", "agency_name",
     "bd_public_id", "bd_name", "admin_public_id", "admin_name", "super_admin_public_id",
     "super_admin_name", "country_manager_public_id", "country_manager_name", "amount", "status",
     "requested_at","reviewed_at","approved_at","processing_at", "completed_at", "provider_reference", "slab_diamonds", "slab_count",
-    "total_usd_cents_per_slab", "host_usd_cents_per_slab", "agency_usd_cents_per_slab",
-    "super_admin_usd_cents_per_slab", "admin_usd_cents_per_slab", "bd_usd_cents_per_slab",
-    "country_manager_usd_cents_per_slab", "company_usd_cents_per_slab",
-    "usd_inr_rate", "total_usd", "host_usd", "agency_usd", "super_admin_usd", "admin_usd",
-    "bd_usd", "country_manager_usd", "company_usd", "total_inr", "host_inr", "agency_inr",
-    "super_admin_inr", "admin_inr", "bd_inr", "country_manager_inr", "company_inr",
+    "total_usd_per_slab", "host_usd_per_slab", "agency_usd_per_slab",
+    "super_admin_usd_per_slab", "admin_usd_per_slab", "bd_usd_per_slab",
+    "country_manager_usd_per_slab", "company_usd_per_slab",
+    "total_usd", "host_usd", "agency_usd", "super_admin_usd", "admin_usd",
+    "bd_usd", "country_manager_usd", "company_usd",
   ];
   return [
     "Agency summary",
@@ -230,7 +230,7 @@ export async function agencyWithdrawalCsv(scope: Scope, agencyId: string) {
     hostColumns.map(csvCell).join(","),
     ...finance.hosts.map((host) => [
       host.publicId, host.name, host.availableDiamonds, host.pendingDiamonds, host.nextTarget,
-      host.totalWithdrawn, host.hostUsd, host.agencyUsd, host.expected.host, host.expected.agency, host.hostPayoutInr, host.agencyCommissionInr, host.withdrawalCount,
+      host.totalWithdrawn, host.hostUsd, host.agencyUsd, host.expected.host, host.expected.agency, host.withdrawalCount,
     ].map(csvCell).join(",")),
     "",
     "Withdrawal details",

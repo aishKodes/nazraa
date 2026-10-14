@@ -14,6 +14,7 @@ import type {
 import { db, withDatabaseReadRetry } from "@/lib/db/pool";
 import { withTransaction,withIdempotentTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
+import { MobileAccessDeniedError } from "@/lib/auth/mobile-session";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import {
   signedZegoCdnPlaybackUrl,
@@ -1415,7 +1416,7 @@ export async function joinLiveRoom(
       [roomCode],
     );
     const room = rooms[0];
-    if (!room) throw new Error("This room is no longer active.");
+    if (!room) throw new MobileAccessDeniedError("ROOM_ENDED", "This room has ended.");
     if (room.host_application_user_id !== identity.userId) {
       const [userBlocks] = await connection.query<RowDataPacket[]>(
         `SELECT 1 FROM private_message_blocks
@@ -1438,7 +1439,7 @@ export async function joinLiveRoom(
         [room.id, identity.userId],
       );
       if (blocks[0])
-        throw new Error("The room owner has blocked you from this Live.");
+        throw new MobileAccessDeniedError("ROOM_PERMANENT_BANNED", "You have been banned from this room. Contact the Room Owner to request access.");
     }
     if (
       room.host_application_user_id !== identity.userId &&
@@ -1448,8 +1449,12 @@ export async function joinLiveRoom(
         throw new Error("The room password is incorrect.");
       }
     }
-    const requestedRole =
+    let requestedRole =
       room.host_application_user_id === identity.userId ? "OWNER" : "AUDIENCE";
+    if(room.room_type==='PARTY' && requestedRole!=='OWNER') {
+      const [admins]=await connection.query<RowDataPacket[]>('SELECT 1 FROM party_room_admins WHERE room_id=? AND application_user_id=? AND revoked_at IS NULL',[room.id,identity.userId]);
+      if(admins.length) requestedRole='ADMIN';
+    }
     const requestedMediaRole =
       room.room_type === "PARTY"
         ? requestedRole === "OWNER"
@@ -1476,6 +1481,7 @@ export async function joinLiveRoom(
         requestedRole === "AUDIENCE",
       ],
     );
+    if(room.room_type==='PARTY' && requestedRole==='ADMIN') await connection.execute("UPDATE live_room_members SET room_role='ADMIN' WHERE room_id=? AND application_user_id=?",[room.id,identity.userId]);
     const [members] = await connection.query<
       (RowDataPacket & { room_role: string; media_role: string;seat_index:number|null;seat_session_id:string|null })[]
     >(
@@ -3483,14 +3489,15 @@ export async function roomPublishingDecision(
     // Party owner or speaker unable to publish after the room was created.
     if (!policy.party.allowed) throw new Error(policy.party.reason);
     const [members] = await db().query<
-      (RowDataPacket & { room_role: string; muted: number })[]
+      (RowDataPacket & { room_role: string; muted: number;seat_index:number|null })[]
     >(
-      "SELECT room_role, muted FROM live_room_members WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL LIMIT 1",
+      "SELECT room_role, muted,seat_index FROM live_room_members WHERE room_id = ? AND application_user_id = ? AND left_at IS NULL LIMIT 1",
       [room.id, identity.userId],
     );
     if (
       !members[0] ||
-      !["OWNER", "ADMIN", "SPEAKER"].includes(String(members[0].room_role))
+      !["OWNER", "ADMIN", "SPEAKER"].includes(String(members[0].room_role)) ||
+      (members[0].room_role!=='OWNER' && members[0].seat_index==null)
     ) {
       throw new Error(
         "An active Party speaker role is required to publish audio.",
@@ -3548,9 +3555,9 @@ export async function setRoomAdmin(
     >(
       `SELECT user.id FROM live_room_members member
        INNER JOIN application_users user ON user.id = member.application_user_id
-       WHERE member.room_id = ? AND member.left_at IS NULL AND user.public_id = ?
+       WHERE member.room_id = ? AND (member.left_at IS NULL OR (? = TRUE AND ? = FALSE AND EXISTS (SELECT 1 FROM party_room_admins a WHERE a.room_id=member.room_id AND a.application_user_id=user.id AND a.revoked_at IS NULL))) AND user.public_id = ?
          AND user.account_status = 'ACTIVE' LIMIT 1`,
-      [room.id, input.targetPublicId],
+      [room.id, room.room_type==='PARTY', input.makeAdmin, input.targetPublicId],
     );
     const target = targets[0];
     if (!target || target.id === identity.userId)
@@ -3568,11 +3575,12 @@ export async function setRoomAdmin(
       const [countRows] = await connection.query<
         (RowDataPacket & { count: number })[]
       >(
-        "SELECT COUNT(*) count FROM live_room_members WHERE room_id = ? AND room_role = 'ADMIN' AND left_at IS NULL FOR UPDATE",
-        [room.id],
+        "SELECT COUNT(*) count FROM party_room_admins WHERE room_id = ? AND revoked_at IS NULL AND application_user_id<>?",
+        [room.id,target.id],
       );
       if (Number(countRows[0].count) >= 3)
         throw new Error("A Party Room can have at most three Room Admins.");
+      await connection.execute(`INSERT INTO party_room_admins (room_id,application_user_id,granted_by_application_user_id) VALUES (?,?,?) ON DUPLICATE KEY UPDATE granted_by_application_user_id=VALUES(granted_by_application_user_id),granted_at=CURRENT_TIMESTAMP(3),revoked_at=NULL`,[room.id,target.id,identity.userId]);
       await connection.execute(
         `INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted, left_at)
          VALUES (?, ?, 'ADMIN', 'PASSIVE_LISTENER', TRUE, NULL)
@@ -3580,8 +3588,9 @@ export async function setRoomAdmin(
         [room.id, target.id],
       );
     } else {
+      await connection.execute('UPDATE party_room_admins SET revoked_at=CURRENT_TIMESTAMP(3) WHERE room_id=? AND application_user_id=? AND revoked_at IS NULL',[room.id,target.id]);
       await connection.execute(
-        "UPDATE live_room_members SET room_role = 'AUDIENCE', media_role = IF(seat_index IS NULL, 'PASSIVE_LISTENER', 'RTC_SPEAKER') WHERE room_id = ? AND application_user_id = ? AND room_role = 'ADMIN'",
+        "UPDATE live_room_members SET room_role = IF(seat_index IS NULL,'AUDIENCE','SPEAKER'), media_role = IF(seat_index IS NULL, 'PASSIVE_LISTENER', 'RTC_SPEAKER') WHERE room_id = ? AND application_user_id = ? AND room_role = 'ADMIN'",
         [room.id, target.id],
       );
     }

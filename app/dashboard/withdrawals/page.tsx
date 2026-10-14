@@ -98,7 +98,7 @@ export default async function WithdrawalsPage({
             </table></div> : <EmptyState title="No Hosts" detail="No active Host is assigned to this Agency." />}
           </Card>
           {finance.withdrawals.length ? <Card>
-            <div className="card-title"><div><h2>Permanent payout breakdown</h2><p>The original hierarchy and saved USD allocations. Legacy FX/INR audit values remain in exports; historical records are not recalculated.</p></div></div>
+            <div className="card-title"><div><h2>Permanent payout breakdown</h2><p>The original hierarchy and saved USD allocations. Legacy FX/INR values remain in the protected audit database; presentation and exports use USD. Historical records are not recalculated.</p></div></div>
             <div className="table-scroll"><table>
               <thead><tr><th>Withdrawal</th><th>Host / hierarchy</th><th>Status</th><th className="align-right">Diamonds</th><th className="align-right">{isAdmin?'Total Dollar Work':'Host'}</th>{isAdmin?<><th>Host Dollar</th><th>Agency Dollar</th></>:<><th className="align-right">Agency</th><th className="align-right">SA</th><th className="align-right">Admin</th><th className="align-right">BD</th><th className="align-right">CM</th><th className="align-right">Company</th></>}<th>Approved / processed / reference</th></tr></thead>
               <tbody>{finance.withdrawals.map((item) => <tr key={String(item.withdrawal_id)}>
