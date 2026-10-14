@@ -1,0 +1,18 @@
+{
+  "testDate": "2026-10-15",
+  "destination": "wss://rtc.pixtra.site",
+  "tooling": "official @livekit/rtc-node 1.1.0 / livekit-server-sdk 2.19.0",
+  "actualCrossHostAudio": true,
+  "actualCrossSeatedAudio": true,
+  "mutedSeatSilence": true,
+  "seatRepublishRecovered": true,
+  "remoteUnmuteSecurityUnchanged": true,
+  "basePublisherTrackSidsPreserved": true,
+  "participants": 8,
+  "rooms": 2,
+  "receivedStreams": 11,
+  "syntheticAudio": true,
+  "physicalListeningTest": false,
+  "qaRoomsCleanedUp": true,
+  "secretLogged": false
+}

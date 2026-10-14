@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.80";
-const releaseBuild = 7392;
+const releaseVersion = "2.4.81";
+const releaseBuild = 7393;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.80/Nazraa-Live-2.4.80-7392-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.81/Nazraa-Live-2.4.81-7393-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 224_310_925,
-  sha256: "44f670dcb7baa887ab4129e7657859019531d047751dfcc4358cf46960210bcb",
-  releaseDate: "2026-10-14",
+  apkSizeBytes: 224_491_809,
+  sha256: "d6bc44d902ce3fc39e3779520649851286554f8dd9672bc916d31f37dd6cc89e",
+  releaseDate: "2026-10-15",
   releaseNotes: [
-    "Repairs Agency removal, same-Agency rejoin and transfer requests without deleting Host history.",
-    "Adds durable Party Board History with daily time, valid days, monthly targets and session details.",
-    "Preserves existing LiveKit media, Live rewards, games, Gifts and mobile cash-out restrictions.",
+    "Compact responsive Party Boards, top Gift records, expandable chat and seven seat-local expressions.",
+    "Independent Audio PK with two-way Host/speaker audio, Gift battles, server timers and rematches.",
+    "Safe draggable Rocket and vector celebration; preserves Face Live, Agency, Party History and reward rules.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
