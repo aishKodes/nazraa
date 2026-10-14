@@ -6,7 +6,7 @@
   });
   try {
     const [schema] = await c.query('SELECT name FROM control_schema_migrations ORDER BY name DESC LIMIT 1');
-    const [qa] = await c.execute('SELECT status,seat_count FROM live_rooms WHERE room_code=?', ['NZAHN7RST9R634PZP']);
+    const [qa] = await c.execute('SELECT id,status,seat_count FROM live_rooms WHERE room_code=?', ['NZAHN7RST9R634PZP']);
     const [rows] = await c.execute("SELECT setting_key,setting_value FROM system_settings WHERE setting_key IN ('mobile.app_config','mobile.features')");
     const settings = Object.fromEntries(rows.map(r => [r.setting_key,
       typeof r.setting_value === 'string' ? JSON.parse(r.setting_value) : r.setting_value]));
@@ -18,7 +18,7 @@
     console.log(JSON.stringify({ schema: schema[0]?.name, qaPartyStatus: qa[0]?.status,
       qaLayoutRestored: qa[0]?.seat_count === 10,
       syntheticQaRoomsRemaining: rooms.filter(r => r.name.startsWith('QA_APK_')).length,
-      qaPartyLivekitRoomRemaining: rooms.some(r => r.name.includes('NZAHN7RST9R634PZP')),
+      qaPartyLivekitRoomRemaining: rooms.some(r => r.name === qa[0]?.id || r.name.includes('NZAHN7RST9R634PZP')),
       latestVersion: settings['mobile.app_config']?.latestVersion,
       minimumVersion: settings['mobile.app_config']?.minimumVersion,
       mobileWithdrawalEnabled: settings['mobile.features']?.withdrawalEnabled === true,
