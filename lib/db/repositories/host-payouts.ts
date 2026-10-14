@@ -230,7 +230,7 @@ export async function requestHostPayout(
         agency?.public_id ?? null,
         agency?.full_name ?? null,
         rule.slabDiamonds,
-        JSON.stringify(presentation),
+        JSON.stringify({...presentation,payoutBeneficiaryName:String(method.display_name)}),
         total,
         hostUsd,
         agencyUsd,
@@ -404,7 +404,7 @@ export async function payoutDestination(master: SessionAccount, id: string) {
     fail("Only Master may view payout destinations.");
   return withTransaction(async (c) => {
     const [rows] = await c.query<RowDataPacket[]>(
-      "SELECT payout_encrypted_data,payout_encryption_iv,payout_encryption_tag FROM host_payout_snapshots WHERE withdrawal_id=?",
+      "SELECT payout_encrypted_data,payout_encryption_iv,payout_encryption_tag,JSON_UNQUOTE(JSON_EXTRACT(rule_snapshot,'$.payoutBeneficiaryName')) beneficiary FROM host_payout_snapshots WHERE withdrawal_id=?",
       [id],
     );
     if (!rows[0]) fail("Payout not found.");
@@ -417,11 +417,12 @@ export async function payoutDestination(master: SessionAccount, id: string) {
       {},
       "Authorized private destination access.",
     );
-    return decryptPrivateText({
+    const destination=decryptPrivateText({
       encryptedData: r.payout_encrypted_data,
       iv: r.payout_encryption_iv,
       tag: r.payout_encryption_tag,
     });
+    return `${r.beneficiary ? `Beneficiary: ${String(r.beneficiary)}\n` : ''}${destination}`;
   });
 }
 export async function manageHostPayout(

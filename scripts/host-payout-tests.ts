@@ -110,7 +110,7 @@ export async function verifyHostPayouts(
     displayName: "QA New Host",
     destination: "qa-new@bank",
   });
-  assert.equal(await payout.payoutDestination(master, id), "qa-host@bank");
+  assert.equal(await payout.payoutDestination(master, id), "Beneficiary: QA Host\nqa-host@bank");
   await payout.saveHostPayoutRule(master, {
     slabDiamonds: 125000,
     totalUsd: "12.00",
