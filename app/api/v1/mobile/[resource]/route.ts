@@ -140,6 +140,7 @@ import {
 export const dynamic = "force-dynamic";
 import { ownerRoomProfile, roomPresentation } from "@/lib/db/repositories/room-profile";
 import { publishRoomConfigEvent } from "@/lib/services/room-realtime-events";
+import { audioPkSnapshot,audioPkCandidates,audioPkInvite,audioPkAction,authorizeAudioPkBridge } from "@/lib/db/repositories/audio-party-pk";
 import { faceLiveSocial, invalidateFaceLiveSocial } from "@/lib/db/repositories/face-live-social";
 
 // These routes run on the media critical path and can be called every two
@@ -345,6 +346,11 @@ export async function GET(
             "Cache-Control": "private, max-age=30, stale-while-revalidate=120",
           },
         });
+      }
+      if (resource === "audio-pk") {
+        const url=new URL(request.url);
+        const roomCode=z.string().trim().min(3).max(80).parse(url.searchParams.get('roomCode'));
+        return NextResponse.json(url.searchParams.get('candidates')==='true'?await audioPkCandidates(identity,roomCode):await audioPkSnapshot(identity,roomCode),{headers:{'Cache-Control':'private, no-store'}});
       }
       if (resource === "party-board-history") {
         const url=new URL(request.url);
@@ -1634,6 +1640,7 @@ export async function POST(
           })
           .parse(body);
         const result = await sendGift(identity, parsed);
+        if(result.audioPk)for(const roomCode of result.audioPk.roomCodes)notifyRoom(roomCode,'pk');
         await invalidateFaceLiveSocial(parsed.roomCode).catch(() => undefined);
         notifyRoom(parsed.roomCode, "gift");
         return NextResponse.json(result);
@@ -1742,6 +1749,21 @@ export async function POST(
           mediaRole: authorization.mediaRole,
           publishMode: authorization.publishMode,
         });
+      }
+      if (resource === "audio-pk") {
+        const base=z.object({roomCode:z.string().trim().min(3).max(80),action:z.enum(['INVITE','ACCEPT','DECLINE','END','REMATCH','REMATCH_ACCEPT','REMATCH_DECLINE','BRIDGE'])}).parse(body);
+        if(base.action==='INVITE') {
+          const input=z.object({roomCode:z.string(),targetRoomCode:z.string().min(3).max(80).optional(),mode:z.enum(['FRIEND','RANDOM']),durationMinutes:z.union([z.literal(5),z.literal(10),z.literal(30)]),requestId:z.string().uuid()}).parse(body);
+          return NextResponse.json(await audioPkInvite(identity,input));
+        }
+        const sessionId=z.string().uuid().parse(body.sessionId);
+        if(base.action==='BRIDGE') {
+          if(mediaProviderFor(identity)!=='LIVEKIT'||!isLiveKitConfigured())throw new Error('Live audio is being prepared. Please retry.');
+          const access=await authorizeAudioPkBridge(identity,{roomCode:base.roomCode,sessionId});
+          const token=await new LiveKitTokenService().issueRoomToken({roomId:access.remoteRoomId,identity:access.bridgeIdentity,participantName:identity.fullName,publishMode:'none',ttlSeconds:300});
+          return NextResponse.json({...token,...access});
+        }
+        return NextResponse.json(await audioPkAction(identity,{roomCode:base.roomCode,sessionId,action:base.action}));
       }
       if (resource === "livekit-token") {
         // This endpoint is intentionally unavailable until the deployment is

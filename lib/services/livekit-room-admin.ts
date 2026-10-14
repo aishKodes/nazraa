@@ -26,6 +26,15 @@ export class LiveKitRoomAdmin {
     return new RoomServiceClient(this.url, this.apiKey, this.apiSecret);
   }
 
+  /** Audio PK subscribers only; never touches a base Party publisher. */
+  async disconnectAudioPkBridges(roomCode: string, sessionId: string) {
+    const client=this.client();if(!client)return;
+    try {
+      const participants=await client.listParticipants(roomCode);
+      await Promise.all(participants.filter(p=>p.identity.startsWith(`apk:${sessionId}:`)).map(p=>client.removeParticipant(roomCode,p.identity,{revokeTokenTs:BigInt(Math.floor(Date.now()/1000))})));
+    } catch { /* Room may already have closed. Existing maintenance retries. */ }
+  }
+
   /** Disconnects a kicked participant and invalidates its presently issued token. */
   async removeParticipant(roomCode: string, publicId: string) {
     const client = this.client();

@@ -439,6 +439,7 @@ async function main() {
     if (process.env.NAZRAA_QA_ONLY_AUDIO === "1") {
       const audioUpgrade = await import("./audio-room-upgrade-tests");
       await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
+      await (await import('./audio-party-pk-tests')).verifyAudioPartyPk(root,user);
       return;
     }
     const faceMaster = await import("./face-live-master-tests");
@@ -5124,6 +5125,7 @@ async function main() {
     await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
     const boardTests=await import('./party-board-history-tests');
     await boardTests.verifyPartyBoardHistory(root,user,owner);
+    await (await import('./audio-party-pk-tests')).verifyAudioPartyPk(root,user);
 
     if (process.env.NAZRAA_QA_KEEP === "1") {
       const fixtures = [];

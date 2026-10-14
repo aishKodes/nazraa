@@ -3740,13 +3740,10 @@ export async function sendRoomInteraction(
         .map((item) => item.key)
         .filter(Boolean),
     );
-    if (!allowed.has(input.interactionKey))
-      throw new Error("That room interaction is not available.");
-
     const [rows] = await connection.query<
-      (RowDataPacket & { room_id: string; target_id: string })[]
+      (RowDataPacket & { room_id: string; target_id: string; room_type:string; seat_index:number|null })[]
     >(
-      `SELECT room.id room_id, target.application_user_id target_id
+      `SELECT room.id room_id,room.room_type,sender.seat_index,target.application_user_id target_id
        FROM live_rooms room
        INNER JOIN live_room_members sender ON sender.room_id = room.id
          AND sender.application_user_id = ? AND sender.left_at IS NULL
@@ -3758,8 +3755,15 @@ export async function sendRoomInteraction(
     );
     const member = rows[0];
     if (!member) throw new Error("Both users must be active in the same room.");
-    if (member.target_id === identity.userId)
+    const selfExpression=member.room_type==='PARTY'&&member.target_id===identity.userId&&member.seat_index!=null;
+    const expressionKeys=['smile','cry','applause','hello','kiss','angry','slap'];
+    if(!allowed.has(input.interactionKey)&&!(selfExpression&&expressionKeys.includes(input.interactionKey)))throw new Error('That room interaction is not available.');
+    if (member.target_id === identity.userId&&!selfExpression)
       throw new Error("Choose another room member.");
+    if(selfExpression){
+      const [recent]=await connection.query<RowDataPacket[]>(`SELECT id FROM room_interaction_events WHERE room_id=? AND sender_application_user_id=? AND created_at>CURRENT_TIMESTAMP(3)-INTERVAL 2 SECOND LIMIT 1`,[member.room_id,identity.userId]);
+      if(recent.length)throw new Error('Please wait a moment before another expression.');
+    }
     const id = randomUUID();
     await connection.execute(
       `INSERT INTO room_interaction_events

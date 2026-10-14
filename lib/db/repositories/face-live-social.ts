@@ -8,7 +8,7 @@ import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 type GiftRank = {user: {id: string; name: string; avatarUrl: string | null; level: number; vip: number}; diamonds: number};
 export type RoomGiftSocial = {liveSessionId: string; businessDate: string; businessMonth: string;
-  sessionDiamonds: number; daily: GiftRank[]; monthly: GiftRank[]; topFanId: string | null;
+  sessionDiamonds: number; monthlyDiamonds: number; daily: GiftRank[]; monthly: GiftRank[]; topFanId: string | null;
   contributions: {userId: string; diamonds: number; lastGiftAt: unknown}[]; adminIds: string[]};
 
 /** Read-only social state. Money is derived exclusively from committed gifts. */
@@ -26,7 +26,7 @@ export async function faceLiveSocial(identity: MobileIdentity, roomCode: string,
   const month = `${day.slice(0, 7)}-01`;
   const redis = await roomRedis().catch(() => undefined);
   const epoch = await redis?.get(`face:social-version:${room.id}`).catch(() => null) ?? '0';
-  const key = `face:social:${room.id}:${room.session_id}:${day}:${epoch}`;
+  const key = `face:social:v2:${room.id}:${room.session_id}:${day}:${epoch}`;
   const cached = await redis?.get(key).catch(() => null);
   if (cached) return JSON.parse(cached) as RoomGiftSocial;
   const ranking = async (start: string, end: string): Promise<GiftRank[]> => {
@@ -45,7 +45,7 @@ export async function faceLiveSocial(identity: MobileIdentity, roomCode: string,
       avatarUrl: row.avatar_updated_at ? `${publicApiOrigin()}/api/v1/mobile/avatar/${row.public_id}?v=${new Date(row.avatar_updated_at).getTime()}` : row.avatar_url,
       level: Number(row.level_number), vip: Number(row.vip_tier) }, diamonds: Number(row.diamonds) }));
   };
-  const [daily, monthly, sessionRows, contributions, admins] = await Promise.all([
+  const [daily, monthly, sessionRows, contributions, admins, monthRows] = await Promise.all([
     ranking(day, day), ranking(month, day),
     db().query<RowDataPacket[]>("SELECT COALESCE(SUM(diamond_value),0) diamonds FROM live_room_gift_events WHERE live_session_id = ? AND receiver_application_user_id = ?", [room.session_id, room.host_id]),
     db().query<RowDataPacket[]>(`SELECT user.public_id, SUM(event.diamond_value) diamonds, MAX(event.created_at) last_gift_at
@@ -53,9 +53,12 @@ export async function faceLiveSocial(identity: MobileIdentity, roomCode: string,
       WHERE event.live_session_id = ? AND event.receiver_application_user_id = ?
       GROUP BY user.id, user.public_id ORDER BY diamonds DESC, last_gift_at DESC LIMIT 100`, [room.session_id, room.host_id]),
     db().query<RowDataPacket[]>("SELECT user.public_id FROM face_host_admins admin JOIN application_users user ON user.id = admin.admin_application_user_id WHERE admin.host_application_user_id = ?", [room.host_id]),
+    db().query<RowDataPacket[]>(`SELECT COALESCE(SUM(e.diamond_value),0) diamonds FROM live_room_gift_events e JOIN live_rooms r ON r.id=e.room_id
+      WHERE r.host_application_user_id=? AND e.receiver_application_user_id=? AND e.business_date BETWEEN ? AND ?
+      AND ((?='PARTY' AND r.room_type='PARTY') OR (?<>'PARTY' AND r.room_type IN ('FACE','LIVE')))`,[room.host_id,room.host_id,month,day,room.room_type,room.room_type]),
   ]);
   const result = { liveSessionId: String(room.session_id), businessDate: day, businessMonth: day.slice(0, 7),
-    sessionDiamonds: Number(sessionRows[0][0].diamonds), daily, monthly,
+    sessionDiamonds: Number(sessionRows[0][0].diamonds), monthlyDiamonds:Number(monthRows[0][0].diamonds), daily, monthly,
     topFanId: monthly[0]?.user.id ?? null,
     contributions: contributions[0].map((row) => ({ userId: String(row.public_id), diamonds: Number(row.diamonds), lastGiftAt: row.last_gift_at })),
     adminIds: admins[0].map((row) => String(row.public_id)) };

@@ -18,6 +18,7 @@ import {
   mobileCompletionSnapshot,
 } from "@/lib/db/repositories/mobile-completion";
 import { recordRocketGift } from "@/lib/db/repositories/mobile-rewards";
+import { recordAudioPkGift } from "./audio-party-pk";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import {
   businessDateFor,
@@ -317,6 +318,7 @@ async function activeRoomRows(after?: string) {
   return db().query<RowDataPacket[]>(
       `SELECT room.id, room.room_code, room.room_type, room.title, room.category, room.language_code,
               room.privacy, room.seat_count, room.theme_index, room.room_photo_asset_id, room.face_background_asset_id, room.country_code,
+              EXISTS(SELECT 1 FROM audio_pk_room_links apl JOIN audio_pk_sessions ap ON ap.id=apl.session_id WHERE apl.room_id=room.id AND ap.status='ACTIVE' AND ap.ends_at>CURRENT_TIMESTAMP(3)) audio_pk_active,
               room.password_hash, room.chat_locked, room.interactions_enabled, room.theme_enabled, room.pk_requests_enabled, room.audio_join_requests_enabled,
               top_user.public_id top_public_id, top_user.full_name top_name, top_user.avatar_url top_avatar_url,
               top_avatar.updated_at top_avatar_updated_at,
@@ -357,7 +359,7 @@ function mapActiveRoom(
     language: String(row.language_code), listeners: Number(row.audience_count), themeIndex: Number(row.theme_index ?? 0), privacy: String(row.privacy).toLowerCase(),
     // LIVE is a retired legacy database value. Older records are exposed as
     // Face Live so no client can recover the removed video-call room type.
-    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : "face", isActive: true,
+    seatCount: Number(row.seat_count), kind: row.room_type === "PARTY" ? "party" : "face", isActive: true, audioPkActive: Boolean(row.audio_pk_active),
     photoUrl: row.room_photo_asset_id == null ? null : `${publicApiOrigin()}/api/v1/assets/rooms/${row.room_photo_asset_id}`,
     faceBackgroundUrl: row.face_background_asset_id == null ? null : `${publicApiOrigin()}/api/v1/assets/rooms/${row.face_background_asset_id}`,
     passwordRequired: row.password_hash != null,
@@ -1185,6 +1187,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id],
     );
+    const audioPk=room.room_type==='PARTY'?await recordAudioPkGift(connection,{roomId:room.id,giftEventId:eventId,senderUserId:identity.userId,diamonds:diamondValue}):null;
     const rocket = await recordRocketGift(connection, {
       roomId: room.id,
       giftEventId: eventId,
@@ -1199,6 +1202,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       success: true,
       remainingCoins: Number(postRocketWalletRows[0]?.available_balance ?? Number(senderRows[0].available_balance) - total),
       message: `Sent to ${recipient.full_name}`,
+      audioPk,
       rocket,
       event: {
         id: eventId, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
