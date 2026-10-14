@@ -3332,11 +3332,11 @@ async function main() {
       roundHistory.rounds[0]?.outcome.sharedRoundId,
       gameRound.round.id,
     );
-    assert.equal(
-      gameRound.players.find((player) => player.publicId === owner.publicId)
-        ?.bets.watermelon,
-      500,
-    );
+    // N+1 can already be the public player snapshot after N settles. Check
+    // the durable wager for N rather than incorrectly expecting its players
+    // in the new round's transient presence payload.
+    const [luckRoundBet]=await root.query<RowDataPacket[]>('SELECT SUM(amount) amount FROM game_shared_bets WHERE round_id=? AND application_user_id=? AND target_id=?',[gameRound.round.id,owner.userId,'watermelon']);
+    assert.equal(Number(luckRoundBet[0].amount),500);
     assert.equal(
       gameRound.latestSettlement?.roundId,
       gameRound.round.id,
