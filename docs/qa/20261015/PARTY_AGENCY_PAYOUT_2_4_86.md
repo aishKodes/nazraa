@@ -25,11 +25,11 @@
 ## Signed artifacts
 
 - APK: `Nazraa-Live-2.4.86-7398-release.apk`, 225328870 bytes.
-  SHA-256 `cc1aacf14cc827cc672029017e0d76f793c1323e3d093d0ef83f00c67e237f66`.
-- AAB: `Nazraa-Live-2.4.86-7398-release.aab`, 178410014 bytes.
-  SHA-256 `daea4fdccc9ca27b72250b3b15f2a2ce39c876911bd5352c8d2679cd76bce1de`.
+  SHA-256 `5890d59445208b00b73001225f34b66b4f241f4c073ce14c5a80528bb88b0e07`.
+- AAB: `Nazraa-Live-2.4.86-7398-release.aab`, 178393331 bytes.
+  SHA-256 `eec420c408525866a53d94c1a8597442e2bd4f17ffa03553380155f10e567137`.
 - Permanent signer SHA-256 unchanged: `5e3d3fb10afd21f77c57721b05184453f0061d23e3000416ce409d3ead9367c4`.
-- APK/AAB arm64 app code both `6605efb4095ba32124edca36f2f84dd2279731349b82b070f755dfa7791fa25d`.
+- APK/AAB arm64 app code both `d2e5161aee73b3d5be8a3742f07a9aea893dea6e1bca39e3f01ad72b337c4e71`.
 
 ## Release operations
 

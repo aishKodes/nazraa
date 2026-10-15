@@ -5,7 +5,7 @@
  const digest=async()=>{const [rows]=await c.query("SELECT setting_key,setting_value FROM system_settings WHERE setting_key IN ('withdrawal.economy','mobile.features','mobile.live_rules','media.livekit','media.routing','mobile.games') ORDER BY setting_key");return createHash('sha256').update(JSON.stringify(rows)).digest('hex');};
  try {
   const release=await fetch('https://nazralive.in/release/latest').then(r=>{if(!r.ok)throw new Error('PUBLIC_RELEASE_NOT_AVAILABLE');return r.json();});
-  if(release.version!=='2.4.86'||release.sha256!=='cc1aacf14cc827cc672029017e0d76f793c1323e3d093d0ef83f00c67e237f66')throw new Error('PUBLIC_RELEASE_MISMATCH');
+  if(release.version!=='2.4.86'||release.sha256!=='5890d59445208b00b73001225f34b66b4f241f4c073ce14c5a80528bb88b0e07')throw new Error('PUBLIC_RELEASE_MISMATCH');
   await c.beginTransaction();const before=await digest();
   const [rows]=await c.query('SELECT setting_value FROM system_settings WHERE setting_key=? FOR UPDATE',['mobile.app_config']);
   if(rows.length!==1)throw new Error('MISSING_EXISTING_CONFIG');

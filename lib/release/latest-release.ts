@@ -35,7 +35,7 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 225_328_870,
-  sha256: "cc1aacf14cc827cc672029017e0d76f793c1323e3d093d0ef83f00c67e237f66",
+  sha256: "5890d59445208b00b73001225f34b66b4f241f4c073ce14c5a80528bb88b0e07",
   releaseDate: "2026-10-15",
   releaseNotes: [
     "Party controls refined: one Games shortcut above Rocket, icon-only Emoji, clearer Members, and compact Inbox/Tools/Sound controls.",
