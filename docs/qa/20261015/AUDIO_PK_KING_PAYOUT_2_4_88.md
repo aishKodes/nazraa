@@ -144,6 +144,8 @@ website latest 2.4.86+7398 and minimum version remain unchanged.
 - GitHub test prerelease: `v2.4.88-qa`, not latest. Stable latest remains
   `v2.4.86`; website download still points to 2.4.86+7398. No force upgrade or
   AAB was requested for this test delivery.
+- Public release APK downloaded again in full (226,085,183 bytes) and SHA-256
+  matched `9d76a516c86a9e15f86062aa4600fb54aebcf70e2a9474e54a0e4efd795bcb3d`.
 
 Test APK:
 https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.88-qa/Nazraa-Live-2.4.88-7400-test.apk
