@@ -9,7 +9,7 @@
    JOIN application_users user ON user.id=member.application_user_id WHERE room.room_code=?`,[process.argv[2]]);
   assert.equal(rows.length,1);assert(rows[0].title.includes('QA'));
   const admin=new RoomServiceClient(process.env.LIVEKIT_URL.replace('wss:','https:'),process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET);
-  const host=await admin.getParticipant(process.argv[2],rows[0].public_id);
+  const host=await admin.getParticipant(process.argv[2],String(rows[0].public_id));
   const audio=host.tracks.filter(t=>t.type===TrackType.AUDIO);
   const expected=process.argv[3]==='muted';
   console.log(JSON.stringify({observed:true,expectedMuted:expected,membershipMuted:Boolean(rows[0].muted),audioTracks:audio.length,trackMuted:audio.map(t=>t.muted),canPublish:host.permission.canPublish}));
