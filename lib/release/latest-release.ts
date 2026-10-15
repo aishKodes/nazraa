@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.85";
-const releaseBuild = 7397;
+const releaseVersion = "2.4.86";
+const releaseBuild = 7398;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.85/Nazraa-Live-2.4.85-7397-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.86/Nazraa-Live-2.4.86-7398-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 225_230_738,
-  sha256: "57198caf3f6ebecf1d3f279aa600a1df092fac8d8074fc60976cfde014116063",
+  apkSizeBytes: 225_328_870,
+  sha256: "cc1aacf14cc827cc672029017e0d76f793c1323e3d093d0ef83f00c67e237f66",
   releaseDate: "2026-10-15",
   releaseNotes: [
-    "Teen Patti Princess: cleaner three-chair table, visible chip placement and piles, staggered dealing, sequential reveals and winner chip celebrations.",
-    "Master Agency removal is explicit and audited. Removed Hosts can apply again to the same or another eligible Agency; membership refresh does not require relogin.",
-    "Existing Teen Patti Pro, exact new-game 3×/3% rules, rapid betting, media, rewards and Host payout infrastructure preserved.",
+    "Party controls refined: one Games shortcut above Rocket, icon-only Emoji, clearer Members, and compact Inbox/Tools/Sound controls.",
+    "Real speech activity indicators and automatic two-Couple-plus-eight regular seats in 10-seat mode; 20-seat mode remains a regular 4×5 board.",
+    "Master Agency-wise payout totals and settlement workspace, scoped Agency details, and configurable future payout rates with immutable historical snapshots.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };

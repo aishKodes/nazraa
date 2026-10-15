@@ -6,7 +6,7 @@ import {
   withIdempotentTransaction,
   withTransaction,
 } from "@/lib/db/transaction";
-import { loadWithdrawalEconomy } from "./withdrawal-economy";
+import { loadHostPayoutRule, multiplyPayoutUsd, payoutRuleFromConfig } from "./host-payout-rule";
 import {
   encryptPrivateText,
   decryptPrivateText,
@@ -17,24 +17,6 @@ export class PayoutError extends Error {}
 const fail = (message: string): never => {
   throw new PayoutError(message);
 };
-const usd = (minor: number, slabs = 1) => {
-  const value = minor * slabs;
-  if (!Number.isSafeInteger(value)) fail("Choose a smaller payout amount.");
-  return (value / 100).toFixed(2);
-};
-export function portalPayoutRule(
-  rule: Awaited<ReturnType<typeof loadWithdrawalEconomy>>,
-) {
-  const company = rule.totalUsdCents - rule.hostUsdCents - rule.agencyUsdCents;
-  if (company < 0) fail("Payout configuration needs review.");
-  return {
-    slabDiamonds: rule.slabDiamonds,
-    totalUsd: usd(rule.totalUsdCents),
-    hostUsd: usd(rule.hostUsdCents),
-    agencyUsd: usd(rule.agencyUsdCents),
-    companyUsd: usd(company),
-  };
-}
 async function host(connection: PoolConnection, userId: string, lock = false) {
   const [rows] = await connection.query<RowDataPacket[]>(
     `SELECT u.id,u.public_id,u.full_name,u.country_code,u.agency_account_id,
@@ -168,8 +150,8 @@ export async function requestHostPayout(
         alreadyExisted: true,
       };
     }
-    const rule = await loadWithdrawalEconomy(c),
-      presentation = portalPayoutRule(rule);
+    const rule = await loadHostPayoutRule(c),
+      presentation = rule;
     if (input.amount < rule.slabDiamonds || input.amount % rule.slabDiamonds)
       fail(
         `Payouts must be exact ${rule.slabDiamonds.toLocaleString("en-IN")} Diamond multiples.`,
@@ -197,15 +179,10 @@ export async function requestHostPayout(
     const agency = agencies[0],
       id = randomUUID(),
       code = `HP-${randomUUID().replaceAll("-", "").slice(0, 16).toUpperCase()}`;
-    const total = usd(rule.totalUsdCents, slabs),
-      hostUsd = usd(rule.hostUsdCents, slabs),
-      agencyUsd = usd(agency ? rule.agencyUsdCents : 0, slabs),
-      companyUsd = usd(
-        rule.totalUsdCents -
-          rule.hostUsdCents -
-          (agency ? rule.agencyUsdCents : 0),
-        slabs,
-      );
+    const total = multiplyPayoutUsd(rule.totalUsd, slabs),
+      hostUsd = multiplyPayoutUsd(rule.hostUsd, slabs),
+      agencyUsd = multiplyPayoutUsd(agency ? rule.agencyUsd : "0.00", slabs),
+      companyUsd = multiplyPayoutUsd(agency ? rule.companyUsd : payoutRuleFromConfig({diamondsPerBlock:rule.slabDiamonds,totalUsdPerBlock:rule.totalUsd,hostUsdPerBlock:rule.hostUsd,agencyUsdPerBlock:"0.00"}).companyUsd, slabs);
     await c.execute(
       "UPDATE wallet_balances SET available_balance=available_balance-?,reserved_balance=reserved_balance+? WHERE id=?",
       [input.amount, input.amount, wallet.id],
@@ -281,12 +258,13 @@ export type PayoutViewer = { userId: string } | { account: SessionAccount };
 export type PayoutFilters = {
   search?: string;
   agency?: string;
+  agencyGroup?: string;
   country?: string;
   status?: string;
   from?: string;
   to?: string;
 };
-function filterFor(viewer: PayoutViewer, filters: PayoutFilters = {}) {
+export function hostPayoutFilter(viewer: PayoutViewer, filters: PayoutFilters = {}) {
   const clauses = ["w.request_channel='HOST_WEB'"],
     values: (string | number)[] = [];
   if ("userId" in viewer) {
@@ -297,6 +275,10 @@ function filterFor(viewer: PayoutViewer, filters: PayoutFilters = {}) {
     values.push(viewer.account.id);
   } else if (viewer.account.role !== "MASTER")
     fail("This payout module is limited to Hosts, their Agency and Master.");
+  if(filters.agencyGroup){
+    if(filters.agencyGroup==='INDEPENDENT') clauses.push('s.agency_account_id IS NULL');
+    else {clauses.push('s.agency_account_id=?');values.push(filters.agencyGroup);}
+  }
   if (filters.search) {
     clauses.push(
       "(CAST(s.host_public_id AS CHAR)=? OR s.host_name LIKE ? OR w.withdrawal_code=?)",
@@ -338,7 +320,7 @@ export async function listHostPayouts(
   limit = 200,
   connection?: PoolConnection,
 ) {
-  const f = filterFor(viewer, filters);
+  const f = hostPayoutFilter(viewer, filters);
   const [rows] = await (connection ?? db()).query<RowDataPacket[]>(
     `SELECT w.id,w.withdrawal_code requestId,w.application_user_id hostId,w.amount diamonds,w.status,w.requested_at requestedAt,w.provider_reference paymentReference,w.review_reason note,
     s.host_public_id hostPublicId,s.host_name hostName,s.agency_public_id agencyPublicId,s.agency_name agencyName,s.country_code country,s.host_usd hostUsd,s.agency_usd agencyUsd,s.company_usd companyUsd,s.payout_type payoutType,s.payout_masked payoutAccount,s.rule_snapshot rule,s.approved_at approvedAt,s.paid_at paidAt,s.reversed_at reversedAt,s.agency_paid_at agencyPaidAt,s.agency_reversed_at agencyReversedAt,s.agency_payment_reference agencyPaymentReference
@@ -358,7 +340,7 @@ export async function hostPayoutSummary(
   viewer: PayoutViewer,
   filters: PayoutFilters = {},
 ) {
-  const f = filterFor(viewer, filters);
+  const f = hostPayoutFilter(viewer, filters);
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT COUNT(*) requests,COALESCE(SUM(s.host_usd),0) requestedUsd,
     COALESCE(SUM(IF(w.status='COMPLETED',s.host_usd,0)),0) paidUsd,
@@ -386,7 +368,7 @@ export async function hostPayoutSummary(
 export async function hostPayoutPage(userId: string) {
   return withTransaction(async (c) => {
     const h = await host(c, userId),
-      rule = portalPayoutRule(await loadWithdrawalEconomy(c));
+      rule = await loadHostPayoutRule(c);
     const [wallet] = await c.query<RowDataPacket[]>(
       "SELECT available_balance FROM wallet_balances WHERE owner_type='APPLICATION_USER' AND owner_id=? AND asset_type='DIAMOND'",
       [userId],
@@ -400,9 +382,7 @@ export async function hostPayoutPage(userId: string) {
       host: { id: String(h.public_id), name: String(h.full_name) },
       availableDiamonds,
       rule: { slabDiamonds: rule.slabDiamonds, hostUsd: rule.hostUsd },
-      estimatedHostUsd: (
-        Math.floor(availableDiamonds / rule.slabDiamonds) * Number(rule.hostUsd)
-      ).toFixed(2),
+      estimatedHostUsd: multiplyPayoutUsd(rule.hostUsd,Math.floor(availableDiamonds/rule.slabDiamonds)),
       accounts,
       history: await listHostPayouts({ userId },{},200,c),
     };
@@ -457,7 +437,11 @@ export async function manageHostPayout(
     (input.reference?.trim().length ?? 0) < 3
   )
     fail("A payment reference is required.");
-  return withTransaction(async (c) => {
+  return withTransaction(c=>applyHostPayoutAction(c,master,input));
+}
+
+async function applyHostPayoutAction(c:PoolConnection,master:SessionAccount,input:Parameters<typeof manageHostPayout>[1]):Promise<{status:string;alreadyExisted:boolean}> {
+
     const [rows] = await c.query<RowDataPacket[]>(
       `SELECT w.*,s.paid_at,s.reversed_at,s.agency_paid_at,s.agency_reversed_at,s.agency_payment_reference,s.agency_usd FROM withdrawal_requests w JOIN host_payout_snapshots s ON s.withdrawal_id=w.id WHERE w.id=? AND w.request_channel='HOST_WEB' FOR UPDATE`,
       [input.id],
@@ -600,74 +584,39 @@ export async function manageHostPayout(
               : r.status,
       alreadyExisted: false,
     };
+}
+
+export async function manageAgencyPayoutBatch(master:SessionAccount,input:{agencyGroup:string;ids:string[];action:'paid'|'agency-paid';reference:string;reason:string}) {
+  if(master.role!=='MASTER') fail('Only Master can settle Agency payouts.');
+  const ids=[...new Set(input.ids)].sort();
+  if(!ids.length||ids.length>100||ids.length!==input.ids.length||input.reason.trim().length<3||input.reason.length>500||input.reference.trim().length<3||input.reference.length>255) fail('Choose up to 100 distinct payout requests and supply a payment reference and reason.');
+  return withTransaction(async c=>{
+    const [rows]=await c.query<RowDataPacket[]>(`SELECT w.id,s.agency_account_id FROM withdrawal_requests w JOIN host_payout_snapshots s ON s.withdrawal_id=w.id
+      WHERE w.request_channel='HOST_WEB' AND w.id IN (${ids.map(()=>'?').join(',')}) ORDER BY w.id FOR UPDATE`,ids);
+    if(rows.length!==ids.length||rows.some(r=>(r.agency_account_id??'INDEPENDENT')!==input.agencyGroup)) fail('The selected requests do not all belong to this Agency. Refresh before payment.');
+    let updated=0;
+    for(const id of ids){
+      const result=await applyHostPayoutAction(c,master,{id,action:input.action,reference:input.reference,reason:input.reason});
+      if(!result.alreadyExisted) updated++;
+    }
+    if(updated) await audit(c,{account:master},'AGENCY_PAYOUT_BATCH_SETTLED',input.agencyGroup,{ids,action:input.action,reference:input.reference,updated},input.reason);
+    return {updated,requests:ids.length,alreadyExisted:updated===0};
   });
 }
 
-export async function saveHostPayoutRule(
-  master: SessionAccount,
-  input: {
-    slabDiamonds: number;
-    totalUsd: string;
-    hostUsd: string;
-    agencyUsd: string;
-    reason: string;
-  },
-) {
-  if (master.role !== "MASTER") fail("Only Master may edit payout rules.");
-  const minor = (s: string) => {
-    if (!/^\d+(\.\d{1,2})?$/.test(s))
-      fail("Use a non-negative USD amount with at most two decimals.");
-    const [whole, fraction = ""] = s.split(".");
-    const n = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
-    if (!Number.isSafeInteger(n) || n > 32767)
-      fail("USD rate is outside the supported range.");
-    return n;
-  };
-  if (
-    !Number.isSafeInteger(input.slabDiamonds) ||
-    input.slabDiamonds < 1 ||
-    input.reason.trim().length < 3
-  )
-    fail("Provide a valid Diamond slab and change reason.");
-  return withTransaction(async (c) => {
-    await c.query(
-      "SELECT setting_key FROM system_settings WHERE setting_key='withdrawal.economy' FOR UPDATE",
-    );
-    const old = await loadWithdrawalEconomy(c),
-      next = {
-        ...old,
-        slabDiamonds: input.slabDiamonds,
-        totalUsdCents: minor(input.totalUsd),
-        hostUsdCents: minor(input.hostUsd),
-        agencyUsdCents: minor(input.agencyUsd),
-      };
-    // Preserve legacy allocations for historical workflow; new web snapshots
-    // always retain ALL value beyond Host + Agency as Company.
-    next.companyUsdCents =
-      next.totalUsdCents -
-      next.hostUsdCents -
-      next.agencyUsdCents -
-      next.superAdminUsdCents -
-      next.adminUsdCents -
-      next.bdUsdCents -
-      next.countryManagerUsdCents;
-    if (next.totalUsdCents < 1 || next.companyUsdCents < 0)
-      fail(
-        "Total USD must cover the configured Host, Agency and preserved legacy allocations.",
-      );
-    const value = portalPayoutRule(next);
-    await c.execute(
-      "UPDATE system_settings SET setting_value=? WHERE setting_key='withdrawal.economy'",
-      [JSON.stringify(next)],
-    );
-    await audit(
-      c,
-      { account: master },
-      "HOST_PAYOUT_RULE_UPDATED",
-      master.id,
-      { previous: portalPayoutRule(old), next: value },
-      input.reason.trim(),
-    );
+export async function saveHostPayoutRule(master:SessionAccount,input:{slabDiamonds:number;totalUsd:string;hostUsd:string;agencyUsd:string;reason:string}) {
+  if(master.role!=='MASTER') fail('Only Master may edit payout rules.');
+  if(input.reason.trim().length<3||input.reason.length>500) fail('Provide an operational reason.');
+  let value;
+  try {value=payoutRuleFromConfig({diamondsPerBlock:input.slabDiamonds,totalUsdPerBlock:input.totalUsd,hostUsdPerBlock:input.hostUsd,agencyUsdPerBlock:input.agencyUsd});}
+  catch {return fail('Check the Diamond block and decimal USD amounts. Total must cover Host + Agency.');}
+  return withTransaction(async c=>{
+    const [rows]=await c.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='withdrawal.economy' FOR UPDATE");
+    const raw=rows[0]?(typeof rows[0].setting_value==='string'?JSON.parse(rows[0].setting_value):rows[0].setting_value):{};
+    const old=payoutRuleFromConfig(raw);
+    const next={...raw,diamondsPerBlock:value.slabDiamonds,totalUsdPerBlock:value.totalUsd,hostUsdPerBlock:value.hostUsd,agencyUsdPerBlock:value.agencyUsd};
+    await c.execute("INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('withdrawal.economy',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)",[JSON.stringify(next),master.id]);
+    await audit(c,{account:master},'HOST_PAYOUT_RULE_UPDATED',master.id,{previous:old,next:value},input.reason.trim());
     return value;
   });
 }

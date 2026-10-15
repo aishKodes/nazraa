@@ -215,6 +215,7 @@ export async function verifyHostPayouts(
     "SELECT COUNT(*) count FROM audit_logs WHERE module='HOST_PAYOUT'",
   );
   assert.ok(Number(audit[0].count) >= 12);
+  await (await import('./agency-payout-owner-tests')).verifyAgencyPayoutOwnerRequirements(root,user,master,agency);
   await root.execute(
     "UPDATE system_settings SET setting_value=? WHERE setting_key='withdrawal.economy'",
     [JSON.stringify(defaultWithdrawalEconomy)],

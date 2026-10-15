@@ -17,6 +17,7 @@ import { listPayoutMethodReviews } from "@/lib/db/repositories/mobile-administra
 import { listWithdrawalsPage } from "@/lib/db/repositories/operations";
 import { withdrawalFinance,withdrawalCommissionTotals } from "@/lib/db/repositories/withdrawal-finance";
 import { formatDate, formatNumber } from "@/lib/utils/format";
+import PayoutManagement from '../host-payouts/management';
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +27,7 @@ export default async function WithdrawalsPage({
   searchParams: Promise<{ error?: string; success?: string; page?: string; agencyId?: string }>;
 }) {
   const scope = await requirePermission("withdrawals.read");
+  if(['MASTER','AGENCY'].includes(scope.account.role)) return <PayoutManagement/>;
   const { error, success, page: rawPage, agencyId } = await searchParams;
   const canReview = scope.account.role === 'MASTER' && can(scope.account.role, "withdrawals.review");
   const isAdmin=scope.account.role==='ADMIN';

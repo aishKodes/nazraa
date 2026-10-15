@@ -1,6 +1,7 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { payoutJsonRequest, payoutUiMessage } from "@/lib/client/payout-request";
+import {AgencyPayoutList,AgencyPaymentWorkspace,type AgencyPayoutGroup,type PaymentCandidates} from './agency-panels';
 type Row = {
   id: string;
   requestId: string;
@@ -28,6 +29,9 @@ type Row = {
 };
 type Data = {
   rows: Row[];
+  groups?:AgencyPayoutGroup[];
+  candidates?:PaymentCandidates;
+  hasNext?:boolean;
   summary: Record<string, number>;
   isMaster: boolean;
   rule: {
@@ -51,6 +55,8 @@ const date = (s: string | null) =>
       }).format(new Date(s)) + " IST"
     : "—";
 export default function PayoutManagement() {
+  const [agencyGroup,setAgencyGroup]=useState(''),[groupPage,setGroupPage]=useState(1);
+  const loadEpoch=useRef(0);
   const [data, setData] = useState<Data | null>(null),
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
@@ -59,18 +65,23 @@ export default function PayoutManagement() {
     [destination, setDestination] = useState(""),
     [notice, setNotice] = useState("");
   const load = useCallback(async () => {
+    const epoch=++loadEpoch.current;
     setError("");
     try {
-      const v = await payoutJsonRequest<Data>(`/api/host-payout-management?${query}`, {
+      const parameters=new URLSearchParams(query);parameters.set('page',String(groupPage));
+      if(agencyGroup) parameters.set('agencyGroup',agencyGroup);
+      const v = await payoutJsonRequest<Data>(`/api/host-payout-management?${parameters}`, {
           cache: "no-store",
         }, "Could not load payouts. Please retry.");
-      setData(v);
+      if(epoch===loadEpoch.current) setData(v);
     } catch (e) {
-      setError(payoutUiMessage(e, "Could not load payouts. Please retry."));
+      if(epoch===loadEpoch.current) setError(payoutUiMessage(e, "Could not load payouts. Please retry."));
     }
-  }, [query]);
+  }, [query,agencyGroup,groupPage]);
   useEffect(() => {
+    setData(null);setSelected(null);
     void load();
+    return ()=>{loadEpoch.current++;};
   }, [load]);
   async function mutate(payload: object) {
     setBusy(true);
@@ -108,9 +119,9 @@ export default function PayoutManagement() {
     <section>
       <div className="page-heading">
         <div>
-          <h1>Host Payouts</h1>
+          <h1>{data?.isMaster?'Agency Withdrawals':'Host Payouts'}</h1>
           <p>
-            Web auto-approved requests · USD accounting · business timestamps in
+            Auto-approved Host requests · saved Agency/rate snapshots · USD · timestamps in
             IST
           </p>
         </div>
@@ -145,7 +156,7 @@ export default function PayoutManagement() {
         onSubmit={(e) => {
           e.preventDefault();
           const f = new FormData(e.currentTarget);
-          setQuery(
+          setGroupPage(1);setQuery(
             new URLSearchParams(
               [...f.entries()]
                 .filter(([, v]) => String(v))
@@ -194,7 +205,17 @@ export default function PayoutManagement() {
           Export USD CSV
         </a>
       </form>
-      <div className="panel scroll">
+      {data?.isMaster&&!agencyGroup&&<>
+        <AgencyPayoutList groups={data.groups??[]} onOpen={key=>{setSelected(null);setAgencyGroup(key);}}/>
+        <div className="filters"><button disabled={groupPage===1} onClick={()=>setGroupPage(p=>p-1)}>Previous Agencies</button>
+          <span>Page {groupPage}</span><button disabled={!data.hasNext} onClick={()=>setGroupPage(p=>p+1)}>Next Agencies</button></div>
+      </>}
+      {data?.isMaster&&agencyGroup&&<>
+        <button onClick={()=>{setSelected(null);setAgencyGroup('');}}>← All Agencies</button>
+        <h2>{data.rows[0]?.agencyName??'Agency payment detail'} · Host records</h2>
+        {data.candidates&&<AgencyPaymentWorkspace agencyGroup={agencyGroup} candidates={data.candidates} busy={busy} onSave={payload=>void mutate(payload)}/>}
+      </>}
+      {data&&(!data.isMaster||agencyGroup)&&<div className="panel scroll">
         <table>
           <thead>
             <tr>
@@ -264,7 +285,7 @@ export default function PayoutManagement() {
           </tbody>
         </table>
         {data && !data.rows.length && <p>No payouts match this scope.</p>}
-      </div>
+      </div>}
       {selected && data?.isMaster && (
         <section className="panel">
           <h2>
@@ -389,7 +410,7 @@ export default function PayoutManagement() {
         </section>
       )}
       {data?.isMaster && (
-        <section className="panel">
+        <section className="panel" id="payout-rule">
           <h2>Payout rules · future requests only</h2>
           <p>
             New workflow: Host + Agency; all remainder belongs to Company (

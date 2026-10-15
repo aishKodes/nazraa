@@ -2,14 +2,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth/session";
 import { assertPortalOrigin } from "@/lib/auth/host-payout-session";
-import { loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { loadHostPayoutRule } from "@/lib/db/repositories/host-payout-rule";
+import { agencyPayoutGroups, agencyPayoutCandidates } from "@/lib/db/repositories/agency-payout-groups";
 import {
   hostPayoutSummary,
   listHostPayouts,
   manageHostPayout,
+  manageAgencyPayoutBatch,
   PayoutError,
   payoutDestination,
-  portalPayoutRule,
   saveHostPayoutAccount,
   saveHostPayoutRule,
 } from "@/lib/db/repositories/host-payouts";
@@ -24,6 +25,7 @@ const reply = (v: unknown, status = 200) =>
 const filterSchema = z.object({
   search: z.string().max(100).optional(),
   agency: z.string().max(100).optional(),
+  agencyGroup: z.union([z.string().uuid(),z.literal('INDEPENDENT')]).optional(),
   country: z
     .string()
     .regex(/^[A-Z]{2}$/)
@@ -64,7 +66,7 @@ export async function GET(request: Request) {
           [...url.searchParams].filter(
             ([k, v]) =>
               v &&
-              ["search", "agency", "country", "status", "from", "to"].includes(
+              ["search", "agency", "agencyGroup", "country", "status", "from", "to"].includes(
                 k,
               ),
           ),
@@ -77,7 +79,7 @@ export async function GET(request: Request) {
           z.string().uuid().parse(url.searchParams.get("destination")),
         ),
       });
-    const rows = await listHostPayouts(
+    const rows = account.role==='MASTER'&&!filters.agencyGroup&&!url.searchParams.has('export')?[]:await listHostPayouts(
       { account },
       filters,
       url.searchParams.has("export") ? 10000 : 200,
@@ -135,9 +137,12 @@ export async function GET(request: Request) {
         },
       });
     }
-    const rule = portalPayoutRule(await loadWithdrawalEconomy());
+    const rule = await loadHostPayoutRule();
+    const page=Math.max(1,Math.min(100000,Number.parseInt(url.searchParams.get('page')??'1',10)||1));
     return reply({
       rows,
+      ...(account.role==='MASTER'&&!filters.agencyGroup?await agencyPayoutGroups(account,filters,page):{}),
+      candidates:account.role==='MASTER'&&filters.agencyGroup?await agencyPayoutCandidates(account,filters):undefined,
       summary: await hostPayoutSummary({ account }, filters),
       rule:
         account.role === "MASTER"
@@ -169,6 +174,11 @@ export async function POST(request: Request) {
   try {
     assertPortalOrigin(request);
     const body = await request.json();
+    if(body.action==='agency-batch'){
+      const parsed=z.object({agencyGroup:z.union([z.string().uuid(),z.literal('INDEPENDENT')]),ids:z.array(z.string().uuid()).min(1).max(100),
+        kind:z.enum(['paid','agency-paid']),reference:z.string().trim().min(3).max(255),reason:z.string().trim().min(3).max(500),confirmed:z.literal(true)}).parse(body);
+      return reply(await manageAgencyPayoutBatch(account,{...parsed,action:parsed.kind}));
+    }
     if (body.action === "rule")
       return reply(
         await saveHostPayoutRule(

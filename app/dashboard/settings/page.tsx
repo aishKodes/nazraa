@@ -17,16 +17,15 @@ import {
   submitLiveRewardEntitlementRepair,
   submitLiveRewardQaOverride,
   submitVipValidity,
-  submitWithdrawalEconomy,
 } from "@/app/admin-actions";
 import { Card, Notice, SectionHeading } from "@/components/ui";
 import { requirePermission } from "@/lib/auth/guard";
 import { getSystemSettings } from "@/lib/db/repositories/catalog";
 import { getCompletionAdminSettings } from "@/lib/db/repositories/completion-administration";
 import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config";
-import { parseWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { getLiveRewardDiagnostics } from "@/lib/db/repositories/live-accounting-diagnostics";
 import { getFaceLiveStartOutcomeDiagnostics } from "@/lib/observability/face-live-start-outcomes";
+import {payoutRuleFromConfig} from '@/lib/db/repositories/host-payout-rule';
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +45,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const economy = settings.find((item) => item.key === "economy.diamond_conversion")?.value as { rate?: number; minimum?: number; currency?: string } | undefined;
   const mobile = settings.find((item) => item.key === "mobile.app_config")?.value as { minimumVersion?: string; latestVersion?: string; maintenance?: boolean; maintenanceMessage?: string; updateUrl?: string; supportUrl?: string; withdrawalUrl?: string } | undefined;
   const commerce = settings.find((item) => item.key === "mobile.commerce")?.value as { minimumWithdrawal?: number; whatsappMessageTemplate?: string; supportUrl?: string; withdrawalPortalUrl?: string } | undefined;
-  const withdrawal = parseWithdrawalEconomy(settings.find((item) => item.key === "withdrawal.economy")?.value);
+  const withdrawal=payoutRuleFromConfig(settings.find(item=>item.key==='withdrawal.economy')?.value??null);
   const social = settings.find((item) => item.key === "mobile.social")?.value as { private_message_coin_cost?: number } | undefined;
   const policy = settings.find((item) => item.key === "mobile.policy_config")?.value as {
     termsVersion?: string; communityGuidelinesVersion?: string; requiresReacceptance?: boolean;
@@ -137,22 +136,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <button className="primary-button">Save media quality</button>
       </form>
     </Card>}
-    <Card className="settings-card">
-      <div className="card-title"><div><h2>Withdrawal economics</h2><p>Applied only when a withdrawal is completed. Historic payout snapshots never change.</p></div></div>
-      <form action={submitWithdrawalEconomy} className="form-grid">
-        <label>Diamond slab<input name="slabDiamonds" type="number" min="1" required defaultValue={withdrawal.slabDiamonds} /></label>
-        <label>Total USD / slab<input name="totalUsd" type="number" min="0.01" step="0.01" required defaultValue={(withdrawal.totalUsdCents/100).toFixed(2)} /></label>
-        <label>Host USD<input name="hostUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.hostUsdCents/100).toFixed(2)} /></label>
-        <label>Agency USD<input name="agencyUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.agencyUsdCents/100).toFixed(2)} /></label>
-        <label>Legacy Super Admin USD<input name="superAdminUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.superAdminUsdCents/100).toFixed(2)} /></label>
-        <label>Legacy Admin USD<input name="adminUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.adminUsdCents/100).toFixed(2)} /></label>
-        <label>Legacy BD USD<input name="bdUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.bdUsdCents/100).toFixed(2)} /></label>
-        <label>Legacy Country Manager USD<input name="countryManagerUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.countryManagerUsdCents/100).toFixed(2)} /></label>
-        <label>Legacy Company USD<input name="companyUsd" type="number" min="0" step="0.01" required defaultValue={(withdrawal.companyUsdCents/100).toFixed(2)} /></label>
-        <label>USD → INR rate<input name="usdInrRate" type="number" min="0.01" max="1000" step="0.000001" required defaultValue={withdrawal.usdInrRate} /></label>
-        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why is the withdrawal configuration changing?" /></label>
-        <label>Confirm<button className="primary-button" type="submit">Save withdrawal economics</button></label>
-      </form>
+    <Card className="settings-card"><h2>Host payout configuration</h2>
+      <p>One canonical decimal-USD rule for future requests: Diamond block, Host payout and Agency commission. Existing requests retain their saved rate and Agency snapshots. Other roles have no automatic allocation in this workflow.</p>
+      <a className="primary-button" href="/dashboard/host-payouts#payout-rule">Manage canonical payout rules</a>
     </Card>
 
     <Card className="settings-card">
@@ -393,7 +379,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     <Card className="settings-card">
       <div className="card-title"><div><h2>Mobile commerce</h2><p>Approved-seller WhatsApp handoff and the exact Diamond withdrawal slab.</p></div></div>
       <form action={submitCommerceSettings} className="form-grid">
-        <label>Withdrawal slab<input name="minimumWithdrawal" type="number" readOnly required value={withdrawal.slabDiamonds} /><span>Managed by Withdrawal economics above.</span></label>
+        <label>Withdrawal slab<input name="minimumWithdrawal" type="number" readOnly required value={withdrawal.slabDiamonds} /><span>Managed by the canonical Host payout rules.</span></label>
         <label>Support URL<input name="supportUrl" type="url" defaultValue={commerce?.supportUrl ?? ""} /></label>
         <label>Withdrawal portal URL<input name="withdrawalPortalUrl" type="url" defaultValue={commerce?.withdrawalPortalUrl ?? ""} /></label>
         <label className="span-two">WhatsApp order template<textarea name="whatsappMessageTemplate" required minLength={20} maxLength={1000} rows={7} defaultValue={commerce?.whatsappMessageTemplate ?? "Hello, I want to purchase Nazraa Live coins.\n\nMy User ID: {userId}\nAgency ID: {agencyId}\nSelected Package: {package}\nOrder ID: {orderId}\n\nPlease share payment details."} /></label>

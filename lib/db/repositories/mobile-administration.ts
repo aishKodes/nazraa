@@ -8,6 +8,7 @@ import { scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
 import { loadWithdrawalEconomy, validateWithdrawalEconomy, type WithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
+import { loadHostPayoutRule } from "@/lib/db/repositories/host-payout-rule";
 import { can } from "@/lib/auth/permissions";
 
 function operationCode(prefix: string) {
@@ -354,7 +355,7 @@ export async function reviewFaceVerification(input: { scope: Scope; requestId: s
 
 export async function saveCommerceSettings(input: { scope: Scope; minimumWithdrawal: number; whatsappMessageTemplate: string; supportUrl?: string; withdrawalPortalUrl?: string }) {
   await withTransaction(async (connection) => {
-    const withdrawal = await loadWithdrawalEconomy(connection);
+    const withdrawal = await loadHostPayoutRule(connection);
     const value = { coinPurchaseMethod: "AGENCY_WHATSAPP", whatsappMessageTemplate: input.whatsappMessageTemplate, minimumWithdrawal: withdrawal.slabDiamonds, withdrawalSlab: withdrawal.slabDiamonds, supportUrl: input.supportUrl || "", withdrawalPortalUrl: input.withdrawalPortalUrl || "" };
     await connection.execute(
       `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.commerce', ?, ?)
@@ -369,6 +370,11 @@ export async function saveWithdrawalEconomy(input: { scope: Scope; reason: strin
   if (input.scope.account.role !== "MASTER") throw new Error("Only Master can change withdrawal economics.");
   validateWithdrawalEconomy(input.value);
   await withTransaction(async (connection) => {
+    const [settings] = await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key = 'withdrawal.economy' FOR UPDATE");
+    const stored = settings[0]?.setting_value;
+    const raw = typeof stored === "string" ? JSON.parse(stored) : stored;
+    // A stale pre-canonical settings form must not overwrite the new USD rule.
+    if (raw?.diamondsPerBlock !== undefined) throw new Error("Use Host payout rules to change the current payout configuration. Refresh Settings and try again.");
     const previous = await loadWithdrawalEconomy(connection);
     await connection.execute(
       `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('withdrawal.economy', ?, ?)
