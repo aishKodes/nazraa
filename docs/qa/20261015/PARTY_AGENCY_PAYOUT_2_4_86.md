@@ -36,3 +36,16 @@
 Exact APK installed on the existing Android 16 emulator. Runtime/deployment/public-download evidence is appended after verification. Deployment must retain a fresh encrypted offsite backup and full source/image rollback; API only is rebuilt. No LiveKit, Redis, MySQL or realtime service restart is required.
 
 Human voice on/off is not inferred from a static screenshot: the VAD gate/state transitions are tested deterministically against measured SDK event inputs; emulator room controls/layout are checked separately.
+
+## Completed deployment and runtime evidence
+
+- Exact final signed APK installed: Android 16, version 2.4.86 / code 7398 / target SDK 36. Opened Home, created controlled Party, and confirmed one-tap Games opens Game Center directly. The temporary QA Party was closed afterward.
+- Runtime controls: Members → Room members; Tools → Room tools; Gift Record remains inside Tools; Emoji → expressions; Inbox → messages/requests; Sound toggles on/off; Gifts → catalog/recipient picker without sending a paid Gift.
+- Runtime seat checks: 10→20→10 settings saved; two Couple slots return automatically; 20 regular seats have no Couple space. Own Couple seat join, mute/unmute, leave, lock/unlock passed. Visual evidence retained privately; no permanent QA room remains.
+- Fresh encrypted offsite backup verified: `nazraa-nightly-20261015T124837Z`, 4902385160 bytes. Full working-source/image rollback retained at `/opt/nazraa/backups/release-2.4.86`; image `nazraa-api:rollback-before-2.4.86`.
+- Guarded source commits `deba4d1` and `677a843` applied additively to the existing VPS working tree. No pull/reset or schema migration.
+- Full public GitHub APK downloaded on VPS and SHA-256 verified before activation. Only API container restarted; healthy afterward. Other services unchanged.
+- Audited canonical production rule initialized: 125000 / Host `10.00` / Agency `1.10`, gross `14.62` preserved. Five historical payout snapshots verified unchanged. No production wallet, payout request or settlement was mutated for testing.
+- Remote latestVersion `2.4.86`; existing minimumVersion `2.1.0`, maintenance and media/economy protection unchanged apart from the expressly authorized future payout-rate rule.
+- Official `/release/latest` and `/download` expose 2.4.86 / 7398 and the final hash. GitHub APK/AAB digests match local final artifacts; checksum text asset published.
+- Production unauthenticated payout API returns sanitized 401. The owner's Control browser session had expired at final reload; live Master click-through was not claimed. Master/Agency role, group/drill-down, and permission behavior passed the built local HTTP and repository tests.
