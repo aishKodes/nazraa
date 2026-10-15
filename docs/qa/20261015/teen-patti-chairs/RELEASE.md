@@ -33,4 +33,10 @@ SHA-256: `a21f545e26102b7a6b33c7bb212d93e14425c0d707a34409d9fb65af302b5d7b`.
 
 Both contain the same compiled application library. Existing Android signing certificate SHA-256 remains `5e3d3fb10afd21f77c57721b05184453f0061d23e3000416ce409d3ead9367c4`.
 
-Public publishing and remote latestVersion are verified separately after the release asset becomes available. Minimum-version/maintenance/media/economy/other-game settings are not part of this release change.
+## Public release verification
+
+`https://nazralive.in/download` and `/release/latest` now show **2.4.84 / 7396**, the versioned GitHub APK URL and SHA-256 above. The public APK was downloaded completely on the VPS and its SHA-256 verified before changing the download page. GitHub Release `aishKodes/Nazraa-Releases` / `v2.4.84` is public (not draft); GitHub asset digests match both signed files.
+
+Audited SYSTEM maintenance updated only remote `latestVersion` / `updateUrl`. Result: latest 2.4.84, minimum 2.1.0, minimum preserved, maintenance preserved, protected media/economy/Live rules/other-game settings digest unchanged. No forced-upgrade threshold changed.
+
+The final API and realtime services are healthy. Pro was additionally opened in the exact APK and displayed its original three lanes, Crown and server countdown. No production wagering was used for QA. The public download screenshot is `public-download-2.4.84.png`; incidental account data and runtime recordings remain in private local QA storage. Sanitized Flutter source and signed APK/AAB are archived locally.
