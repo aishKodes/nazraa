@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.82";
-const releaseBuild = 7394;
+const releaseVersion = "2.4.83";
+const releaseBuild = 7395;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.82/Nazraa-Live-2.4.82-7394-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.83/Nazraa-Live-2.4.83-7395-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -35,12 +35,12 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 224_508_269,
-  sha256: "d1d3f0d92706e3dd44c8f127ed184ac2e1433d5d1653f531760ff0660d7dbdc6",
+  sha256: "ca11c8cc7394d93e6d0389925f641f6ddc7745fb659c6f1e4e0fffaa20e4b78b",
   releaseDate: "2026-10-15",
   releaseNotes: [
-    "Immediate Party seat joining with separate Leave Seat and Remove from Seat controls.",
-    "Persistent Room Admin management, reference-inspired seats and clear English/IST restrictions.",
-    "Preserves Face Live, Audio PK, Rocket, Party History, Agency and reward rules.",
+    "Restores Party seat microphone grants and reliable self-mute/unmute without reopening staff-muted microphones.",
+    "Seat layouts now give unused board space to the room activity feed instead of limiting chat to a small fixed area.",
+    "Preserves Face Live, Audio PK, Rocket, Party History, Agency, payouts and reward rules.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
