@@ -3639,7 +3639,7 @@ export async function setRoomMemberMuted(
     >(
       `SELECT room.id room_id, CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = actor.application_user_id) THEN 'ADMIN' ELSE actor.room_role END actor_role,
               room.room_type, target.application_user_id target_id,
-              CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = target.application_user_id) THEN 'ADMIN' ELSE target.room_role END target_role, target.muted_by_staff
+              CASE WHEN EXISTS(SELECT 1 FROM face_host_admins admin WHERE admin.host_application_user_id = room.host_application_user_id AND admin.admin_application_user_id = target.application_user_id) THEN 'ADMIN' ELSE target.room_role END target_role, target.muted_by_staff,target.muted,target.media_role,target.seat_index
        FROM live_rooms room
        INNER JOIN live_room_members actor ON actor.room_id = room.id
          AND actor.application_user_id = ? AND actor.left_at IS NULL
@@ -3674,16 +3674,23 @@ export async function setRoomMemberMuted(
     if (selfAction && !input.muted && Boolean(member.muted_by_staff)) {
       throw new Error("Your microphone is muted by room staff.");
     }
+    if (selfAction && !input.muted && member.room_type==='PARTY' &&
+        member.media_role!=='PARTY_OWNER' && !(member.media_role==='RTC_SPEAKER' && member.seat_index!=null)) {
+      throw new Error('Take an available seat before unmuting your microphone.');
+    }
+    // Staff may lift a Party restriction, never open the user's mic remotely.
+    const actualMuted = member.room_type==='PARTY' && !selfAction && !input.muted
+      ? Boolean(member.muted) : input.muted;
     await connection.execute(
       `UPDATE live_room_members
        SET muted = ?, muted_by_staff = IF(?, muted_by_staff, ?),
            media_publishing = IF(?, FALSE, media_publishing)
        WHERE room_id = ? AND application_user_id = ?`,
       [
-        input.muted,
+        actualMuted,
         selfAction,
         input.muted,
-        input.muted,
+        actualMuted,
         member.room_id,
         member.target_id,
       ],
@@ -3705,7 +3712,7 @@ export async function setRoomMemberMuted(
         ],
       );
     }
-    return { muted: input.muted, targetPublicId: input.targetPublicId };
+    return { muted: actualMuted, targetPublicId: input.targetPublicId };
   });
 }
 

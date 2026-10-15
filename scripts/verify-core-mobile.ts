@@ -1290,6 +1290,43 @@ async function main() {
     }
     console.log('PASS persistent Party Admin: +25h/+7d, stale member/relogin/restart/reentry fixtures, Admin Leave Seat, manual revoke, owner-only grant, atomic two-user seat race; global expirations unchanged.');
 
+    // A deliberate self-mute is not loss of the accepted speaker capability.
+    await seats.actOnRoomSeat(guest, {roomCode, action: 'request', seatIndex: 4});
+    await rooms.setRoomMemberMuted(guest, {roomCode, targetPublicId: guest.publicId, muted: true});
+    const partyAuthority = await import('@/lib/services/livekit-room-authority');
+    const mutedSpeakerGrant = await partyAuthority.authorizeLiveKitRoom(guest, {roomCode, canPublish: true});
+    assert.equal(mutedSpeakerGrant.publishMode, 'audio_only', 'a self-muted seated speaker can reconnect without losing microphone capability');
+    assert.equal(mutedSpeakerGrant.microphoneMuted, true, 'reconnect preserves the deliberate self mute');
+    const microphoneStates: {canPublish:boolean;muted:boolean}[]=[];
+    const reconcileMic=()=>partyAuthority.syncPartyMicrophone(roomCode,guest.publicId,async state=>{microphoneStates.push(state);return true;});
+    await reconcileMic();
+    assert.deepEqual(microphoneStates.at(-1)&&{canPublish:microphoneStates.at(-1)!.canPublish,muted:microphoneStates.at(-1)!.muted},{canPublish:true,muted:true});
+    await rooms.setRoomMemberMuted(guest, {roomCode, targetPublicId: guest.publicId, muted: false});
+    await reconcileMic();
+    assert.equal(microphoneStates.at(-1)?.muted,false);
+    await rooms.setRoomMemberMuted(owner,{roomCode,targetPublicId:guest.publicId,muted:true});
+    await assert.rejects(rooms.setRoomMemberMuted(guest,{roomCode,targetPublicId:guest.publicId,muted:false}),/muted by room staff/);
+    assert.equal((await partyAuthority.authorizeLiveKitRoom(guest,{roomCode,canPublish:true})).publishMode,'none','staff-muted speaker can connect but cannot publish');
+    await reconcileMic();
+    assert.equal(microphoneStates.at(-1)?.canPublish,false);
+    await seats.actOnRoomSeat(guest,{roomCode,action:'leave'});
+    await seats.actOnRoomSeat(guest,{roomCode,action:'request',seatIndex:4});
+    assert.equal((await partyAuthority.authorizeLiveKitRoom(guest,{roomCode,canPublish:true})).publishMode,'none','reseating cannot bypass staff mute');
+    assert.equal((await rooms.setRoomMemberMuted(owner,{roomCode,targetPublicId:guest.publicId,muted:false})).muted,true,'staff lift does not open user hardware');
+    await rooms.setRoomMemberMuted(guest,{roomCode,targetPublicId:guest.publicId,muted:false});
+    await reconcileMic();
+    assert.equal(microphoneStates.at(-1)?.canPublish,true);
+    await seats.actOnRoomSeat(guest, {roomCode, action: 'leave'});
+    await reconcileMic();
+    assert.equal(microphoneStates.at(-1)?.canPublish,false,'leave revokes mic but keeps subscription');
+    await assert.rejects(rooms.setRoomMemberMuted(guest,{roomCode,targetPublicId:guest.publicId,muted:false}),/Take an available seat/);
+    await assert.rejects(partyAuthority.authorizeLiveKitRoom(guest,{roomCode,canPublish:true}),/active speaker role/);
+    await seats.actOnRoomSeat(guest,{roomCode,action:'request',seatIndex:4});
+    await reconcileMic();
+    assert.equal(microphoneStates.at(-1)?.canPublish,true,'late sync reads the newly authoritative seat, not an old leave intent');
+    await seats.actOnRoomSeat(guest,{roomCode,action:'leave'});
+    console.log('PASS Party microphone: passive->seat grant, self mute/reconnect/unmute, staff mute/revoke, reseat protection, explicit unmute after staff lift, leave/rejoin and latest-state sync.');
+
     // Kick Out is a scoped room block. It must close this membership and media
     // grant, deny only this room's re-entry, remain visible to staff, and be
     // reversible without touching account/device/Live moderation state.

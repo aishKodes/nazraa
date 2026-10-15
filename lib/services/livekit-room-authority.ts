@@ -7,6 +7,40 @@ import { withTransaction } from "@/lib/db/transaction";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 import type { LiveKitPublishMode } from "@/lib/services/livekit-token-service";
+import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
+
+type PartyMicrophoneState = {roomCode: string; publicId: string; canPublish: boolean; muted: boolean};
+/** Apply the latest Party capability, never a stale accept/leave action.
+ * The same membership/room row lock serializes this short, bounded RPC against
+ * seat changes. A late leave sync therefore cannot revoke a newly claimed seat.
+ * Self-mute keeps the capability; staff mute revokes it. No remote unmute.
+ */
+export async function syncPartyMicrophone(
+  roomCode: string,
+  publicId: string,
+  apply: (state: PartyMicrophoneState) => Promise<boolean> = async state => {
+    const media = new LiveKitRoomAdmin(2);
+    const permission = await media.setFaceAudioGuestPublishing(state.roomCode, state.publicId, state.canPublish);
+    if (state.muted) await media.setParticipantAudioMuted(state.roomCode, state.publicId, true);
+    return permission.changed;
+  },
+) {
+  return withTransaction(async connection => {
+    const [rows] = await connection.query<RowDataPacket[]>(
+      `SELECT room.room_type,room.status,user.account_status,member.left_at,
+        member.media_role,member.seat_index,member.muted,member.muted_by_staff
+       FROM live_rooms room JOIN live_room_members member ON member.room_id=room.id
+       JOIN application_users user ON user.id=member.application_user_id
+       WHERE room.room_code=? AND user.public_id=? LIMIT 1 FOR UPDATE`, [roomCode,publicId]);
+    const row=rows[0];
+    if (!row || row.room_type!=='PARTY') return {isParty:false,applied:false};
+    const canPublish = row.account_status==='ACTIVE' && ['ACTIVE','LOCKED'].includes(row.status)
+      && row.left_at==null && !Boolean(row.muted_by_staff)
+      && (row.media_role==='PARTY_OWNER' || (row.media_role==='RTC_SPEAKER' && row.seat_index!=null));
+    const muted=Boolean(row.muted) || !canPublish;
+    return {isParty:true,canPublish,muted,applied:await apply({roomCode,publicId,canPublish,muted})};
+  });
+}
 
 type MediaRole =
   | "HOST"
@@ -39,7 +73,7 @@ export async function authorizeLiveKitRoom(
       })[]
     >(
       `SELECT room.id room_id, room.room_type, room.status room_status,
-              member.media_role, member.muted
+              member.media_role, member.muted,member.muted_by_staff,member.seat_index
        FROM live_rooms room
        INNER JOIN live_room_members member
          ON member.room_id = room.id
@@ -57,8 +91,9 @@ export async function authorizeLiveKitRoom(
       room.media_role === "HOST" || room.media_role === "PARTY_OWNER";
     const isAudioPublisher =
       room.media_role === "AUDIO_GUEST" || room.media_role === "RTC_SPEAKER";
-    const mayPublish = isHost || isAudioPublisher;
-    if (input.canPublish && (!mayPublish || Boolean(room.muted))) {
+    const mayPublish = isHost || (isAudioPublisher && (room.room_type!=='PARTY' || room.seat_index!=null));
+    const publishingBlocked = room.room_type==='PARTY' ? Boolean(room.muted_by_staff) : Boolean(room.muted);
+    if (input.canPublish && (!mayPublish || (room.room_type!=='PARTY' && publishingBlocked))) {
       throw new Error(
         room.room_type === "PARTY"
           ? "An active speaker role is required before microphone access."
@@ -96,7 +131,7 @@ export async function authorizeLiveKitRoom(
       if (!access.allowed) throw new Error(access.reason);
     }
 
-    const publishMode: LiveKitPublishMode = !input.canPublish
+    const publishMode: LiveKitPublishMode = !input.canPublish || (room.room_type==='PARTY' && publishingBlocked)
       ? "none"
       : room.room_type === "PARTY" || isAudioPublisher
         ? "audio_only"
@@ -131,6 +166,7 @@ export async function authorizeLiveKitRoom(
       roomType: room.room_type,
       mediaRole: room.media_role,
       publishMode,
+      microphoneMuted: room.room_type==='PARTY' && Boolean(room.muted),
       ttlSeconds,
     } as const;
   });

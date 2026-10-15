@@ -13,6 +13,7 @@ function managementUrl(value = process.env.LIVEKIT_URL?.trim() ?? "") {
  * state, then this service immediately applies the matching media action.
  */
 export class LiveKitRoomAdmin {
+  constructor(private readonly requestTimeoutSeconds?: number) {}
   private readonly url = managementUrl();
   private readonly apiKey = process.env.LIVEKIT_API_KEY?.trim() ?? "";
   private readonly apiSecret = process.env.LIVEKIT_API_SECRET?.trim() ?? "";
@@ -23,7 +24,8 @@ export class LiveKitRoomAdmin {
 
   private client() {
     if (!this.isConfigured) return null;
-    return new RoomServiceClient(this.url, this.apiKey, this.apiSecret);
+    return new RoomServiceClient(this.url, this.apiKey, this.apiSecret,
+      this.requestTimeoutSeconds == null ? undefined : {requestTimeout: this.requestTimeoutSeconds});
   }
 
   /** Audio PK subscribers only; never touches a base Party publisher. */

@@ -66,6 +66,7 @@ import { LiveKitTokenService } from "@/lib/services/livekit-token-service";
 import {
   authorizeLiveKitPkBridge,
   authorizeLiveKitRoom,
+  syncPartyMicrophone,
 } from "@/lib/services/livekit-room-authority";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import {partyRoomAdmins} from '@/lib/db/repositories/party-room-admins';
@@ -614,8 +615,8 @@ export async function POST(
           })
           .parse(body);
         const result = await actOnRoomSeat(identity, parsed);
-        if(mediaProviderFor(identity)==='LIVEKIT' && result.status==='left') {
-          await new LiveKitRoomAdmin().setFaceAudioGuestPublishing(parsed.roomCode, result.targetPublicId ?? identity.publicId, false);
+        if(mediaProviderFor(identity)==='LIVEKIT' && ['accepted','left'].includes(result.status)) {
+          await syncPartyMicrophone(parsed.roomCode, result.targetPublicId ?? parsed.targetPublicId ?? identity.publicId);
         }
         notifyRoom(parsed.roomCode, "seat");
         scheduleMixerSync(
@@ -1393,11 +1394,9 @@ export async function POST(
         const result = await setRoomMemberMuted(identity, parsed);
         notifyRoom(parsed.roomCode, "seat");
         if (mediaProviderFor(identity) === "LIVEKIT") {
-          await new LiveKitRoomAdmin().setParticipantAudioMuted(
-            parsed.roomCode,
-            parsed.targetPublicId,
-            parsed.muted,
-          );
+          const party = await syncPartyMicrophone(parsed.roomCode,parsed.targetPublicId);
+          if (!party.isParty) await new LiveKitRoomAdmin().setParticipantAudioMuted(
+            parsed.roomCode, parsed.targetPublicId, parsed.muted);
         }
         scheduleMixerSync(
           parsed.roomCode,
@@ -1796,6 +1795,7 @@ export async function POST(
           roomCode: parsed.roomId,
           canPublish: parsed.publish,
         });
+        if (authorization.roomType==='PARTY') await syncPartyMicrophone(parsed.roomId,identity.publicId);
         const credentials = await new LiveKitTokenService().issueRoomToken({
           roomId: parsed.roomId,
           identity: identity.publicId,
@@ -1808,6 +1808,7 @@ export async function POST(
           provider: "LIVEKIT",
           mediaRole: authorization.mediaRole,
           publishMode: authorization.publishMode,
+          microphoneMuted: authorization.microphoneMuted,
         });
       }
       if (resource === "livekit-pk-bridge-token") {

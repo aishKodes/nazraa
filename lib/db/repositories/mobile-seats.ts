@@ -12,6 +12,7 @@ type SeatMember = RowDataPacket & {
   seat_session_id: string | null;
   seat_version: number;
   muted?: boolean;
+  muted_by_staff?: boolean;
   room_role?: string;
 };
 
@@ -90,7 +91,7 @@ async function assignSeat(
     `UPDATE live_room_members
         SET room_role = IF(room_role = 'AUDIENCE', 'SPEAKER', room_role),
             media_role = IF(room_role = 'OWNER', 'PARTY_OWNER', 'RTC_SPEAKER'),
-            seat_index = ?, seat_session_id = ?, seat_version = ?, muted = FALSE,
+            seat_index = ?, seat_session_id = ?, seat_version = ?, muted = IF(muted_by_staff,TRUE,FALSE),
             media_publishing = FALSE
       WHERE room_id = ? AND application_user_id = ?`,
     [input.seatIndex, seatSessionId, seatVersion, input.roomId, input.userId],
@@ -117,7 +118,7 @@ async function assignSeat(
     seatVersion,
     previousState,
     nextState: "SEATED",
-    desiredMicState: "MIC_ON",
+    desiredMicState: input.member.muted_by_staff ? "MUTED" : "MIC_ON",
     eventSource: input.eventSource,
   });
   await beginPartyBoardSeat(connection,input.roomId,input.userId,seatSessionId,input.seatIndex);
@@ -131,7 +132,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
   return withTransaction(async (connection) => {
     const [rooms] = await connection.query<RowDataPacket[]>(
       `SELECT room.id, room.seat_count, member.room_role, member.seat_index,
-              member.seat_session_id, member.seat_version, member.muted
+              member.seat_session_id, member.seat_version, member.muted, member.muted_by_staff
        FROM live_rooms room INNER JOIN live_room_members member ON member.room_id = room.id
          AND member.application_user_id = ? AND member.left_at IS NULL
        WHERE room.room_code = ? AND room.room_type = 'PARTY' AND room.status IN ('ACTIVE','LOCKED') FOR UPDATE`,
@@ -223,7 +224,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
       const [locked] = await connection.query<RowDataPacket[]>("SELECT seat_index FROM live_room_seat_locks WHERE room_id = ? AND seat_index = ? LIMIT 1", [room.id, index]);
       if (locked.length) throw new Error("Unlock this seat before assigning a member.");
       const [targets] = await connection.query<RowDataPacket[]>(
-        `SELECT user.id, member.room_role, member.seat_index, member.seat_session_id, member.seat_version, member.muted FROM live_room_members member
+        `SELECT user.id, member.room_role, member.seat_index, member.seat_session_id, member.seat_version, member.muted, member.muted_by_staff FROM live_room_members member
          INNER JOIN application_users user ON user.id = member.application_user_id
          WHERE member.room_id = ? AND member.left_at IS NULL
            AND member.last_seen_at >= CURRENT_TIMESTAMP(3) - INTERVAL 2 MINUTE
@@ -249,7 +250,7 @@ export async function actOnRoomSeat(identity: MobileIdentity, input: {
     }
     const [requests] = await connection.query<RowDataPacket[]>(
       `SELECT request.application_user_id, request.seat_index, member.seat_index current_seat_index,
-              member.seat_session_id, member.seat_version, member.muted, member.room_role FROM live_seat_requests request
+              member.seat_session_id, member.seat_version, member.muted, member.muted_by_staff, member.room_role FROM live_seat_requests request
        INNER JOIN application_users user ON user.id = request.application_user_id AND user.account_status = 'ACTIVE'
        INNER JOIN live_room_members member ON member.room_id = request.room_id AND member.application_user_id = user.id
        WHERE request.room_id = ? AND user.public_id = ? AND request.status = 'PENDING'
