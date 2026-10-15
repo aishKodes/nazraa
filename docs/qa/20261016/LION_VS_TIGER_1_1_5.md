@@ -39,3 +39,23 @@ Migration 0105 adds nullable per-row game discriminators with a matching round/g
 - `/Users/aishwaryam/nazra2/assets/games/launcher/ARTWORK.md`
 
 Eight local 384px covers, 1024px transparent fighter sheet, 960px arena. Combined WebP art under 1MB. No recurring SDK, network art fetch or video decoder.
+
+## Production deployment and rollback
+
+- Backend commit `24e31870b586c315ceb8367a517feec91cef2a4a` deployed to the existing VPS. Only API/realtime services replaced; LiveKit, database, Redis, Caddy and the existing worker were not restarted.
+- Fresh encrypted off-VPS backup `nazraa-nightly-20261015T190455Z` completed before deployment (4,947,195,138 bytes).
+- Migration 0105 SHA-256 `9a8d017fbd147592a788f8387591640adbacb040ba11b4d4ea2596084ac276d5`. Applied twice to empty cloned schemas on the production MariaDB 11.8.9 engine before production application. New-game large-amount and old-game/NULL legacy constraints passed. The disposable schema was removed.
+- Production migration completed in 12.4 seconds. Ready endpoint returned 200; Redis exposed the new game and SQL round timestamps confirmed exactly 15 betting seconds.
+- Previous source/config manifests and schema definitions retained at `/opt/nazraa/backups/lion89`; rollback images `nazraa-api:rollback-before-lion89` and `nazraa-realtime:rollback-before-lion89`. Nullable schema extension remains backward-compatible; do not drop it or recalculate financial records on rollback.
+
+## Exact signed APK verification
+
+- Version `2.4.89+7401`, package `com.nazraa.live`, target SDK 36. Permanent signing certificate unchanged.
+- APK `Nazraa-Live-2.4.89-7401-test.apk`, 227,023,140 bytes.
+- SHA-256 `226efa8c30b62a8ac17c8b195b3f6bb019b60f6351525329c1bdd4b600eebcfd`.
+- Exact APK installed on Android 16 emulator; installed base APK hash matched. Existing ordinary QA session used; no credentials extracted, role changes or production bets.
+- Read-only 50-second recording covered complete rounds 74670508 and 74670509, then entry into 74670510. Both observed outcomes were Tiger. Countdown, five-second competition, winner highlight/banner, next-round transition and newest-first history updates were visible. Balance remained 95,821 Coins.
+- All three result targets, including Draw, are separately covered by controlled widget/financial tests; this short production recording is not claimed as a live Draw or monetary settlement test.
+- No Flutter/AndroidRuntime error output after observation. Recording/contact sheet retained privately under `docs/qa/20261016/private/`.
+- Published owner test prerelease `https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.4.89-qa`. This is not a forced stable rollout: existing stable download/latest/minimum versions remain unchanged.
+- Sanitized mobile source archive (lib/assets/test/pubspec only) retained privately; SHA-256 `40da054aaf388ec2efc0414a6dbfcd06b01d31ebdbca8e0b71a4b42a99be269c`. No signing keys or backend secrets included.
