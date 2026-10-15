@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.86";
-const releaseBuild = 7398;
+const releaseVersion = "2.4.91";
+const releaseBuild = 7403;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.86/Nazraa-Live-2.4.86-7398-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.91/Nazraa-Live-2.4.91-7403-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,13 +34,14 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 225_328_870,
-  sha256: "5890d59445208b00b73001225f34b66b4f241f4c073ce14c5a80528bb88b0e07",
-  releaseDate: "2026-10-15",
+  apkSizeBytes: 229_392_993,
+  sha256: "69ad077d0429a5da84da1290d27107b4308b4f2faa44a16b76fa3eaef6601305",
+  releaseDate: "2026-10-16",
   releaseNotes: [
-    "Party controls refined: one Games shortcut above Rocket, icon-only Emoji, clearer Members, and compact Inbox/Tools/Sound controls.",
-    "Real speech activity indicators and automatic two-Couple-plus-eight regular seats in 10-seat mode; 20-seat mode remains a regular 4×5 board.",
-    "Master Agency-wise payout totals and settlement workspace, scoped Agency details, and configurable future payout rates with immutable historical snapshots.",
+    "Lion Vs Tiger: a new separate game with animated boxing, clear winner celebrations and server-authoritative results.",
+    "Original local game sounds for chips, countdown, competition and wins, with a saved mute control and no looping music.",
+    "Eight original game covers, responsive game panels and immediate completed-round history updates.",
+    "Existing Face/Party media, wallet, payout records and other game rules are preserved.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
