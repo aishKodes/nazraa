@@ -58,4 +58,5 @@ Eight local 384px covers, 1024px transparent fighter sheet, 960px arena. Combine
 - All three result targets, including Draw, are separately covered by controlled widget/financial tests; this short production recording is not claimed as a live Draw or monetary settlement test.
 - No Flutter/AndroidRuntime error output after observation. Recording/contact sheet retained privately under `docs/qa/20261016/private/`.
 - Published owner test prerelease `https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.4.89-qa`. This is not a forced stable rollout: existing stable download/latest/minimum versions remain unchanged.
+- Downloaded the complete 227,023,140-byte public GitHub asset after publication; its SHA-256 matched the installed/tested APK exactly.
 - Sanitized mobile source archive (lib/assets/test/pubspec only) retained privately; SHA-256 `40da054aaf388ec2efc0414a6dbfcd06b01d31ebdbca8e0b71a4b42a99be269c`. No signing keys or backend secrets included.
