@@ -1460,6 +1460,15 @@ function canonicalBets(bets: Record<string, number>) {
   return Object.fromEntries(Object.entries(bets).sort(([left], [right]) => left.localeCompare(right)));
 }
 
+function canonicalSharedRetryBets(game: string, bets: Record<string, number>) {
+  // These two games store all allowed areas, including zero wagers. A sparse
+  // immutable retry must compare equal to that durable expanded receipt.
+  // Keep unknown keys/changed values so they still fail the equality check.
+  if (game === "luck77") return canonicalBets({watermelon: 0, seven: 0, plum: 0, ...bets});
+  if (game === TEEN_PATTI_ID) return canonicalBets({green: 0, blue: 0, red: 0, ...bets});
+  return canonicalBets(bets);
+}
+
 function checkedBets(bets: Record<string, number>, keys: readonly string[], unit: number, maximum = 50_000_000) {
   const allowed = new Set(keys);
   if (Object.keys(bets).some((key) => !allowed.has(key))) throw new Error("This game bet contains an invalid option.");
@@ -2426,7 +2435,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       [identity.userId, input.requestId],
     );
     if (existingRows[0]) {
-      if (String(existingRows[0].round_id) !== input.roundId || JSON.stringify(canonicalBets(asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(bets)) {
+      if (String(existingRows[0].round_id) !== input.roundId || JSON.stringify(canonicalSharedRetryBets(game, asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(canonicalSharedRetryBets(game, bets))) {
         throw new Error("This bet request ID was already used.");
       }
       return sharedRoundStatePayload(connection, identity, round, config, now);

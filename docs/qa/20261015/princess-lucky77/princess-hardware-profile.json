@@ -1,0 +1,60 @@
+{
+  "game": "princess",
+  "mode": "Android emulator profile / not physical-device certification",
+  "requestedSeconds": 6,
+  "retainedTraceSeconds": 3.447737,
+  "events": 32689,
+  "metrics": [
+    {
+      "name": "CompositorContext::ScopedFrame::Raster",
+      "samples": 206,
+      "p50Ms": 0.024,
+      "p95Ms": 0.033,
+      "maxMs": 0.188,
+      "over16_67ms": 0
+    },
+    {
+      "name": "Rasterizer::DrawToSurfaces",
+      "samples": 205,
+      "p50Ms": 16.461,
+      "p95Ms": 17.531,
+      "maxMs": 19.617,
+      "over16_67ms": 72
+    },
+    {
+      "name": "Rasterizer::DoDraw",
+      "samples": 205,
+      "p50Ms": 16.466,
+      "p95Ms": 17.541,
+      "maxMs": 19.76,
+      "over16_67ms": 74
+    },
+    {
+      "name": "GPURasterizer::Draw",
+      "samples": 205,
+      "p50Ms": 16.469,
+      "p95Ms": 17.544,
+      "maxMs": 19.763,
+      "over16_67ms": 75
+    },
+    {
+      "name": "Animator::BeginFrame",
+      "samples": 205,
+      "p50Ms": 1.113,
+      "p95Ms": 1.659,
+      "maxMs": 1.827,
+      "over16_67ms": 0
+    }
+  ],
+  "otherFrameNames": [
+    "CompositorContext::ScopedFrame::Raster",
+    "SurfaceFrame::BuildDisplayList",
+    "POST_FRAME",
+    "SurfaceFrame::Encode",
+    "SurfaceFrame::Submit",
+    "Rasterizer::DrawToSurfaces",
+    "Rasterizer::DoDraw",
+    "GPURasterizer::Draw",
+    "Animator::BeginFrame"
+  ]
+}
