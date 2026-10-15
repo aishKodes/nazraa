@@ -29,6 +29,8 @@ Signed artifacts are in `/Users/aishwaryam/nazra2/dist/`. Sanitized mobile sourc
 
 Reviewed additive commit `202fe44` applied to the existing VPS working source after fresh encrypted offsite-backup verification. No Git reset/pull or migration. Full working-source snapshot, applied patch, verified backup record and previous API image protected under `/opt/nazraa/backups/release-2.4.85`; rollback image `nazraa-api:rollback-before-2.4.85`.
 
+Fresh encrypted offsite backup verified: `nazraa-nightly-20261015T114600Z`, 4,893,027,006 bytes. Final service health: API/realtime/MySQL/Redis healthy; worker and Caddy retain their previous uptime.
+
 Only API container replaced and health verified. MySQL, Redis, realtime, worker and OCI LiveKit not restarted. Production new-game and Agency functionality use the existing authoritative database; no economy/media configuration mutation.
 
 GitHub `aishKodes/Nazraa-Releases` v2.4.85 is public; asset digests match local files. Public APK downloaded completely on VPS and SHA-256 checked before switching the site. `https://nazralive.in/download` and `/release/latest` visibly show 2.4.85 / 7397, correct URL and hash.
