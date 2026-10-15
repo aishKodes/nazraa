@@ -4,11 +4,16 @@
  const {RoomServiceClient,TrackType}=require('livekit-server-sdk');
  const c=await require('mysql2/promise').createConnection({host:process.env.DB_HOST,port:Number(process.env.DB_PORT||3306),user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME});
  try{
-  const [rows]=await c.execute(`SELECT room.title,room.status,member.muted,user.public_id
+  const [rows]=await c.execute(`SELECT room.title,room.status,room.seat_count,member.muted,user.public_id
    FROM live_rooms room JOIN live_room_members member ON member.room_id=room.id AND member.application_user_id=room.host_application_user_id
    JOIN application_users user ON user.id=member.application_user_id WHERE room.room_code=?`,[process.argv[2]]);
   assert.equal(rows.length,1);assert(rows[0].title.includes('QA'));
   const admin=new RoomServiceClient(process.env.LIVEKIT_URL.replace('wss:','https:'),process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET);
+  if(process.argv[3]==='closed'){
+   assert.equal(rows[0].status,'ENDED');assert.equal(Number(rows[0].seat_count),10);
+   assert.equal((await admin.listRooms([process.argv[2]])).length,0);
+   console.log(JSON.stringify({qaRoomEnded:true,layoutRestored:10,livekitRoomRemoved:true}));return;
+  }
   const host=await admin.getParticipant(process.argv[2],String(rows[0].public_id));
   const audio=host.tracks.filter(t=>t.type===TrackType.AUDIO);
   const expected=process.argv[3]==='muted';
