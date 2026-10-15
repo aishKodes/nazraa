@@ -276,27 +276,29 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <div className="stack-form full-width">
         {configurableGameIds.map((gameId) => {
           const game = gameSettings.games[gameId];
-          const name = ({ teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
+          const name = ({ teen_patti: "TeenPatti · Three Chairs", teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
           const greedy = gameId === "greedy_lion" || gameId === "greedy_king";
+          const chairs = gameId === 'teen_patti';
           const availability = !game.enabled ? "DISABLED" : game.maintenance ? "MAINTENANCE" : "ACTIVE";
           return <details key={gameId} className="scope-lock">
             <summary><strong>{name}</strong> · {availability.toLowerCase()} · {game.bettingSeconds ? `${game.bettingSeconds}s shared betting` : "individual spin"}</summary>
             <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>
+              {gameId==='teen_patti' && <p className="span-two">Separate game: unbiased 52-card deal, Green / Blue / Red Chairs, exactly 3× gross return less 3% service fee. No Crown wager, lane weighting or RTP scaling. These payout rules are fixed.</p>}
               <input name="game" type="hidden" value={gameId} />
               <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
               <label>Reference hit frequency<input name="targetWinRate" type="number" min="0" max="1" step="0.01" required defaultValue={game.targetWinRate} /><span>Reporting target only: 0.50 for Teen Patti/Luck77 and 0.40 for the others. Results never inspect a player&apos;s bets.</span></label>
-              <label>Fixed mathematical RTP<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>Payout scales are server-owned and verified statistically before deployment.</span></label>
-              <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" required defaultValue={game.maximumPayoutMultiplier} /><span>Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.</span></label>
+              <label>{chairs ? 'Nominal blind return' : 'Fixed mathematical RTP'}<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>{chairs ? 'Unweighted single-deck deal; the visible first card can inform a bet. No return-target scaling is applied.' : 'Payout scales are server-owned and verified statistically before deployment.'}</span></label>
+              <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" readOnly={chairs} required defaultValue={game.maximumPayoutMultiplier} /><span>{chairs ? 'Exactly 3× gross return before the fixed 3% service fee.' : 'Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.'}</span></label>
               <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
               <label>Drawing seconds<input name="drawingSeconds" type="number" min="0" max="60" required defaultValue={game.drawingSeconds} /><span>Server locks wagers during this phase.</span></label>
               <label>Result seconds<input name="resultSeconds" type="number" min="0" max="60" required defaultValue={game.resultSeconds} /><span>Server-owned visible result hold; changes are audited and apply to newly opened rounds.</span></label>
-              <label>Minimum bet<input name="minimumBet" type="number" min="1" required defaultValue={game.minimumBet} /></label>
+              <label>Minimum bet<input name="minimumBet" type="number" min="1" readOnly={chairs} required defaultValue={game.minimumBet} /></label>
               <label>Maximum per round<input name="maximumBet" type="number" min="1" required defaultValue={game.maximumBet} /></label>
-              <label className="span-two">Chip denominations<input name="denominations" required defaultValue={game.denominations.join(", ")} /><span>Comma separated. Existing app buttons refresh from server controls where supported.</span></label>
+              <label className="span-two">Chip denominations<input name="denominations" required readOnly={chairs} defaultValue={game.denominations.join(", ")} /><span>Comma separated. Existing app buttons refresh from server controls where supported.</span></label>
               <label>Global history length<input name="historyLength" type="number" min="1" max="50" required defaultValue={game.historyLength} /></label>
               <label>Big Winner threshold<input name="bigWinThreshold" type="number" min="1" required defaultValue={game.bigWinThreshold} /></label>
               <label>Repeat Bet<select name="repeatBet" defaultValue={String(game.repeatBet)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-              <label>Auto Play<select name="autoPlay" defaultValue={String(game.autoPlay)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <label>Auto Play{chairs ? <><input name="autoPlay" type="hidden" value="false" /><input value="Not supported" readOnly /></> : <select name="autoPlay" defaultValue={String(game.autoPlay)}><option value="true">Enabled</option><option value="false">Disabled</option></select>}</label>
               {gameId === "luck77" || gameId === "bounty_football" ? <label className="span-two">Outcome weights<input name="outcomeWeights" required defaultValue={(game.outcomeWeights ?? []).join(", ")} /><span>{gameId === "luck77" ? "Lucky77, Watermelon, Plum" : "Ten teams in displayed order"}. Weight 0 disables an outcome.</span></label> : <input name="outcomeWeights" type="hidden" value="" />}
               {greedy ? <>
                 <label>Salad weight<input name="saladWeight" type="number" min="0" required defaultValue={game.saladWeight ?? 0} /></label>

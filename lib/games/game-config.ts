@@ -1,4 +1,5 @@
 export const configurableGameIds = [
+  "teen_patti",
   "teen_patti_pro",
   "luck77",
   "greedy_lion",
@@ -50,6 +51,14 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
   target_win_rate: 0.5,
   winnings_deduction_rate: 0.01,
   games: {
+    teen_patti: {
+      enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 3,
+      resultSeconds: 5, targetWinRate: 1 / 3, targetRtp: 0.97,
+      payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 3,
+      minimumBet: 100, maximumBet: 50_000_000,
+      denominations: [100, 500, 1000, 5000], historyLength: 20,
+      bigWinThreshold: 1_000_000, repeatBet: true, autoPlay: false,
+    },
     teen_patti_pro: {
       // The full cycle remains 19 seconds. Shift one second from wagering to
       // the committed result so the three hands never bleed into the next
@@ -276,6 +285,11 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       pizzaWeight: integer(stored.pizzaWeight, fallback.pizzaWeight ?? 0, 0, 1_000_000),
       poolContributionBps: integer(stored.poolContributionBps, fallback.poolContributionBps ?? 0, 0, 10_000),
       poolMinimumForSpecial: integer(stored.poolMinimumForSpecial, fallback.poolMinimumForSpecial ?? 0, 0, 1_000_000_000),
+      ...(id === 'teen_patti' ? {
+        targetRtp: 0.97, payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 3,
+        minimumBet: 100, denominations: [100,500,1000,5000],
+        outcomeWeights: undefined, autoPlay: false,
+      } : {}),
     } satisfies GameRuntimeConfig];
   })) as Record<ConfigurableGameId, GameRuntimeConfig>;
   const targetWinRate = root.target_win_rate ?? root.targetWinRate;

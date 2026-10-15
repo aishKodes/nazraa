@@ -351,6 +351,11 @@ export async function saveGameSettings(input: {
   poolMinimumForSpecial?: number;
   reason: string;
 }) {
+  if (input.game === 'teen_patti' && (
+    input.maximumPayoutMultiplier !== 3 || input.minimumBet !== 100 || input.autoPlay ||
+    [...new Set(input.denominations)].sort((a,b)=>a-b).join(',') !== '100,500,1000,5000' ||
+    (input.outcomeWeights?.length ?? 0) > 0
+  )) throw new Error('TeenPatti has fixed 3× return, 3% fee and 100 / 500 / 1,000 / 5,000 chips. Weighted outcomes and Auto Play are not supported.');
   if (input.targetWinRate < 0 || input.targetWinRate > 1) throw new Error("Target win rate must be between 0 and 1.");
   if (input.maximumPayoutMultiplier < 1 || input.maximumPayoutMultiplier > 1000) throw new Error("Maximum payout multiplier must be between 1 and 1,000.");
   if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");

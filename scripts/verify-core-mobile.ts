@@ -3235,6 +3235,7 @@ async function main() {
     }
     async function completeSharedRound(
       game:
+        | "teen_patti"
         | "teen_patti_pro"
         | "luck77"
         | "bounty_football"
@@ -3271,6 +3272,12 @@ async function main() {
         }
       }
       assert.ok(placed, "QA fixture must place a fresh authoritative bet");
+      if(game==='teen_patti'){
+        assert.equal(placed.outcome,null,'new game never leaks the hidden hand/winner while betting');
+        assert.equal(placed.publicPreview?.cards.length,3,'exactly one visible card per chair');
+        assert.equal(new Set(placed.publicPreview?.cards).size,3);
+        assert.deepEqual(Object.keys(placed.targetTotals),['green','blue','red']);
+      }
       const repeated = await product.placeSharedGameBets(owner, {
         requestId,
         game,
@@ -3426,6 +3433,13 @@ async function main() {
       "2": 0,
       crown: 500,
     });
+    const chairRound=await completeSharedRound('teen_patti',{green:500,blue:500,red:500});
+    assert.equal(chairRound.settlement.grossPayout,1500);
+    assert.equal(chairRound.settlement.deduction,45);
+    assert.equal(chairRound.settlement.payout,1455);
+    assert.equal(new Set((chairRound.outcome.hands as {cards:number[]}[]).flatMap(h=>h.cards)).size,9);
+    assert(chairRound.players.every(p=>Object.keys(p.bets).length===0),'new game never exposes other player bet choices');
+    console.log('PASS separate TeenPatti: all three chairs accepted, preview hides six cards and winner, exact 3× minus 3% return, durable payout/history, duplicate command denied; Pro remains separate.');
     assert.notEqual(
       sharedTeenRound.round.number,
       1,
@@ -3670,6 +3684,7 @@ async function main() {
     );
     const sharedSoakInputs: ReadonlyArray<{
       game:
+        | "teen_patti"
         | "teen_patti_pro"
         | "luck77"
         | "bounty_football"
@@ -3677,6 +3692,7 @@ async function main() {
         | "greedy_lion";
       bets: Record<string, number>;
     }> = [
+      {game:'teen_patti',bets:{green:500,blue:500,red:500}},
       {
         game: "teen_patti_pro" as const,
         bets: { "0": 500, "1": 0, "2": 0, crown: 500 },
@@ -3745,6 +3761,10 @@ async function main() {
           definition.bets,
         );
         assert.ok(Number.isSafeInteger(settled.settlement.payout));
+        if(definition.game==='teen_patti'){
+          assert.equal(settled.settlement.payout,1455);
+          assert.equal(settled.settlement.deduction,45);
+        }
         // round_number is unsigned; this reserved high QA range is unique per
         // game and makes the next state call create a fresh current round.
         await root.execute(

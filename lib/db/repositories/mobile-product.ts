@@ -29,6 +29,7 @@ import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
+import {TEEN_PATTI_ID,dealChairRound,chairPreview,chairSettlement,teenPattiChairs} from '@/lib/games/teen-patti';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
 import { currentPolicyAcceptance } from "@/lib/db/repositories/mobile-safety";
@@ -1235,6 +1236,7 @@ export function teenPattiLanePayout(lane: number, bet: number) {
 }
 const goldenZoneGames = new Set(["greedy_king", "greedy_lion"]);
 const supportedRoundGames = new Set([
+  TEEN_PATTI_ID,
   teenPattiGame,
   "luck77",
   "bounty_football",
@@ -1783,8 +1785,9 @@ function createServerGameOutcome(game: string, bets: Record<string, number>, con
   throw new Error("This game is unavailable.");
 }
 
-type SharedRoundGame = "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
+type SharedRoundGame = "teen_patti" | "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
 const sharedRoundGames: readonly SharedRoundGame[] = [
+  TEEN_PATTI_ID,
   teenPattiGame,
   "luck77",
   "greedy_lion",
@@ -1805,6 +1808,7 @@ function sharedGame(value: string): SharedRoundGame {
 }
 
 async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig) {
+  if(game===TEEN_PATTI_ID)return dealChairRound();
   if (game === teenPattiGame) {
     const hands = buildTeenPattiHands();
     const naturalWinner = strongestTeenPattiLane(hands);
@@ -1913,6 +1917,7 @@ function greatestCommonDivisor(left: number, right: number): number {
 }
 
 function validateSharedBets(game: SharedRoundGame, input: Record<string, number>, config: GameRuntimeConfig) {
+  if(game===TEEN_PATTI_ID)return checkedBets(input,teenPattiChairs,100,config.maximumBet);
   const unit = config.denominations.reduce(greatestCommonDivisor);
   const validate = (keys: readonly string[]) => {
     const checked = checkedBets(input, keys, unit, config.maximumBet);
@@ -1934,6 +1939,10 @@ function validateSharedBets(game: SharedRoundGame, input: Record<string, number>
 
 function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, number>, outcome: Record<string, unknown>, config: GameRuntimeConfig): ServerGameOutcome {
   const checked = validateSharedBets(game, bets, config);
+  if(game===TEEN_PATTI_ID){
+    const result=chairSettlement(checked.bets,String(outcome.winner));
+    return {outcome,wager:result.wager,payout:result.grossPayout,commissionablePayout:result.grossPayout};
+  }
   if (game === teenPattiGame) {
     const winnerLane = Number(outcome.winnerLane);
     if (!Number.isInteger(winnerLane) || winnerLane < 0 || winnerLane > 2) throw new Error("The shared Teen Patti result is invalid.");
@@ -2036,6 +2045,7 @@ function sharedGameRealtimeState(round: SharedRoundRow, now: Date): SharedGameRe
   const reveal = now >= new Date(round.drawing_ends_at);
   return {
     game: round.game_name,
+    ...(round.game_name===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json))}:{}),
     round: {
       id: round.id,
       number: Number(round.round_number),
@@ -2099,18 +2109,21 @@ async function settleMaturedSharedRounds(
       [pair.round_id, pair.application_user_id],
     );
     const bets = Object.fromEntries(betRows.map((row) => [String(row.target_id), Number(row.amount)]));
-    const result = enforcePayoutCap(
+    const rawResult = sharedRoundSettlement(game, bets, finalizedOutcome, gameConfig);
+    const result = game===TEEN_PATTI_ID ? rawResult : enforcePayoutCap(
       applyFixedRtpScale(
-        sharedRoundSettlement(game, bets, finalizedOutcome, gameConfig),
+        rawResult,
         gameConfig,
       ),
       gameConfig,
     );
     const rules = gameEconomyRules(settings);
-    const deductionRate = rules.winningsDeductionRate;
+    const deductionRate = game===TEEN_PATTI_ID ? 0.03 : rules.winningsDeductionRate;
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
-    const deduction = grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
+    const deduction = game===TEEN_PATTI_ID
+      ? chairSettlement(bets,String(finalizedOutcome.winner)).serviceFee
+      : grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
     const payout = grossPayout - deduction;
     await connection.execute(
       "INSERT INTO wallet_balances (id, owner_type, owner_id, asset_type) VALUES (?, 'APPLICATION_USER', ?, 'COIN') ON DUPLICATE KEY UPDATE available_balance = available_balance",
@@ -2237,7 +2250,7 @@ async function sharedRoundStatePayload(
   now = new Date(),
 ) {
   const game = round.game_name;
-  const targets = game === teenPattiGame
+  const targets = game===TEEN_PATTI_ID ? [...teenPattiChairs] : game === teenPattiGame
     ? ["0", "1", "2", "crown"]
     : game === "luck77"
       ? ["watermelon", "seven", "plum"]
@@ -2322,6 +2335,7 @@ async function sharedRoundStatePayload(
   }
   return {
     game,
+    ...(game===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json))}:{}),
     serverTimestamp: now.toISOString(),
     round: {
       id: round.id, number: Number(round.round_number), phase: phase.phase,
@@ -2334,7 +2348,8 @@ async function sharedRoundStatePayload(
     myBets: Object.fromEntries(targets.map((target) => [target, Number(myMap[target] ?? 0)])),
     walletBalance: Number(walletRows[0][0]?.available_balance ?? 0),
     playerCount: Number(playerRows[0][0]?.total ?? 0),
-    players: [...playersById.values()].slice(0, 50),
+    players: [...playersById.values()].slice(0, 50).map(player=>game===TEEN_PATTI_ID
+      ? {...player,bets:{},totalWager:0} : player),
     progressivePool: Number((poolRows[0] as (RowDataPacket & { amount?: number })[])[0]?.amount ?? 0),
     controls: {
       enabled: config.enabled, maintenance: config.maintenance,

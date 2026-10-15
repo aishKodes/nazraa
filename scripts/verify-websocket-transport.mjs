@@ -49,7 +49,7 @@ async function connect(token) {
   return socket;
 }
 
-const api = createServer((request, response) => {
+const api = createServer(async (request, response) => {
   if (request.url !== "/api/internal/realtime/authorize" ||
       request.headers["x-nazraa-internal-key"] !== internalSecret ||
       request.headers.authorization !== `Bearer ${validToken}`) {
@@ -57,7 +57,9 @@ const api = createServer((request, response) => {
     return;
   }
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(JSON.stringify({ roomCode, roomId: "qa", userId: "qa" }));
+  let body=''; for await (const chunk of request) body+=chunk;
+  const game=JSON.parse(body || '{}').game;
+  response.end(JSON.stringify({ roomCode, roomId: "qa", userId: "qa", ...(game ? {game} : {}) }));
 });
 await new Promise((resolve) => api.listen(3001, "127.0.0.1", resolve));
 const realtime = spawn(process.execPath, ["deploy/vps/realtime.mjs"], {
@@ -86,11 +88,22 @@ try {
   assert.equal((await changed).topic, "seat");
   accepted.close();
 
+  // New TeenPatti has its own authorized channel; Pro remains separately
+  // addressed and no wallet/private bet data is included in phase events.
+  const chairSocket=await connect(validToken);
+  const gameReady=waitForMessage(chairSocket,'GAME_READY');
+  chairSocket.send(JSON.stringify({op:'subscribe-game',game:'teen_patti'}));
+  assert.equal((await gameReady).game,'teen_patti');
+  const gameChanged=waitForMessage(chairSocket,'GAME_CHANGED');
+  await publisher.publish('game:teen_patti',JSON.stringify({type:'GAME_CHANGED',game:'teen_patti',reason:'ROUND',state:{publicPreview:{cards:[12,0,1]},outcome:null}}));
+  assert.deepEqual((await gameChanged).state.publicPreview.cards,[12,0,1]);
+  chairSocket.close();
+
   const denied = await connect(invalidToken);
   const closed = new Promise((resolve) => denied.once("close", resolve));
   denied.send(JSON.stringify({ op: "subscribe", roomCode }));
   assert.equal(await closed, 1008);
-  console.log("PASS authenticated WebSocket subscribe, Redis delivery, denial");
+  console.log("PASS authenticated room + separate TeenPatti WebSocket subscribe, Redis phase/preview delivery, denial");
 } catch (error) {
   console.error(error instanceof Error ? error.message : "Realtime QA failed.");
   if (serverError) console.error("Realtime child reported a startup error.");

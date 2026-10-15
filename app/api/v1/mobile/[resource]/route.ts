@@ -456,6 +456,7 @@ export async function GET(
         const parameters = new URL(request.url).searchParams;
         const game = z
           .enum([
+            "teen_patti",
             "teen_patti_pro",
             "luck77",
             "bounty_football",
@@ -479,6 +480,7 @@ export async function GET(
       if (resource === "game-state") {
         const game = z
           .enum([
+            "teen_patti",
             "teen_patti_pro",
             "luck77",
             "greedy_lion",
@@ -493,6 +495,7 @@ export async function GET(
       if (resource === "game-social") {
         const game = z
           .enum([
+            "teen_patti",
             "teen_patti_pro",
             "luck77",
             "bounty_football",
@@ -509,6 +512,7 @@ export async function GET(
         const parameters = new URL(request.url).searchParams;
         const game = z
           .enum([
+            "teen_patti",
             "teen_patti_pro",
             "luck77",
             "bounty_football",
@@ -1668,6 +1672,7 @@ export async function POST(
           .object({
             clientRoundId: z.string().uuid(),
             game: z.enum([
+              "teen_patti",
               "teen_patti_pro",
               "luck77",
               "bounty_football",
@@ -1693,6 +1698,7 @@ export async function POST(
             requestId: z.string().uuid(),
             roundId: z.string().uuid(),
             game: z.enum([
+              "teen_patti",
               "teen_patti_pro",
               "luck77",
               "greedy_lion",
