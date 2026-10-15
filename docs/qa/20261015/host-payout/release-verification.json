@@ -27,5 +27,12 @@
   "hostPayoutPageHttp": 200,
   "anonymousManagementHttp": 401,
   "portal320pxLayoutPassed": true,
-  "hostWebSignInE2E": "PENDING_OWNER_APPROVAL_FOR_TWO_GOOGLE_WEBSITE_ORIGINS"
+  "googleWebsiteOriginsSaved": ["https://nazralive.in", "https://www.nazralive.in"],
+  "googleSecretsScopesAndroidRegistrationsChanged": false,
+  "hostWebSignInE2E": "PASS_EXISTING_HOST_PRODUCTION_GOOGLE_SIGN_IN",
+  "hostWebSessionSurvivesRefresh": true,
+  "hostWebLogoutClearsDisplayedHostData": true,
+  "hostWebRepeatSignInWithoutManualRefresh": true,
+  "realPayoutOrAccountEditPerformed": false,
+  "googleWebsiteSignInBlocker": "CLEARED"
 }

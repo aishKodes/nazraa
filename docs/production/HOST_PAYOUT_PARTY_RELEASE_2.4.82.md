@@ -45,10 +45,18 @@ downloaded on the production VPS and its size/hash verified independently.
 - New-workflow live summary is genuinely empty; synthetic tests did not create
   real production payouts or move real balances. Existing legacy withdrawals
   remain accessible in their preserved Control module.
-- **Pending owner action:** approve saving only `https://nazralive.in` and
-  `https://www.nazralive.in` in the existing Google web client's authorized
-  JavaScript origins. Fields staged, not saved. Live Host sign-in E2E is not
-  claimed PASS before that approval/configuration and an actual login.
+- **Google website authentication completed:** owner explicitly approved the
+  two origins `https://nazralive.in` and `https://www.nazralive.in`. Saved only
+  those origins in the existing web client; Google confirmed "OAuth client
+  saved", and reopening the client verified both persisted values. No client
+  secret, scope, redirect URI, Android registration or Control permission was
+  changed.
+- Real existing Host Google sign-in PASS against production; own identity,
+  available Diamonds, configured Host rate, empty account/history state and
+  appropriately disabled payout button verified. Session survived refresh.
+  Logout removed Host data; repeat sign-in restored the same Host without a
+  manual refresh. No payout request or account edit/payment was performed.
+  Authenticated screenshots remain private and are not published to Git.
 
 ## Party behavior
 
@@ -124,3 +132,6 @@ Unrelated business logic changed: **NO**.
 Final application source includes reviewed changes through **29fb3a7**.
 The server's historical Git HEAD/other overlays were not reset. Read-only
 release maintenance helper commits do not change application behavior.
+
+Google website-origin/sign-in blocker: **CLEARED**. No new APK or API
+deployment was required for this console-only configuration completion.
