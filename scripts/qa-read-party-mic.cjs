@@ -12,8 +12,9 @@
   const host=await admin.getParticipant(process.argv[2],rows[0].public_id);
   const audio=host.tracks.filter(t=>t.type===TrackType.AUDIO);
   const expected=process.argv[3]==='muted';
+  console.log(JSON.stringify({observed:true,expectedMuted:expected,membershipMuted:Boolean(rows[0].muted),audioTracks:audio.length,trackMuted:audio.map(t=>t.muted),canPublish:host.permission.canPublish}));
   assert.equal(Boolean(rows[0].muted),expected);assert.equal(audio.length,1);assert.equal(audio[0].muted,expected);
   assert.equal(host.permission.canPublish,true);
   console.log(JSON.stringify({exactApk:true,expectedMuted:expected,membershipMuted:Boolean(rows[0].muted),livekitAudioMuted:audio[0].muted,sameParticipantConnected:true,microphoneCapabilityRetained:true}));
  }finally{await c.end();}
-})().catch(()=>{console.log('EXACT_APK_MIC_ASSERTION_FAILED');process.exitCode=1});
+})().catch(error=>{console.log('EXACT_APK_MIC_ASSERTION_FAILED', /^[A-Z_]+$/.test(error.code||'')?error.code:'OBSERVATION_MISMATCH');process.exitCode=1});
