@@ -48,7 +48,12 @@ export async function verifyAudioPartyPk(root:Connection,user:(name:string)=>Pro
  let grant=await pk.authorizeAudioPkBridge(audience,{roomCode:blueCode,sessionId:random.id});assert(grant.speakerIds.includes(guest.publicId));assert(!grant.speakerIds.includes(audience.publicId));
  const publisher=await authority.authorizeLiveKitRoom(guest,{roomCode:redCode,canPublish:true});assert.equal(publisher.publishMode,'audio_only');
  await root.execute('UPDATE live_room_members SET muted=TRUE WHERE room_id=? AND application_user_id=?',[redId,guest.userId]);
- await assert.rejects(authority.authorizeLiveKitRoom(guest,{roomCode:redCode,canPublish:true}),/active speaker/);
+ const selfMuted=await authority.authorizeLiveKitRoom(guest,{roomCode:redCode,canPublish:true});
+ assert.equal(selfMuted.publishMode,'audio_only','Self mute is not loss of the accepted seat capability');
+ assert.equal(selfMuted.microphoneMuted,true,'Reconnect must preserve self mute');
+ await root.execute('UPDATE live_room_members SET muted_by_staff=TRUE WHERE room_id=? AND application_user_id=?',[redId,guest.userId]);
+ assert.equal((await authority.authorizeLiveKitRoom(guest,{roomCode:redCode,canPublish:true})).publishMode,'none','Staff mute still revokes publishing');
+ await root.execute('UPDATE live_room_members SET muted_by_staff=FALSE WHERE room_id=? AND application_user_id=?',[redId,guest.userId]);
  grant=await pk.authorizeAudioPkBridge(audience,{roomCode:blueCode,sessionId:random.id});assert(grant.speakerIds.includes(guest.publicId),'Muted seat retains identity; mic state naturally gates audio');
  await root.execute("UPDATE wallet_balances SET available_balance=100000 WHERE owner_id IN (?,?) AND asset_type='COIN'",[guest.userId,audience.userId]);
  const [gifts]=await root.query<RowDataPacket[]>("SELECT gift_key FROM gift_catalog WHERE catalog_type='VIRTUAL_GIFT' AND active=TRUE ORDER BY coin_price LIMIT 1");
