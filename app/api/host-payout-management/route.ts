@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth/session";
 import { assertPortalOrigin } from "@/lib/auth/host-payout-session";
 import { loadHostPayoutRule } from "@/lib/db/repositories/host-payout-rule";
 import { agencyPayoutGroups, agencyPayoutCandidates } from "@/lib/db/repositories/agency-payout-groups";
+import { hostPayoutCsv } from "@/lib/reports/host-payout-csv";
 import {
   hostPayoutSummary,
   listHostPayouts,
@@ -49,11 +50,6 @@ const filterSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
 });
-function csvCell(value: unknown) {
-  let s = String(value ?? "");
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return `"${s.replaceAll('"', '""')}"`;
-}
 export async function GET(request: Request) {
   const account = await getSession();
   if (!account) return reply({ message: "Sign in to Control." }, 401);
@@ -79,64 +75,16 @@ export async function GET(request: Request) {
           z.string().uuid().parse(url.searchParams.get("destination")),
         ),
       });
-    const rows = account.role==='MASTER'&&!filters.agencyGroup&&!url.searchParams.has('export')?[]:await listHostPayouts(
+    if (url.searchParams.has('export')) {
+      const kind=z.enum(['1','details','agencies']).parse(url.searchParams.get('export'));
+      if(kind==='agencies'&&account.role!=='MASTER') return reply({message:'Only Master may export the global Agency payout list.'},403);
+      return await hostPayoutCsv(account,filters,kind==='agencies'?'agencies':'details');
+    }
+    const rows = account.role==='MASTER'&&!filters.agencyGroup?[]:await listHostPayouts(
       { account },
       filters,
-      url.searchParams.has("export") ? 10000 : 200,
+      200,
     );
-    if (url.searchParams.has("export")) {
-      const fields = [
-        "requestId",
-        "hostPublicId",
-        "hostName",
-        "agencyPublicId",
-        "agencyName",
-        "country",
-        "diamonds",
-        "hostUsd",
-        "agencyUsd",
-        ...(account.role === "MASTER" ? ["companyUsd"] : []),
-        "status",
-        "requestedAt",
-        "approvedAt",
-        "paidAt",
-        "agencyPaidAt",
-        "payoutType",
-        "payoutAccount",
-        "paymentReference",
-        "agencyPaymentReference",
-      ];
-      const dateKeys = new Set([
-        "requestedAt",
-        "approvedAt",
-        "paidAt",
-        "agencyPaidAt",
-      ]);
-      const format = (v: unknown) =>
-        v
-          ? new Intl.DateTimeFormat("en-IN", {
-              timeZone: "Asia/Kolkata",
-              dateStyle: "medium",
-              timeStyle: "medium",
-            }).format(new Date(String(v))) + " IST"
-          : "";
-      const text = [
-        fields.map(csvCell).join(","),
-        ...rows.map((row) =>
-          fields
-            .map((k) => csvCell(dateKeys.has(k) ? format(row[k]) : row[k]))
-            .join(","),
-        ),
-      ].join("\r\n");
-      return new Response(text, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition":
-            'attachment; filename="nazraa-host-payouts-usd.csv"',
-          "Cache-Control": "private, no-store",
-        },
-      });
-    }
     const rule = await loadHostPayoutRule();
     const page=Math.max(1,Math.min(100000,Number.parseInt(url.searchParams.get('page')??'1',10)||1));
     return reply({

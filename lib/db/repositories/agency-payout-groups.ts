@@ -6,7 +6,7 @@ import { hostPayoutFilter, PayoutError, type PayoutFilters } from './host-payout
 import { decimalUsd } from './host-payout-rule';
 
 /** Full filtered SQL ledger totals, not totals of the first detail page. */
-export async function agencyPayoutGroups(account:SessionAccount,filters:PayoutFilters={},page=1) {
+export async function agencyPayoutGroups(account:SessionAccount,filters:PayoutFilters={},page=1,exportAll=false) {
   if(account.role!=='MASTER') throw new PayoutError('Only Master may view the global Agency payout list.');
   const f=hostPayoutFilter({account},filters),size=50;
   const [rows]=await db().query<RowDataPacket[]>(`SELECT COALESCE(s.agency_account_id,'INDEPENDENT') agencyKey,
@@ -23,8 +23,9 @@ export async function agencyPayoutGroups(account:SessionAccount,filters:PayoutFi
     SUM(IF(w.status IN ('APPROVED','PROCESSING','COMPLETED'),s.agency_usd,0))-SUM(IF(s.agency_paid_at IS NOT NULL AND s.agency_reversed_at IS NULL,s.agency_usd,0)) agencyPendingUsd,
     MAX(w.requested_at) latestRequestAt
     FROM withdrawal_requests w JOIN host_payout_snapshots s ON s.withdrawal_id=w.id
-    WHERE ${f.where} GROUP BY s.agency_account_id ORDER BY latestRequestAt DESC,agencyKey LIMIT ? OFFSET ?`,
-    [...f.values,size+1,(Math.max(1,page)-1)*size]);
+    WHERE ${f.where} GROUP BY s.agency_account_id ORDER BY latestRequestAt DESC,agencyKey ${exportAll?'':'LIMIT ? OFFSET ?'}`,
+    [...f.values,...(exportAll?[]:[size+1,(Math.max(1,page)-1)*size])]);
+  if(exportAll) return {groups:rows,hasNext:false,page:1};
   return {groups:rows.slice(0,size),hasNext:rows.length>size,page};
 }
 

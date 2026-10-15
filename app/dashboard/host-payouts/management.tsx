@@ -78,11 +78,12 @@ export default function PayoutManagement() {
       if(epoch===loadEpoch.current) setError(payoutUiMessage(e, "Could not load payouts. Please retry."));
     }
   }, [query,agencyGroup,groupPage]);
+  const cancelLoad=useCallback(()=>{loadEpoch.current++;},[]);
   useEffect(() => {
-    setData(null);setSelected(null);
-    void load();
-    return ()=>{loadEpoch.current++;};
-  }, [load]);
+    let cancelled=false;
+    queueMicrotask(()=>{if(cancelled)return;setData(null);setSelected(null);void load();});
+    return ()=>{cancelled=true;cancelLoad();};
+  }, [load,cancelLoad]);
   async function mutate(payload: object) {
     setBusy(true);
     setError("");
@@ -115,6 +116,12 @@ export default function PayoutManagement() {
       ? [["Company retained (paid)", "companyRetainedUsd"]]
       : []),
   ];
+  const exportUrl=(kind:'agencies'|'details')=>{
+    const parameters=new URLSearchParams(query);
+    if(agencyGroup) parameters.set('agencyGroup',agencyGroup);
+    parameters.set('export',kind);
+    return `/api/host-payout-management?${parameters}`;
+  };
   return (
     <section>
       <div className="page-heading">
@@ -201,9 +208,8 @@ export default function PayoutManagement() {
           <input name="to" type="date" />
         </label>
         <button>Filter</button>
-        <a href={`/api/host-payout-management?${query}&export=1`}>
-          Export USD CSV
-        </a>
+        {data?.isMaster&&<a href={exportUrl('agencies')}>Agency summary CSV</a>}
+        {data&&<a href={exportUrl('details')}>{agencyGroup?'This Agency’s Host payouts CSV':'Host payout details CSV'}</a>}
       </form>
       {data?.isMaster&&!agencyGroup&&<>
         <AgencyPayoutList groups={data.groups??[]} onOpen={key=>{setSelected(null);setAgencyGroup(key);}}/>

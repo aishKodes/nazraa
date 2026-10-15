@@ -20,7 +20,7 @@ const fail = (message: string): never => {
 async function host(connection: PoolConnection, userId: string, lock = false) {
   const [rows] = await connection.query<RowDataPacket[]>(
     `SELECT u.id,u.public_id,u.full_name,u.country_code,u.agency_account_id,
-    COALESCE(u.agency_account_id,(SELECT a.id FROM platform_accounts a WHERE a.application_user_id=u.id AND a.role='AGENCY' AND a.status='ACTIVE' AND a.removed_at IS NULL LIMIT 1)) payout_agency_id
+    COALESCE((SELECT a.id FROM platform_accounts a WHERE a.application_user_id=u.id AND a.role='AGENCY' AND a.status='ACTIVE' AND a.removed_at IS NULL ORDER BY a.created_at,a.id LIMIT 1),u.agency_account_id) payout_agency_id
     FROM application_users u WHERE u.id=? AND u.account_status='ACTIVE' AND
     (EXISTS(SELECT 1 FROM host_profiles h WHERE h.application_user_id=u.id AND h.status='ACTIVE') OR EXISTS(SELECT 1 FROM platform_accounts a WHERE a.application_user_id=u.id AND a.role='AGENCY' AND a.status='ACTIVE' AND a.removed_at IS NULL)) ${lock ? "FOR UPDATE" : ""}`,
     [userId],
@@ -319,8 +319,18 @@ export async function listHostPayouts(
   filters: PayoutFilters = {},
   limit = 200,
   connection?: PoolConnection,
+  exportCursor?: {cutoff: Date; before?: {requestedAt: Date; id: string}},
 ) {
   const f = hostPayoutFilter(viewer, filters);
+  if(exportCursor) {
+    f.where += ' AND w.requested_at <= ?';
+    f.values.push(exportCursor.cutoff.toISOString().slice(0,23).replace('T',' '));
+    if(exportCursor.before) {
+      const at=exportCursor.before.requestedAt.toISOString().slice(0,23).replace('T',' ');
+      f.where += ' AND (w.requested_at < ? OR (w.requested_at = ? AND w.id < ?))';
+      f.values.push(at,at,exportCursor.before.id);
+    }
+  }
   const [rows] = await (connection ?? db()).query<RowDataPacket[]>(
     `SELECT w.id,w.withdrawal_code requestId,w.application_user_id hostId,w.amount diamonds,w.status,w.requested_at requestedAt,w.provider_reference paymentReference,w.review_reason note,
     s.host_public_id hostPublicId,s.host_name hostName,s.agency_public_id agencyPublicId,s.agency_name agencyName,s.country_code country,s.host_usd hostUsd,s.agency_usd agencyUsd,s.company_usd companyUsd,s.payout_type payoutType,s.payout_masked payoutAccount,s.rule_snapshot rule,s.approved_at approvedAt,s.paid_at paidAt,s.reversed_at reversedAt,s.agency_paid_at agencyPaidAt,s.agency_reversed_at agencyReversedAt,s.agency_payment_reference agencyPaymentReference

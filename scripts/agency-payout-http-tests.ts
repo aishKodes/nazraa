@@ -36,6 +36,14 @@ export async function verifyAgencyPayoutHttp(root:Connection,master:SessionAccou
     const payload=await detail.json();assert.equal(payload.rows.length,11);assert.equal(payload.candidates.paid.ids.length,7);
     const own=await request(agency);assert.equal(own.status,200);assert.equal((await own.json()).rows.length,11);
     const foreign=await request(foreignAgency,'?agencyGroup='+agency.id);assert.equal(foreign.status,200);assert.deepEqual((await foreign.json()).rows,[]);
+    const csv=await request(master,'?agencyGroup='+agency.id+'&export=details');
+    assert.equal(csv.status,200);assert.match(csv.headers.get('content-type')??'',/text\/csv/);
+    assert.equal((await csv.text()).trim().split('\r\n').length,12);
+    const summaryCsv=await request(master,'?agencyGroup='+agency.id+'&export=agencies');
+    assert.equal(summaryCsv.status,200);assert.match(await summaryCsv.text(),/"112.00"/);
+    assert.equal((await request(agency,'?export=agencies')).status,403);
+    assert.equal((await request(undefined,'?export=details')).status,401);
+    assert.equal((await (await request(foreignAgency,'?agencyGroup='+agency.id+'&export=details')).text()).trim().split('\r\n').length,1);
     assert.equal((await request(agency,'',{action:'rule'})).status,403);
     assert.equal((await request(master,'',{action:'agency-batch',kind:'paid',agencyGroup:agency.id,ids:payload.candidates.paid.ids,reference:'QA HTTP denied',reason:'QA confirmation is mandatory',confirmed:false})).status,400);
     assert.equal((await request(master,'',{action:'rule'},'https://untrusted.example')).status,400);

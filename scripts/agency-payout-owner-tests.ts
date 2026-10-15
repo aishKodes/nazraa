@@ -9,6 +9,7 @@ import {loadHostPayoutRule,decimalUsd,multiplyPayoutUsd} from '@/lib/db/reposito
 import {saveWithdrawalEconomy} from '@/lib/db/repositories/mobile-administration';
 import {defaultWithdrawalEconomy} from '@/lib/db/repositories/withdrawal-economy';
 import {verifyAgencyPayoutHttp} from './agency-payout-http-tests';
+import {hostPayoutCsv,payoutCsvCell} from '@/lib/reports/host-payout-csv';
 
 export async function verifyAgencyPayoutOwnerRequirements(root:Connection,user:(name:string)=>Promise<MobileIdentity>,master:SessionAccount,existingAgency:SessionAccount){
   const agencyId=randomUUID();let publicId=999999;
@@ -72,5 +73,38 @@ export async function verifyAgencyPayoutOwnerRequirements(root:Connection,user:(
   assert.equal(multiplyPayoutUsd('1.10',10),'11.00');
   await assert.rejects(payout.saveHostPayoutRule(agency,{slabDiamonds:1,totalUsd:'15',hostUsd:'12',agencyUsd:'2',reason:'QA forbidden rate edit'}),/Only Master/);
   await verifyAgencyPayoutHttp(root,master,agency,existingAgency);
+  // An Agency Owner is also a Host. Their own active Agency wins over a
+  // stale membership, while requests already made keep their saved Agency.
+  const owner=await user('QA dual-role Agency Owner Host');
+  await root.execute('UPDATE application_users SET agency_account_id=? WHERE id=?',[existingAgency.id,owner.userId]);
+  await root.execute('UPDATE platform_accounts SET application_user_id=? WHERE id=?',[owner.userId,agencyId]);
+  await root.execute("INSERT INTO wallet_balances(id,owner_type,owner_id,asset_type,available_balance) VALUES(?,'APPLICATION_USER',?,'DIAMOND',35000000)",[randomUUID(),owner.userId]);
+  const ownerMethod=await payout.saveHostPayoutAccount(owner.userId,{type:'UPI',displayName:'QA Owner Host',destination:'owner-private-test@bank'});
+  const ownerRequest=await payout.requestHostPayout(owner.userId,{amount:125000,payoutMethodId:ownerMethod.id,idempotencyKey:randomUUID()});
+  const ownerRows=await payout.listHostPayouts({account:agency},{search:String(owner.publicId)});
+  assert.equal(ownerRows.length,1);assert.equal(ownerRows[0].id,ownerRequest.id);
+  assert.equal(String(ownerRows[0].agencyPublicId),agency.publicId);
+  assert.equal((await payout.listHostPayouts({account:existingAgency},{search:String(owner.publicId)})).length,0);
+  // Page across 250 rows with equal server timestamps; no truncation/duplicates.
+  // These are real idempotent QA ledger writes in the disposable database.
+  for(let i=0;i<253;i++)await payout.requestHostPayout(owner.userId,{amount:125000,payoutMethodId:ownerMethod.id,idempotencyKey:randomUUID()});
+  const exportRows=await payout.listHostPayouts({account:master},{search:String(owner.publicId)},1000);
+  assert.equal(exportRows.length,254);
+  const exported=await (await hostPayoutCsv(master,{search:String(owner.publicId)},'details')).text();
+  const lines=exported.trim().split('\r\n');
+  assert.equal(lines.length,255);assert.equal(new Set(lines.slice(1).map(line=>line.split(',')[0])).size,254);
+  for(const row of exportRows)assert.ok(exported.includes(String(row.requestId)));
+  assert.ok(!exported.includes('owner-private-test@bank'),'Export never decrypts private payment destinations');
+  const aggregate=await (await hostPayoutCsv(master,{agencyGroup:agencyId},'agencies')).text();
+  assert.equal(aggregate.trim().split('\r\n').length,2);assert.match(aggregate,/"265"/);
+  await assert.rejects(hostPayoutCsv(agency,{},'agencies'),/Only Master/);
+  const foreignCsv=await (await hostPayoutCsv(existingAgency,{agencyGroup:agencyId},'details')).text();
+  assert.equal(foreignCsv.trim().split('\r\n').length,1);
+  assert.equal(payoutCsvCell('  =SUM(1,2)'),`"'  =SUM(1,2)"`);
+  assert.equal(payoutCsvCell('Name, "quoted"'),`"Name, ""quoted"""`);
+  const savedOwnerSnapshot=(await root.query<RowDataPacket[]>('SELECT agency_account_id,host_usd,agency_usd,rule_snapshot FROM host_payout_snapshots WHERE withdrawal_id=?',[ownerRequest.id]))[0];
+  await root.execute('UPDATE application_users SET agency_account_id=NULL WHERE id=?',[owner.userId]);
+  assert.deepEqual((await root.query<RowDataPacket[]>('SELECT agency_account_id,host_usd,agency_usd,rule_snapshot FROM host_payout_snapshots WHERE withdrawal_id=?',[ownerRequest.id]))[0],savedOwnerSnapshot);
+  console.log('PASS Owner Host payouts use own Agency, not stale membership; historical snapshots unchanged; 254-row cursor CSV complete/unique/masked; Master aggregate CSV, foreign-Agency scope and spreadsheet formula escaping.');
   console.log('PASS Agency-centric owner payouts: 10 real QA Hosts → 1.25M Diamonds / $100 Host / $11 Agency; one Master Agency row, scoped drill-down, decimal USD, 4 paid + 6 pending, atomic retry-safe Agency batches, immutable rate/Agency snapshots and no other-role allocations.');
 }
