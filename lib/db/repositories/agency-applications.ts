@@ -74,6 +74,11 @@ export async function listAgencyApplications(scope: Scope): Promise<AgencyReview
 export async function reviewAgencyJoin(input: { scope: Scope; applicationId: string; decision: "APPROVED" | "REJECTED"; reason: string }) {
   await withTransaction(async (connection) => {
     const scoped = scopeWhere(input.scope, "application.agency_account_id");
+    const [reference] = await connection.query<RowDataPacket[]>(
+      `SELECT application.application_user_id FROM agency_membership_applications application
+       WHERE application.id=? AND ${scoped.clause} LIMIT 1`,[input.applicationId,...scoped.values]);
+    if(!reference[0]) throw new Error('That join application is not available in your scope.');
+    await connection.query('SELECT id FROM application_users WHERE id=? FOR UPDATE',[reference[0].application_user_id]);
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; agency_account_id: string; status: string; agency_name: string })[]>(
       `SELECT application.id, application.application_user_id, application.agency_account_id, application.status,
               agency.full_name agency_name

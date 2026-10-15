@@ -276,7 +276,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <div className="stack-form full-width">
         {configurableGameIds.map((gameId) => {
           const game = gameSettings.games[gameId];
-          const name = ({ teen_patti: "TeenPatti · Three Chairs", teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
+          const name = ({ teen_patti: "Teen Patti Princess · Three Chairs", teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
           const greedy = gameId === "greedy_lion" || gameId === "greedy_king";
           const chairs = gameId === 'teen_patti';
           const availability = !game.enabled ? "DISABLED" : game.maintenance ? "MAINTENANCE" : "ACTIVE";

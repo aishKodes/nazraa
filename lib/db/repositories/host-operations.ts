@@ -54,13 +54,22 @@ export async function hostOperationalActivity(scope: Scope, requestedIds: string
   });
 }
 
-export async function transferHostAgency(input:{scope:Scope;hostId:string;destinationAgencyId:string|null;reason:string;confirmed:boolean}) {
+export async function transferHostAgency(input:{scope:Scope;hostId:string;destinationAgencyId:string|null;reason:string;confirmed:boolean;expectedAgencyId?:string|null}) {
   if(input.scope.account.role!=='MASTER'||!input.confirmed) throw new Error('Master confirmation is required.');
   const reason=input.reason.trim(); if(reason.length<5||reason.length>500) throw new Error('Provide a reason of 5 to 500 characters.');
   return withTransaction(async connection=>{
-    const [hosts]=await connection.query<RowDataPacket[]>(`SELECT h.id,h.application_user_id,h.agency_account_id
-      FROM host_profiles h JOIN application_users u ON u.id=h.application_user_id WHERE h.id=? FOR UPDATE`,[input.hostId]);
+    // Use the same user → Host lock order as mobile apply/review. A concurrent
+    // acceptance cannot leave a split relationship or be removed by a stale form.
+    const [references]=await connection.query<RowDataPacket[]>('SELECT application_user_id FROM host_profiles WHERE id=?',[input.hostId]);
+    if(!references[0]) throw new Error('Host was not found.');
+    const [users]=await connection.query<RowDataPacket[]>('SELECT id,agency_account_id FROM application_users WHERE id=? FOR UPDATE',[references[0].application_user_id]);
+    const [hosts]=await connection.query<RowDataPacket[]>('SELECT id,application_user_id,agency_account_id FROM host_profiles WHERE id=? FOR UPDATE',[input.hostId]);
     const host=hosts[0]; if(!host) throw new Error('Host was not found.');
+    const current=host.agency_account_id??users[0]?.agency_account_id??null;
+    if(input.expectedAgencyId!==undefined&&input.expectedAgencyId!==current){
+      if(input.destinationAgencyId===null&&current===null) return {agencyId:null,agencyName:null,alreadyExisted:true};
+      throw new Error('This Host’s Agency changed. Refresh the Host page before trying again.');
+    }
     let destination:RowDataPacket|undefined;
     if(input.destinationAgencyId){
       const [agencies]=await connection.query<RowDataPacket[]>(`SELECT id,public_id,full_name FROM platform_accounts
@@ -68,7 +77,8 @@ export async function transferHostAgency(input:{scope:Scope;hostId:string;destin
         [input.destinationAgencyId,/^\d{6}$/.test(input.destinationAgencyId)?Number(input.destinationAgencyId):0]);
       destination=agencies[0]; if(!destination) throw new Error('Choose an active approved destination Agency.');
     }
-    const next=destination?.id??null; if(host.agency_account_id===next) throw new Error('This is already the current Agency association.');
+    const next=destination?.id??null;
+    if(host.agency_account_id===next&&users[0]?.agency_account_id===next) return {agencyId:destination?.public_id??null,agencyName:destination?.full_name??null,alreadyExisted:true};
     await connection.execute('UPDATE application_users SET agency_account_id=? WHERE id=?',[next,host.application_user_id]);
     await connection.execute('UPDATE host_profiles SET agency_account_id=? WHERE id=?',[next,host.id]);
     await connection.execute(`UPDATE agency_membership_applications SET status='REMOVED',
@@ -84,6 +94,9 @@ export async function transferHostAgency(input:{scope:Scope;hostId:string;destin
     await connection.execute(`INSERT INTO audit_logs (id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
       VALUES (?,?,'MASTER','host.agency_transfer','hosts','host',?,?,?,?)`,
       [randomUUID(),input.scope.account.id,host.id,JSON.stringify({agencyAccountId:host.agency_account_id}),JSON.stringify({agencyAccountId:next}),reason]);
+    await connection.execute(`INSERT INTO mobile_notifications (id,application_user_id,notification_type,title,message,action_target)
+      VALUES (?,?,'AGENCY',?,?, 'agency')`,[randomUUID(),host.application_user_id,next?'Agency membership updated':'Agency membership ended',
+      next?`Master linked your Host account to ${destination?.full_name}.`:'Master removed your Agency membership. You can apply again to the same or another eligible Agency.']);
     return {agencyId:destination?.public_id??null,agencyName:destination?.full_name??null};
   });
 }

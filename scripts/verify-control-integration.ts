@@ -718,6 +718,7 @@ async function main() {
     assert.equal(Number((await financeRepository.withdrawalCommissionTotals(await refresh(sa))).agency_usd),Number(savedDistribution[0].agency_usd));
     assert.equal(Number((await financeRepository.withdrawalCommissionTotals(await refresh(saOther))).agency_usd),0);
     const ownerHostOps=await import("@/lib/db/repositories/host-operations");
+    for(const [role,roleScope] of scopes)if(role!=='MASTER')await assert.rejects(ownerHostOps.transferHostAgency({scope:await refresh(roleScope),hostId:String(ownHostRows[0].id),destinationAgencyId:null,reason:'QA only Master may globally remove Hosts',confirmed:true}));
     await assert.rejects(ownerHostOps.transferHostAgency({scope:await refresh(branchAdmin),hostId:String(ownHostRows[0].id),destinationAgencyId:agencyOther.account.id,reason:'QA unauthorized transfer',confirmed:true}));
     await ownerHostOps.transferHostAgency({scope:master,hostId:String(ownHostRows[0].id),destinationAgencyId:agencyOther.account.id,reason:'QA exact canonical relationship transfer',confirmed:true});
     assert.equal(await hostsRepository.getHostDetail(await refresh(agency),String(ownHostRows[0].id)),null);

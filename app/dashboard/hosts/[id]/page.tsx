@@ -32,10 +32,12 @@ export default async function HostDetailPage({ params, searchParams }: { params:
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
     {activity ? <HostOperationalActivity data={activity} showCoins={scope.account.role==='MASTER'} /> : null}
     {scope.account.role==='MASTER' ? <Card><h2>Host → Agency management</h2><p>Current Agency: {host.agencyName??'Independent'}. Host identity and historical financial/activity records are preserved.</p>
-      <form action={submitHostAgencyTransfer} className="stack-form"><input type="hidden" name="hostId" value={host.id} />
-        <label>Destination Agency<input name="destinationAgencyId" list="host-agency-destinations" defaultValue={host.agencyId??''} placeholder="6-digit Agency ID; leave blank to remove"/><datalist id="host-agency-destinations">{agencies.map(agency=><option key={agency.id} value={agency.code}>{agency.name}</option>)}</datalist><small>Any active approved Agency ID is accepted; suggestions do not limit the available destinations. Leave blank to remove.</small></label>
+      <form action={submitHostAgencyTransfer} className="stack-form"><input type="hidden" name="hostId" value={host.id} /><input type="hidden" name="expectedAgencyId" value={host.agencyId??''} />
+        <label>Destination Agency<input name="destinationAgencyId" list="host-agency-destinations" defaultValue={host.agencyId??''} placeholder="6-digit destination Agency ID"/><datalist id="host-agency-destinations">{agencies.map(agency=><option key={agency.id} value={agency.code}>{agency.name}</option>)}</datalist><small>Any active approved Agency ID is accepted; suggestions do not limit the available destinations. Use the separate Remove Host button to end membership.</small></label>
         <label>Reason<input name="reason" required minLength={5} maxLength={500} /></label><label><input type="checkbox" name="confirmed" value="yes" required />Confirm the displayed destination / removal</label>
-        <button type="submit" className="primary-button">Transfer / Remove from Agency</button>
+        <div className="action-row"><button type="submit" name="operation" value="TRANSFER" className="primary-button">Save Agency assignment</button>
+        {host.agencyId ? <button type="submit" name="operation" value="REMOVE" className="danger-button">Remove Host from current Agency</button> : null}</div>
+        <small>Removal preserves this Host’s account, wallets and historical records. The Host may immediately apply again to this Agency or any other eligible Agency. It does not delete Agency ownership.</small>
       </form></Card> : null}
     <div className="split-grid">
 <Card>

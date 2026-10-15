@@ -116,7 +116,7 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { agency_account_id: string | null })[]>("SELECT agency_account_id FROM application_users WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1 FOR UPDATE", [identity.userId]);
     if (!users[0]) throw new Error("Your Nazraa account was not found.");
-    if (users[0].agency_account_id) throw new Error("Your Agency Owner must remove you before you can join another Agency.");
+    if (users[0].agency_account_id) throw new Error("Your Agency Owner or Master must remove you before you can join another Agency.");
     const ownedAgency = await agencyOwnedByIdentity(connection, identity);
     if (ownedAgency) throw new Error(`You already own ${ownedAgency.full_name}. An Agency Owner cannot join or create another Agency.`);
     const [agencies] = await connection.query<(RowDataPacket & { id: string; full_name: string; owner_user_id: string | null })[]>(
@@ -241,6 +241,11 @@ async function agencyOwnedBy(connection: PoolConnection, identity: MobileIdentit
 
 export async function reviewOwnAgencyJoin(identity: MobileIdentity, input: { applicationId: string; decision: "APPROVED" | "REJECTED"; reason?: string }) {
   return withTransaction(async (connection) => {
+    // Serialize membership commands by user before Agency/application locks,
+    // including a concurrent global Master removal or reassignment.
+    const [reference]=await connection.query<RowDataPacket[]>('SELECT application_user_id FROM agency_membership_applications WHERE id=?',[input.applicationId]);
+    if(!reference[0]) throw new Error('That join request is not available in your Agency.');
+    await connection.query('SELECT id FROM application_users WHERE id=? FOR UPDATE',[reference[0].application_user_id]);
     const agency = await agencyOwnedBy(connection, identity);
     const [applications] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; status: string; user_name: string })[]>(
       `SELECT application.id, application.application_user_id, application.status, user.full_name user_name
@@ -273,6 +278,7 @@ export async function reviewOwnAgencyJoin(identity: MobileIdentity, input: { app
 
 export async function removeOwnAgencyHost(identity: MobileIdentity, input: { targetPublicId: string; reason: string }) {
   return withTransaction(async (connection) => {
+    await connection.query('SELECT id FROM application_users WHERE public_id=? FOR UPDATE',[input.targetPublicId]);
     const agency = await agencyOwnedBy(connection, identity);
     const [users] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
       `SELECT id, full_name FROM application_users

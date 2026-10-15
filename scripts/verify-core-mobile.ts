@@ -5202,6 +5202,25 @@ async function main() {
     const [membershipHistory]=await root.query<RowDataPacket[]>('SELECT status FROM agency_membership_applications WHERE application_user_id=?',[acceptedJoiner.userId]);
     assert.equal(membershipHistory.filter(r=>r.status==='APPROVED').length,1);
     assert.equal(membershipHistory.filter(r=>r.status==='REMOVED').length,2);
+    const hostOps=await import('@/lib/db/repositories/host-operations');
+    const [masterRemovalHost]=await root.query<RowDataPacket[]>('SELECT id FROM host_profiles WHERE application_user_id=?',[acceptedJoiner.userId]);
+    const removeInput={scope:master,hostId:String(masterRemovalHost[0].id),destinationAgencyId:null,
+      expectedAgencyId:String(otherAgencyRows[0].id),reason:'QA Master removes cross-branch Host with immediate reapplication',confirmed:true};
+    const removalRetries=await Promise.all([hostOps.transferHostAgency(removeInput),hostOps.transferHostAgency(removeInput)]);
+    assert.equal(removalRetries.filter(r=>'alreadyExisted' in r&&r.alreadyExisted).length,1,'Duplicate Master removal is harmless');
+    assert.equal((await product.mobileBootstrap(acceptedJoiner)).agency,null,'Mobile bootstrap immediately reflects removal');
+    const sameAgain=await social.applyToJoinAgency(acceptedJoiner,otherAgencyPublicId);
+    assert.notEqual(sameAgain.id,crossJoin.id);
+    assert((await Promise.all(Array.from({length:5},()=>social.applyToJoinAgency(acceptedJoiner,otherAgencyPublicId)))).every(r=>r.id===sameAgain.id));
+    await social.reviewOwnAgencyJoin(otherAgencyOwner,{applicationId:sameAgain.id,decision:'APPROVED'});
+    await assert.rejects(hostOps.transferHostAgency({...removeInput,expectedAgencyId:createdAgencyId}),/Agency changed/,'Stale Master form cannot remove a newly accepted membership');
+    await hostOps.transferHostAgency(removeInput);
+    const originalAgain=await social.applyToJoinAgency(acceptedJoiner,createdAgencyPublicId);
+    await social.reviewOwnAgencyJoin(agencyOwner,{applicationId:originalAgain.id,decision:'APPROVED'});
+    assert.equal((await product.mobileBootstrap(acceptedJoiner)).agency?.id,createdAgencyPublicId,'Master-removed Host can join a different Agency');
+    const [masterRemovalAudits]=await root.query<RowDataPacket[]>("SELECT id FROM audit_logs WHERE action='host.agency_transfer' AND target_id=?",[masterRemovalHost[0].id]);
+    assert.equal(masterRemovalAudits.length,2,'Exactly one audit per actual Master removal');
+    console.log('PASS Master Agency removal: global scope, concurrent retry, same/different Agency reapply, pending dedupe, stale-form guard, live mobile state and preserved membership history');
     await social.applyToJoinAgency(joiner, otherAgencyPublicId);
     assert.equal(
       (await social.agencyApplicationsForUser(joiner)).some(
