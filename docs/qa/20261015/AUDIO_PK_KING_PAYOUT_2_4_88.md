@@ -51,6 +51,16 @@ King history does not reveal the currently travelling target before landing.
 Late current-round settlement updates the stage from the authoritative saved
 payout. No next-round server deadline or financial state is delayed.
 
+A further production read-only check localized frozen King history to the
+same old pacing defect as Lucky: descending number returned September 2
+round 105195080 (Hot Dog), while the actual latest October 15 round was
+68926376 (Lettuce). King now also orders completed history by authoritative
+draw timestamp. The existing timeline index covers this; no migration,
+outcome or payout rewrite was required. Other games' ordering is unchanged.
+An isolated regression verifies ten newest unique King results despite a
+larger obsolete epoch number, alongside the unchanged 30-round Lucky financial
+soak (48 settlements, zero duplicate debits/settlements/missing histories).
+
 ## Payout routing and exports
 
 New requests resolve the Host's own active Agency first, then membership.
@@ -86,6 +96,10 @@ worker, realtime, Caddy, MySQL, Redis and LiveKit were not restarted.
   `nazraa-nightly-20261015T165707Z`, 4,937,410,320 bytes.
 - Source/Compose/image rollback: `/opt/nazraa/backups/payout88` and image
   `nazraa-api:rollback-before-payout88`.
+- King history follow-up: `082c8d1`; exact source SHA-256
+  `95b413d969f19756f08bff97e78609a942d4f8f8b5a88d849c7c9f874807803e`.
+  Separate code/image rollback `/opt/nazraa/backups/king88-history` and
+  `nazraa-api:rollback-before-king88-history` preserve the deployed payout fix.
 - Internal readiness: HTTP 200 `ready`; API healthy; compiled CSV UI present.
 - Public unauthenticated CSV: sanitized HTTP 401; Control page redirects to
   login. No existing signed-in Master browser session was available for an
@@ -110,18 +124,23 @@ website latest 2.4.86+7398 and minimum version remain unchanged.
 - Version 2.4.88 / build 7400; package `com.nazraa.live`; target SDK 36.
 - APK `Nazraa-Live-2.4.88-7400-test.apk`, **226,085,183 bytes**.
 - SHA-256:
-  `34aae00b0ff14f6102f414dc7f675a725a6ab74b446b41a7670ca4500f513d4b`.
+  `9d76a516c86a9e15f86062aa4600fb54aebcf70e2a9474e54a0e4efd795bcb3d`.
 - Permanent signer SHA-256 unchanged:
   `5e3d3fb10afd21f77c57721b05184453f0061d23e3000416ce409d3ead9367c4`.
 - Installed that exact signed artifact on the Android 16 emulator using the
   existing ordinary QA session. Home and Game Center opened normally.
-- A 38-second read-only production King recording visually confirmed travelling
-  selectors, CORN and CARROT result stages, advancing history/countdown and
-  subsequent betting rounds. No bet/action taps occurred while observing the
-  game, and the QA Coin balance remained unchanged. No Flutter/Android runtime
-  error was found in the sampled error logs.
+- An initial 38-second read-only King recording confirmed travelling selectors,
+  CORN/CARROT result stages and subsequent betting rounds. The final centered
+  APK was then cold-started again; installed `base.apk` SHA matched the release
+  hash above. A fresh screenshot confirms centered TOMATO result 68926422 and
+  the repaired chronological history containing current October results.
+  No bet/action taps occurred while observing the game, and the QA Coin balance
+  remained unchanged. No Flutter/Android runtime error was found in the sampled
+  error logs. One intervening recording was invalidated because external input
+  changed tabs; it is not counted as a successful game test.
 - Draft exact-APK observation caught the disappearing reveal and atlas-edge
-  defects; both were corrected and the final artifact retested before upload.
+  defects plus result centering; these were corrected and the final artifact
+  retested. Earlier draft assets had zero downloads before replacement.
 - GitHub test prerelease: `v2.4.88-qa`, not latest. Stable latest remains
   `v2.4.86`; website download still points to 2.4.86+7398. No force upgrade or
   AAB was requested for this test delivery.
