@@ -3440,6 +3440,19 @@ async function main() {
     assert.equal(new Set((chairRound.outcome.hands as {cards:number[]}[]).flatMap(h=>h.cards)).size,9);
     assert(chairRound.players.every(p=>Object.keys(p.bets).length===0),'new game never exposes other player bet choices');
     console.log('PASS separate TeenPatti: all three chairs accepted, preview hides six cards and winner, exact 3× minus 3% return, durable payout/history, duplicate command denied; Pro remains separate.');
+    const [chairSettingsRows]=await root.query<(RowDataPacket & {setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games'");
+    const originalChairSettings=chairSettingsRows[0]?.setting_value;
+    const chairSettings=(typeof originalChairSettings==='string'?JSON.parse(originalChairSettings):originalChairSettings) ?? {};
+    try {
+      await root.execute("INSERT INTO system_settings (setting_key,setting_value,updated_by) VALUES ('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)",[JSON.stringify({...chairSettings,games:{...chairSettings.games,teen_patti:{...chairSettings.games?.teen_patti,enabled:false}}}),master.account.id]);
+      const paused=await product.maintainSharedGameRounds();
+      assert(paused.realtime.some(state=>state.game==='teen_patti_pro'),'pausing new TeenPatti never stops existing Pro maintenance');
+      assert(!paused.realtime.some(state=>state.game==='teen_patti'),'paused new game opens no new rounds');
+      await assert.rejects(product.gameSharedRoundState(owner,'teen_patti'));
+    } finally {
+      if(originalChairSettings===undefined) await root.execute("DELETE FROM system_settings WHERE setting_key='mobile.games'");
+      else await root.execute("UPDATE system_settings SET setting_value=? WHERE setting_key='mobile.games'",[typeof originalChairSettings==='string'?originalChairSettings:JSON.stringify(originalChairSettings)]);
+    }
     assert.notEqual(
       sharedTeenRound.round.number,
       1,

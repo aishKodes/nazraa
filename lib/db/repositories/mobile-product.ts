@@ -2218,18 +2218,22 @@ export async function maintainSharedGameRounds() {
         liveRules.timezone,
       );
       const now = new Date();
-      const round = await ensureSharedRound(connection, game, settings.games[game], now);
+      // Pausing the new game must not abort maintenance of Pro or strand
+      // already accepted bets. Settle existing wagers, but open no new table.
+      const pausedChairs = game === TEEN_PATTI_ID &&
+        (!settings.games[game].enabled || settings.games[game].maintenance);
+      const round = pausedChairs ? null : await ensureSharedRound(connection, game, settings.games[game], now);
       return {
         settled: settlement.settledCount,
         settledRoundIds: settlement.settledRoundIds,
-        realtime: sharedGameRealtimeState(round, now),
+        realtime: round ? sharedGameRealtimeState(round, now) : null,
       };
     });
     settlements[game] = result.settled;
     settledRounds.push(
       ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
     );
-    realtime.push(result.realtime);
+    if (result.realtime) realtime.push(result.realtime);
   }
   return {
     settlements,
