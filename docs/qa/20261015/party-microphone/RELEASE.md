@@ -14,6 +14,7 @@
 - Production SFU disposable QA: official `@livekit/rtc-node 1.1.0` and `livekit-server-sdk 2.19.0`; two participants, 77 received synthetic audio frames; listener denial, promotion, actual received audio, self mute/unmute, staff revoke, staff-lift-without-auto-publish, explicit unmute, leave/reseat all passed. No duplicate participant. Disposable room deleted.
 - Exact signed APK installed on Android 16, package `com.nazraa.live`, build 7395. Controlled ordinary-account Party created; 10→20→10 settings saved without losing microphone publication. Server-side read-only checks confirmed both MySQL `muted` and the actual LiveKit audio track changed true→false with the same participant connected and microphone capability retained. No LiveKit/Redis restart.
 - Exact account was not Face-verified, so its room chat restriction was correctly retained, not bypassed. Multiple-message visibility/autoscroll is covered by widget tests; this is not a claim of a new physical-device multi-user listening test.
+- Final cleanup confirmed in both MySQL and LiveKit: temporary ordinary-account Party is ENDED, its saved layout is restored to 10, and its LiveKit room is absent. Emulator returned to Home. API remains running/healthy.
 
 ## Deployment and preservation
 
