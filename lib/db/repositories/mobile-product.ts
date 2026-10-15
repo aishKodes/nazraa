@@ -2283,7 +2283,7 @@ async function sharedRoundStatePayload(
       "SELECT wager_total, gross_payout, deduction_total, payout_total, balance_after, settled_at FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1", [round.id, identity.userId]),
     connection.query<SharedRoundRow[]>(
       `SELECT * FROM game_shared_rounds WHERE game_name = ? AND drawing_ends_at <= UTC_TIMESTAMP(3)
-       ORDER BY round_number DESC LIMIT ?`, [game, Math.max(1, Math.min(50, config.historyLength))]),
+       ORDER BY ${game === "luck77" ? "drawing_ends_at DESC, id DESC" : "round_number DESC"} LIMIT ?`, [game, Math.max(1, Math.min(50, config.historyLength))]),
     connection.query<RowDataPacket[]>(
       `SELECT round.id round_id, round.round_number, round.outcome_json,
               settlement.wager_total, settlement.gross_payout,

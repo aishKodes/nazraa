@@ -145,6 +145,22 @@ async function main() {
     assert.equal(duplicates.length,0);
     const [history]=await root.query<RowDataPacket[]>(`SELECT COUNT(*) n FROM game_shared_rounds WHERE game_name='luck77'`);
     assert.equal(Number(history[0].n),30);
+    // Real production pacing changed from 13 to 15 seconds. Epoch/duration
+    // numbers fell, so ORDER BY round_number returned obsolete history forever.
+    const olderHighNumberId=randomUUID();
+    await root.execute(`INSERT INTO game_shared_rounds
+      (id,game_name,round_number,betting_starts_at,betting_ends_at,drawing_ends_at,result_committed_at,result_ends_at,result_version,outcome_json)
+      SELECT ?,'luck77',999999999999,DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),
+      DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),
+      DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),1,outcome_json
+      FROM game_shared_rounds WHERE game_name='luck77' LIMIT 1`,[olderHighNumberId]);
+    const chronological=await product.gameSharedRoundState(qaUsers[0],'luck77');
+    assert.equal(chronological.recentResults.some(row=>row.roundId===olderHighNumberId),false,
+      'larger obsolete epoch numbers cannot displace the latest 20 real results');
+    assert.equal(chronological.recentResults.length,20);
+    for(let i=1;i<chronological.recentResults.length;i++) {
+      assert.ok(new Date(chronological.recentResults[i-1].settledAt).getTime()>=new Date(chronological.recentResults[i].settledAt).getTime());
+    }
     // Princess uses the same newly-corrected sparse-retry normalization,
     // but its distinct canonical 3x / 3% settlement remains untouched.
     const princessUser=await user(8);

@@ -1,0 +1,83 @@
+{
+  "status": "PASS",
+  "version": "2.4.87+7399",
+  "artifactSha256": "c108cf0ca9407544cde7ab7b998ca9af96d488aef5cc3150afddede3f1bc7a09",
+  "actions": "Read-only open RESULT observation; no refresh, close or bet taps",
+  "observations": [
+    {
+      "timestamp": "2026-10-15T15:56:43.964Z",
+      "results": [
+        "Latest result. Round 119471986: Kala Jam",
+        "Round 119471985: Kala Jam",
+        "Round 119471984: Kala Jam",
+        "Round 119471983: Tarbooj",
+        "Round 119471982: Tarbooj",
+        "Round 119471981: Kala Jam",
+        "Round 119471980: Kala Jam",
+        "Round 119471979: Kala Jam",
+        "Round 119471978: Tarbooj",
+        "Round 119471977: 77",
+        "Round 119471976: Tarbooj",
+        "Round 119471975: Tarbooj",
+        "Round 119471974: Kala Jam",
+        "Round 119471973: Tarbooj",
+        "Round 119471972: Kala Jam",
+        "Round 119471971: Kala Jam",
+        "Round 119471970: Tarbooj",
+        "Round 119471969: Tarbooj",
+        "Round 119471968: Kala Jam",
+        "Round 119471967: Kala Jam"
+      ]
+    },
+    {
+      "timestamp": "2026-10-15T15:57:03.747Z",
+      "results": [
+        "Latest result. Round 119471987: Tarbooj",
+        "Round 119471986: Kala Jam",
+        "Round 119471985: Kala Jam",
+        "Round 119471984: Kala Jam",
+        "Round 119471983: Tarbooj",
+        "Round 119471982: Tarbooj",
+        "Round 119471981: Kala Jam",
+        "Round 119471980: Kala Jam",
+        "Round 119471979: Kala Jam",
+        "Round 119471978: Tarbooj",
+        "Round 119471977: 77",
+        "Round 119471976: Tarbooj",
+        "Round 119471975: Tarbooj",
+        "Round 119471974: Kala Jam",
+        "Round 119471973: Tarbooj",
+        "Round 119471972: Kala Jam",
+        "Round 119471971: Kala Jam",
+        "Round 119471970: Tarbooj",
+        "Round 119471969: Tarbooj",
+        "Round 119471968: Kala Jam"
+      ]
+    },
+    {
+      "timestamp": "2026-10-15T15:57:22.990Z",
+      "results": [
+        "Latest result. Round 119471988: Tarbooj",
+        "Round 119471987: Tarbooj",
+        "Round 119471986: Kala Jam",
+        "Round 119471985: Kala Jam",
+        "Round 119471984: Kala Jam",
+        "Round 119471983: Tarbooj",
+        "Round 119471982: Tarbooj",
+        "Round 119471981: Kala Jam",
+        "Round 119471980: Kala Jam",
+        "Round 119471979: Kala Jam",
+        "Round 119471978: Tarbooj",
+        "Round 119471977: 77",
+        "Round 119471976: Tarbooj",
+        "Round 119471975: Tarbooj",
+        "Round 119471974: Kala Jam",
+        "Round 119471973: Tarbooj",
+        "Round 119471972: Kala Jam",
+        "Round 119471971: Kala Jam",
+        "Round 119471970: Tarbooj",
+        "Round 119471969: Tarbooj"
+      ]
+    }
+  ]
+}
