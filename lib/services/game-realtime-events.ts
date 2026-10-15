@@ -3,7 +3,7 @@ import { createClient, type RedisClientType } from "redis";
 /** Public shared-round state only. Personal bets, wallet balances and payout
  * details remain on authenticated SQL APIs. */
 export type SharedGameRealtimeState = {
-  game: "teen_patti" | "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football";
+  game: "teen_patti" | "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football" | "lion_vs_tiger";
   publicPreview?: {cards:number[]};
   round: {
     id: string;

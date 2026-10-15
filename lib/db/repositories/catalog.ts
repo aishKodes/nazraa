@@ -351,6 +351,12 @@ export async function saveGameSettings(input: {
   poolMinimumForSpecial?: number;
   reason: string;
 }) {
+  if (input.game === 'lion_vs_tiger' && (
+    input.bettingSeconds !== 15 || input.drawingSeconds !== 5 || input.resultSeconds !== 4 ||
+    input.maximumBet !== Number.MAX_SAFE_INTEGER || input.minimumBet !== 1 ||
+    input.maximumPayoutMultiplier !== 30 || input.repeatBet || input.autoPlay ||
+    (input.outcomeWeights?.length ?? 0) > 0
+  )) throw new Error('Lion Vs Tiger test 1.1.5 has fixed 15-second betting, three outcomes, 2×/30×/2× returns and no game-specific stake cap.');
   if (input.game === 'teen_patti' && (
     input.maximumPayoutMultiplier !== 3 || input.minimumBet !== 100 || input.autoPlay ||
     [...new Set(input.denominations)].sort((a,b)=>a-b).join(',') !== '100,500,1000,5000' ||

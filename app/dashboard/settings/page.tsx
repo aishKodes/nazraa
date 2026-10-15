@@ -2,6 +2,7 @@ import { getStartupCampaign } from "@/lib/db/repositories/startup-campaign";
 import { StartupCampaignControls } from "@/components/startup-campaign-controls";
 import { publishFaceQuality } from "@/app/media-product-actions";
 import { LockKeyhole, ShieldCheck } from "lucide-react";
+import Link from 'next/link';
 import {
   submitCommerceSettings,
   submitDailyRewardRules,
@@ -138,7 +139,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </Card>}
     <Card className="settings-card"><h2>Host payout configuration</h2>
       <p>One canonical decimal-USD rule for future requests: Diamond block, Host payout and Agency commission. Existing requests retain their saved rate and Agency snapshots. Other roles have no automatic allocation in this workflow.</p>
-      <a className="primary-button" href="/dashboard/host-payouts#payout-rule">Manage canonical payout rules</a>
+      <Link className="primary-button" href="/dashboard/host-payouts#payout-rule">Manage canonical payout rules</Link>
     </Card>
 
     <Card className="settings-card">
@@ -262,10 +263,23 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <div className="stack-form full-width">
         {configurableGameIds.map((gameId) => {
           const game = gameSettings.games[gameId];
-          const name = ({ teen_patti: "Teen Patti Princess · Three Chairs", teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
+          const name = ({ lion_vs_tiger: "Lion Vs Tiger", teen_patti: "Teen Patti Princess · Three Chairs", teen_patti_pro: "Teen Patti Pro", luck77: "77 – LUCKY SEVEN", greedy_lion: "Greedy Lion", greedy_king: "Greedy King", bounty_football: "Bounty Football", jungle_hunt: "Jungle Hunt" } as const)[gameId];
           const greedy = gameId === "greedy_lion" || gameId === "greedy_king";
           const chairs = gameId === 'teen_patti';
           const availability = !game.enabled ? "DISABLED" : game.maintenance ? "MAINTENANCE" : "ACTIVE";
+          if (gameId === 'lion_vs_tiger') return <details key={gameId} className="scope-lock">
+            <summary><strong>Lion Vs Tiger</strong> · {availability.toLowerCase()} · 15s betting</summary>
+            <form action={submitGameSettings} className="form-grid" style={{marginTop:14}}>
+              <p className="span-two">test 1.1.5 · Tiger ×2 / Draw ×30 / Lion ×2. Up to three selections; no game-specific stake cap. Fixed bet-independent weights 15:1:15, zero extra fee or payout scaling. Timing/paytable are protected; ordinary availability/chip/history changes remain audited.</p>
+              {Object.entries({game:gameId,targetWinRate:game.targetWinRate,maximumPayoutMultiplier:30,bettingSeconds:15,drawingSeconds:5,resultSeconds:4,minimumBet:1,maximumBet:Number.MAX_SAFE_INTEGER,repeatBet:'false',autoPlay:'false',outcomeWeights:''}).map(([key,value])=><input key={key} name={key} type="hidden" value={value}/>)}
+              <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
+              <label>History length<input name="historyLength" type="number" min="1" max="50" defaultValue={game.historyLength}/></label>
+              <label>Chip shortcuts<input name="denominations" required defaultValue={game.denominations.join(', ')}/><span>Shortcuts only; users may enter any positive whole-Coin amount.</span></label>
+              <label>Big Winner threshold<input name="bigWinThreshold" type="number" min="1" max="1000000000" defaultValue={game.bigWinThreshold}/></label>
+              <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500}/></label>
+              <button className="primary-button" type="submit">Save Lion Vs Tiger</button>
+            </form>
+          </details>;
           return <details key={gameId} className="scope-lock">
             <summary><strong>{name}</strong> · {availability.toLowerCase()} · {game.bettingSeconds ? `${game.bettingSeconds}s shared betting` : "individual spin"}</summary>
             <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>

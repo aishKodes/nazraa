@@ -1528,7 +1528,7 @@ export async function submitGameSettings(formData: FormData) {
       drawingSeconds: z.coerce.number().int().min(0).max(60),
       resultSeconds: z.coerce.number().int().min(0).max(60),
       minimumBet: z.coerce.number().int().min(1).max(50_000_000),
-      maximumBet: z.coerce.number().int().min(1).max(50_000_000),
+      maximumBet: z.coerce.number().int().min(1).max(formData.get('game') === 'lion_vs_tiger' ? Number.MAX_SAFE_INTEGER : 50_000_000),
       denominations: z.string().trim().min(1).max(500),
       historyLength: z.coerce.number().int().min(1).max(50),
       bigWinThreshold: z.coerce.number().int().min(1).max(1_000_000_000),

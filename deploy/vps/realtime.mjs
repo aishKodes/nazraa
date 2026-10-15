@@ -20,6 +20,7 @@ const roomSubscriptions = new Map();
 const socketsByGame = new Map();
 const gameSubscriptions = new Map();
 const supportedGames = new Set([
+  "lion_vs_tiger",
   "teen_patti",
   "teen_patti_pro",
   "luck77",

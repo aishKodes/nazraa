@@ -6,6 +6,7 @@ export const configurableGameIds = [
   "greedy_king",
   "bounty_football",
   "jungle_hunt",
+  "lion_vs_tiger",
 ] as const;
 
 export type ConfigurableGameId = typeof configurableGameIds[number];
@@ -51,6 +52,15 @@ export const defaultMobileGamesConfig: MobileGamesConfig = {
   target_win_rate: 0.5,
   winnings_deduction_rate: 0.01,
   games: {
+    lion_vs_tiger: {
+      enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 5,
+      resultSeconds: 4, targetWinRate: 15 / 31, targetRtp: 30 / 31,
+      payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 30,
+      minimumBet: 1, maximumBet: Number.MAX_SAFE_INTEGER,
+      denominations: [40, 100, 500, 1000, 5000, 20000], historyLength: 20,
+      bigWinThreshold: 1_000_000, repeatBet: false, autoPlay: false,
+      outcomeWeights: [15, 1, 15],
+    },
     teen_patti: {
       enabled: true, maintenance: false, bettingSeconds: 15, drawingSeconds: 3,
       resultSeconds: 5, targetWinRate: 1 / 3, targetRtp: 0.97,
@@ -289,6 +299,13 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
         targetRtp: 0.97, payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 3,
         minimumBet: 100, denominations: [100,500,1000,5000],
         outcomeWeights: undefined, autoPlay: false,
+      } : {}),
+      ...(id === 'lion_vs_tiger' ? {
+        bettingSeconds: 15, drawingSeconds: 5, resultSeconds: 4,
+        targetWinRate: 15 / 31, targetRtp: 30 / 31,
+        payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 30,
+        minimumBet: 1, maximumBet: Number.MAX_SAFE_INTEGER,
+        outcomeWeights: [15, 1, 15], repeatBet: false, autoPlay: false,
       } : {}),
     } satisfies GameRuntimeConfig];
   })) as Record<ConfigurableGameId, GameRuntimeConfig>;

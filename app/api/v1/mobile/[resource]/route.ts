@@ -1,5 +1,6 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
+import { sharedBetCommandSchema } from '@/lib/games/shared-bet-command';
 import {
   authenticateMobileRequest,
   mobileCan,
@@ -456,6 +457,7 @@ export async function GET(
         const parameters = new URL(request.url).searchParams;
         const game = z
           .enum([
+            "lion_vs_tiger",
             "teen_patti",
             "teen_patti_pro",
             "luck77",
@@ -480,6 +482,7 @@ export async function GET(
       if (resource === "game-state") {
         const game = z
           .enum([
+            "lion_vs_tiger",
             "teen_patti",
             "teen_patti_pro",
             "luck77",
@@ -495,6 +498,7 @@ export async function GET(
       if (resource === "game-social") {
         const game = z
           .enum([
+            "lion_vs_tiger",
             "teen_patti",
             "teen_patti_pro",
             "luck77",
@@ -512,6 +516,7 @@ export async function GET(
         const parameters = new URL(request.url).searchParams;
         const game = z
           .enum([
+            "lion_vs_tiger",
             "teen_patti",
             "teen_patti_pro",
             "luck77",
@@ -1693,24 +1698,7 @@ export async function POST(
       if (resource === "game-bets") {
         if (!mobileCan(identity, "wallet.read"))
           return errorResponse(new Error("Forbidden."), 403);
-        const parsed = z
-          .object({
-            requestId: z.string().uuid(),
-            roundId: z.string().uuid(),
-            game: z.enum([
-              "teen_patti",
-              "teen_patti_pro",
-              "luck77",
-              "greedy_lion",
-              "greedy_king",
-              "bounty_football",
-            ]),
-            bets: z.record(
-              z.string().regex(/^[a-z0-9_]+$/),
-              z.number().int().nonnegative().max(50_000_000),
-            ),
-          })
-          .parse(body);
+        const parsed = sharedBetCommandSchema.parse(body);
         const result = await placeSharedGameBets(identity, parsed);
         after(() => publishSharedGameBetInvalidation(parsed.game));
         return NextResponse.json(result, {

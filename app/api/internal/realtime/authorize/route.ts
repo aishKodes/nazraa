@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     const identity = await authenticateMobileRequest(request);
     if (!identity) return new NextResponse(null, { status: 403 });
     if (game) {
-      if (!new Set(["teen_patti", "teen_patti_pro", "luck77", "greedy_lion", "greedy_king", "bounty_football"]).has(game)) {
+      if (!new Set(["teen_patti", "teen_patti_pro", "luck77", "greedy_lion", "greedy_king", "bounty_football", "lion_vs_tiger"]).has(game)) {
         return new NextResponse(null, { status: 400 });
       }
       return NextResponse.json({ game, userId: identity.userId }, {
