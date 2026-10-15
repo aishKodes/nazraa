@@ -161,6 +161,25 @@ async function main() {
     for(let i=1;i<chronological.recentResults.length;i++) {
       assert.ok(new Date(chronological.recentResults[i-1].settledAt).getTime()>=new Date(chronological.recentResults[i].settledAt).getTime());
     }
+    // King had the same real production defect: obsolete September numbers
+    // (105M) displaced October's newer 68M rounds. Its latest ten must be time
+    // ordered too. Isolated completed fixtures carry no bets or payouts.
+    await product.gameSharedRoundState(qaUsers[0],'greedy_king');
+    const kingOld=randomUUID(),kingRecent:string[]=[];
+    for(let i=-1;i<12;i++){
+      const id=i===-1?kingOld:randomUUID();if(i>=0)kingRecent.push(id);
+      await root.execute(`INSERT INTO game_shared_rounds
+        (id,game_name,round_number,betting_starts_at,betting_ends_at,drawing_ends_at,result_committed_at,result_ends_at,result_version,outcome_json)
+        VALUES (?,'greedy_king',?,DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),
+        DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 2 DAY),DATE_SUB(UTC_TIMESTAMP(3),INTERVAL ? SECOND),
+        DATE_SUB(UTC_TIMESTAMP(3),INTERVAL ? SECOND),DATE_SUB(UTC_TIMESTAMP(3),INTERVAL ? SECOND),1,?)`,
+        [id,i===-1?999999999999:1000+i,i===-1?86400:i+1,i===-1?86400:i+1,i===-1?86400:i+1,JSON.stringify({winner:i<0?1:i%8,label:i<0?'Hot Dog':'QA food'})]);
+    }
+    const kingHistory=(await product.gameSharedRoundState(qaUsers[0],'greedy_king')).recentResults;
+    assert.equal(kingHistory.length,10);assert.equal(kingHistory[0].roundId,kingRecent[0]);
+    assert.equal(kingHistory.some(row=>row.roundId===kingOld),false);
+    assert.equal(new Set(kingHistory.map(row=>row.roundId)).size,10);
+    for(let i=1;i<kingHistory.length;i++)assert.ok(new Date(kingHistory[i-1].settledAt).getTime()>=new Date(kingHistory[i].settledAt).getTime());
     // Princess uses the same newly-corrected sparse-retry normalization,
     // but its distinct canonical 3x / 3% settlement remains untouched.
     const princessUser=await user(8);
@@ -174,7 +193,7 @@ async function main() {
     await assert.rejects(product.placeSharedGameBets(princessUser,{...princessCommand,bets:{red:200}}),/already used/);
     console.log(JSON.stringify({status:'PASS',rounds:30,selectionCombinations:7,forcedServerTargets:areas,
       settlements,winning,losing,duplicateDebits:0,duplicateSettlements:0,missingHistory:0,
-      princessSparseRetry:'PASS',oddsScaleChanged:false,productionDataTouched:false}));
+      princessSparseRetry:'PASS',kingTimestampHistory:'PASS',oddsScaleChanged:false,productionDataTouched:false}));
   } finally {
     await global.nazraaPool?.end();
     await root.query(`DROP DATABASE \`${database}\``);
