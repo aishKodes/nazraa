@@ -3274,8 +3274,7 @@ async function main() {
       assert.ok(placed, "QA fixture must place a fresh authoritative bet");
       if(game==='teen_patti'){
         assert.equal(placed.outcome,null,'new game never leaks the hidden hand/winner while betting');
-        assert.equal(placed.publicPreview?.cards.length,3,'exactly one visible card per chair');
-        assert.equal(new Set(placed.publicPreview?.cards).size,3);
+        assert.equal(placed.publicPreview?.cards,undefined,'all nine cards stay private until betting closes, including command/retry responses');
         assert.deepEqual(Object.keys(placed.targetTotals),['green','blue','red']);
       }
       const repeated = await product.placeSharedGameBets(owner, {
@@ -3439,7 +3438,7 @@ async function main() {
     assert.equal(chairRound.settlement.payout,1455);
     assert.equal(new Set((chairRound.outcome.hands as {cards:number[]}[]).flatMap(h=>h.cards)).size,9);
     assert(chairRound.players.every(p=>Object.keys(p.bets).length===0),'new game never exposes other player bet choices');
-    console.log('PASS separate TeenPatti: all three chairs accepted, preview hides six cards and winner, exact 3× minus 3% return, durable payout/history, duplicate command denied; Pro remains separate.');
+    console.log('PASS separate Princess: all chairs accepted, all cards hidden during betting, exact 3× minus 3% return, durable payout/history, duplicate command denied; Pro remains separate.');
     const [chairSettingsRows]=await root.query<(RowDataPacket & {setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games'");
     const originalChairSettings=chairSettingsRows[0]?.setting_value;
     const chairSettings=(typeof originalChairSettings==='string'?JSON.parse(originalChairSettings):originalChairSettings) ?? {};

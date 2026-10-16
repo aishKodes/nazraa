@@ -2061,7 +2061,7 @@ function sharedGameRealtimeState(round: SharedRoundRow, now: Date): SharedGameRe
   const reveal = now >= new Date(round.drawing_ends_at);
   return {
     game: round.game_name,
-    ...(round.game_name===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json))}:{}),
+    ...(round.game_name===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json),now>=new Date(round.betting_ends_at))}:{}),
     round: {
       id: round.id,
       number: Number(round.round_number),
@@ -2356,7 +2356,7 @@ async function sharedRoundStatePayload(
   }
   return {
     game,
-    ...(game===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json))}:{}),
+    ...(game===TEEN_PATTI_ID?{publicPreview:chairPreview(asObject(round.outcome_json),now>=new Date(round.betting_ends_at))}:{}),
     serverTimestamp: now.toISOString(),
     round: {
       id: round.id, number: Number(round.round_number), phase: phase.phase,

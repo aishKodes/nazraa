@@ -3,7 +3,7 @@ import {randomInt} from 'node:crypto';
 /** New game only. Never import Pro's Crown, lane odds or RTP evaluator. */
 export const TEEN_PATTI_ID='teen_patti' as const;
 export const teenPattiChairs=['green','blue','red'] as const;
-export const teenPattiRulesVersion='CHAIRS_3X_FEE3_V1';
+export const teenPattiRulesVersion='CHAIRS_3X_FEE3_HIDDEN_V2';
 export type TeenPattiChair=typeof teenPattiChairs[number];
 export const teenPattiCategories=['High card','Pair','Flush','Straight','Flush Straight','Three of a kind'] as const;
 // Card encoding: Diamonds, Clubs, Hearts, Spades; ranks 2 through Ace.
@@ -49,7 +49,11 @@ export function dealChairRound(){
  for(let i=51;i>0;i--){const j=randomInt(i+1);[deck[i],deck[j]]=[deck[j],deck[i]];}
  return chairOutcomeFromDeck(deck);
 }
-export function chairPreview(outcome:Record<string,unknown>){
+/** No dealt card may be public while a wager can still be accepted. A real
+ * face-up card makes the 3x/3% paytable exploitable even with an unbiased deal.
+ * Omit cards (not an empty array): old APKs index any non-null card array. */
+export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):{cards?:number[]}{
+ if(!bettingClosed)return {};
  const hands=outcome.hands as {cards:number[]}[];
  if(!Array.isArray(hands)||hands.length!==3)throw new Error('TeenPatti round is unavailable.');
  return {cards:hands.map(hand=>hand.cards[0])};

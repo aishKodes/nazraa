@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {evaluateChairHand,compareChairHands,chairOutcomeFromDeck,dealChairRound,chairSettlement,teenPattiChairs} from '../lib/games/teen-patti';
+import {evaluateChairHand,compareChairHands,chairOutcomeFromDeck,dealChairRound,chairSettlement,chairPreview,teenPattiChairs} from '../lib/games/teen-patti';
 import {mobileGamesConfig} from '../lib/games/game-config';
 
 export function verifyTeenPattiChairRules(){
@@ -22,6 +22,9 @@ export function verifyTeenPattiChairRules(){
  const wins=[0,0,0];
  for(let i=0;i<5000;i++){
   const outcome=dealChairRound();const cards=outcome.hands.flatMap(h=>h.cards);
+  assert.deepEqual(chairPreview(outcome),{},'no informational betting advantage: all nine dealt cards are hidden');
+  assert.deepEqual(chairPreview(outcome,false),{},'HTTP and WS betting policy is fail-closed and safe for old APKs');
+  assert.deepEqual(chairPreview(outcome,true).cards,outcome.hands.map(h=>h.cards[0]),'first-card reveal only after betting deadline');
   assert.equal(cards.length,9);assert.equal(new Set(cards).size,9);
   const winner=teenPattiChairs.indexOf(outcome.winner);wins[winner]++;
   for(let h=0;h<3;h++)if(h!==winner)assert(compareChairHands(outcome.hands[winner].cards,outcome.hands[h].cards)>0,'server winner is the exact strongest dealt hand');
@@ -29,6 +32,7 @@ export function verifyTeenPattiChairRules(){
  assert(wins.every(n=>Math.abs(n/5000-1/3)<.05));
  const fixed=mobileGamesConfig({games:{teen_patti:{payoutScalePpm:50000,maximumPayoutMultiplier:100,outcomeWeights:[100,0,0]}}}).games.teen_patti;
  assert.equal(fixed.payoutScalePpm,1000000);assert.equal(fixed.maximumPayoutMultiplier,3);assert.equal(fixed.outcomeWeights,undefined);
- console.log('PASS NEW TeenPatti: 22,100 exhaustive hands; six categories; pair/kicker, Ace sequences and suit tie-breaks; 5,000 unbiased 9-unique-card deals; video 110,000 -> 320,100; fee when total wager >= gross; no Crown/RTP scaling; Pro unchanged.');
+ assert.equal(chairSettlement({green:100,blue:100,red:100},'green').payout/300,.97,'unchanged 97% theoretical return with hidden unbiased chairs');
+ console.log('PASS Princess: 22,100 exhaustive hands; 5,000 unbiased deals; no cards before betting closes; reveal after close; fixed 3x/3% = 97% theoretical RTP; exact settlement/fee; Pro unchanged.');
 }
 verifyTeenPattiChairRules();
