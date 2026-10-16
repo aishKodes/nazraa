@@ -1,7 +1,8 @@
 // Read-only, aggregate-only audit. Run in the existing API container; never
 // prints credentials, user identities, tokens, or individual wallet balances.
 (async () => {
-  const c = await require('mysql2/promise').createConnection({
+  const mysql = (await import('mysql2/promise')).default;
+  const c = await mysql.createConnection({
     host: process.env.DB_HOST, port: Number(process.env.DB_PORT || 3306),
     user: process.env.DB_USER, password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
