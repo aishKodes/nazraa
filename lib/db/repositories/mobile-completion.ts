@@ -1,5 +1,6 @@
 import "server-only";
 import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
+import { beautyTuning } from "@/lib/services/beauty-policy";
 import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
@@ -347,6 +348,7 @@ function roomMediaDelivery(
         landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
         defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
         intensityScale: Math.max(0, Math.min(1.4, Number(features.naturalBeautyScale ?? 1))),
+        tuning: beautyTuning(features.naturalBeautyTuning),
       },
       playbackProtocol: "livekit" as const,
       passiveEventDelaySeconds: 0,
@@ -457,6 +459,7 @@ function roomMediaDelivery(
           settingEnabled(features.nazraaNaturalBeautyReviewerQaEnabled)),
       landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
       defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
+      tuning: beautyTuning(features.naturalBeautyTuning),
     },
     playbackProtocol,
     passiveEventDelaySeconds,
@@ -911,6 +914,23 @@ async function settleCompletedLiveHours(
     newlyClaimableDiamonds,
     newlyClaimableRewards,
   };
+}
+
+/** Signed publication transitions may be the final signal before a Host loses
+ * connectivity. Reuse the same claimable-entitlement engine immediately after
+ * that checkpoint, without waiting for another Flutter presence request. */
+export async function reconcileCheckpointedLiveRewards(connection: PoolConnection, accountingId: string) {
+  const [rows]=await connection.query<(RowDataPacket & {seconds:number; minimum_seconds:number})[]>(
+    `SELECT accounting.eligible_duration_seconds + accounting.media_segment_seconds seconds,
+       rule.minimum_eligible_seconds minimum_seconds
+     FROM live_session_accounting accounting
+     INNER JOIN host_reward_rules rule ON rule.id=accounting.reward_rule_id
+     WHERE accounting.id=? AND accounting.status='ACTIVE' LIMIT 1 FOR UPDATE`,[accountingId]);
+  const row=rows[0];
+  if(!row || Number(row.seconds)<Math.max(3600,Number(row.minimum_seconds))) return;
+  await settleCompletedLiveHours(connection,accountingId,Math.floor(Number(row.seconds)/3600));
+  await connection.execute(`UPDATE live_session_accounting SET reward_units_generated=(
+    SELECT COUNT(*) FROM live_reward_entitlements WHERE live_session_accounting_id=?) WHERE id=?`,[accountingId,accountingId]);
 }
 
 type LiveRewardClaimResult = {

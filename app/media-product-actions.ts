@@ -7,8 +7,30 @@ import { saveStartupCampaign } from "@/lib/db/repositories/startup-campaign";
 import { withTransaction } from "@/lib/db/transaction";
 import type { RowDataPacket } from "mysql2/promise";
 import { randomUUID } from "node:crypto";
+import { beautyControls } from "@/lib/services/beauty-policy";
 
 function destination(kind: "error" | "success", message: string) { return `/dashboard/settings?${kind}=${encodeURIComponent(message)}`; }
+export async function publishBeautyPolicy(formData: FormData) {
+  const scope=await requirePermission("settings.manage");
+  if(scope.account.role!=="MASTER") throw new Error("Forbidden.");
+  let failure: string|undefined;
+  try {
+    const reason=z.string().trim().min(5).max(500).parse(formData.get("reason"));
+    const tuning:Record<string,number>={};
+    for(const key of Object.keys(beautyControls)) tuning[key]=z.coerce.number().finite().int().min(0).max(100).parse(formData.get(key) ?? NaN);
+    await withTransaction(async connection=>{
+      const [rows]=await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.room_features' FOR UPDATE");
+      const raw=rows[0]?.setting_value;
+      const current=(typeof raw==="string"?JSON.parse(raw):raw??{}) as Record<string,unknown>;
+      const next={...current,naturalBeautyTuning:tuning,naturalBeautyTuningVersion:randomUUID()};
+      await connection.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.room_features',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,[JSON.stringify(next),scope.account.id]);
+      await connection.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason) VALUES(?,?,'MASTER','BEAUTY_TUNING_UPDATE','settings','MEDIA_POLICY','beauty',?,?,?)`,
+        [randomUUID(),scope.account.id,JSON.stringify({tuning:current.naturalBeautyTuning}),JSON.stringify({tuning}),reason]);
+    });
+  } catch { failure="Check the beauty controls (0–100) and change reason."; }
+  revalidatePath("/dashboard/settings");
+  redirect(destination(failure?"error":"success",failure??"Device-local beauty tuning saved. Live sessions are not restarted."));
+}
 export async function publishStartupCampaign(formData: FormData) {
   const scope = await requirePermission("settings.manage");
   if (scope.account.role !== "MASTER") throw new Error("Forbidden.");

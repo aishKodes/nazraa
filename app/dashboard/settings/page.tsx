@@ -1,6 +1,7 @@
 import { getStartupCampaign } from "@/lib/db/repositories/startup-campaign";
 import { StartupCampaignControls } from "@/components/startup-campaign-controls";
-import { publishFaceQuality } from "@/app/media-product-actions";
+import { publishFaceQuality, publishBeautyPolicy } from "@/app/media-product-actions";
+import { beautyControls, beautyTuning } from "@/lib/services/beauty-policy";
 import { LockKeyhole, ShieldCheck } from "lucide-react";
 import Link from 'next/link';
 import {
@@ -135,6 +136,14 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Audio Room seats-first layout<select name="audioRoomLayoutV2" defaultValue={String(mediaFeatures?.audioRoomLayoutV2 !== false)}><option value="true">Enabled: compact chat</option><option value="false">Rollback: expanded inline chat</option></select></label>
         <label className="span-two">Reason<input name="reason" minLength={5} maxLength={500} required /></label>
         <button className="primary-button">Save media quality</button>
+      </form>
+    </Card>}
+    {isMaster && <Card className="settings-card"><h2>Nazraa on-device beauty tuning</h2>
+      <p>Bounded 0–100 regional controls. No frames leave the device. Host ON/OFF and strength remain respected. Settings reach compatible apps on their next media-policy refresh, without a new APK.</p>
+      <form action={publishBeautyPolicy} className="form-grid">
+        {Object.entries(beautyControls).map(([key,value])=><label key={key}>{key.replace(/([A-Z])/g,' $1')}<input name={key} type="number" min="0" max="100" step="1" required defaultValue={beautyTuning(mediaFeatures?.naturalBeautyTuning)[key] ?? value}/></label>)}
+        <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500}/></label>
+        <button className="primary-button">Publish device beauty tuning</button>
       </form>
     </Card>}
     <Card className="settings-card"><h2>Host payout configuration</h2>

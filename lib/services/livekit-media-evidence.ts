@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { withTransaction } from "@/lib/db/transaction";
 import { enqueueFollowerLivePush } from "@/lib/services/fcm-push-service";
 import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
+import { reconcileCheckpointedLiveRewards } from "@/lib/db/repositories/mobile-completion";
 
 export type LiveKitWebhookEvent = {
   id?: unknown;
@@ -110,7 +111,8 @@ export function normalizeLiveKitWebhookEvent(
  * Applies provider-authenticated media evidence to the existing Live session
  * ledger. Client heartbeats remain the server-time accrual mechanism, while
  * this signal prevents a lost SDK callback from making a genuinely published
- * Live look offline. The procedure is deliberately non-financial.
+ * Live look offline. Completed units create claimable entitlements through the
+ * canonical engine; this procedure never credits a wallet.
  */
 export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
   return withTransaction(async (connection) => {
@@ -326,6 +328,7 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
             publishing, checkpoint.cursor, publishing, publishing, room.accounting_id],
         );
       }
+      await reconcileCheckpointedLiveRewards(connection,room.accounting_id);
       // A follower alert is created only after a verified host video track is
       // present. Room creation, token issuance, audience arrival and webhook
       // retries cannot generate a false or duplicate "is Live" notification.
