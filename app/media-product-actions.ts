@@ -7,7 +7,7 @@ import { saveStartupCampaign } from "@/lib/db/repositories/startup-campaign";
 import { withTransaction } from "@/lib/db/transaction";
 import type { RowDataPacket } from "mysql2/promise";
 import { randomUUID } from "node:crypto";
-import { beautyControls } from "@/lib/services/beauty-policy";
+import { beautyControls, beautyPublicMappingDefaults, beautyPublicMapping } from "@/lib/services/beauty-policy";
 
 function destination(kind: "error" | "success", message: string) { return `/dashboard/settings?${kind}=${encodeURIComponent(message)}`; }
 export async function publishBeautyPolicy(formData: FormData) {
@@ -18,14 +18,21 @@ export async function publishBeautyPolicy(formData: FormData) {
     const reason=z.string().trim().min(5).max(500).parse(formData.get("reason"));
     const tuning:Record<string,number>={};
     for(const key of Object.keys(beautyControls)) tuning[key]=z.coerce.number().finite().int().min(0).max(100).parse(formData.get(key) ?? NaN);
+    const suppliedMapping:Record<string,number>={};
+    for(const key of Object.keys(beautyPublicMappingDefaults)) {
+      const raw=formData.get(`curve_${key}`);
+      // Older open Control tabs may submit only the existing 18 controls.
+      if(raw!==null) suppliedMapping[key]=z.coerce.number().finite().min(key.endsWith("Exponent")?.5:0).max(key.endsWith("Exponent")?3:1).parse(raw);
+    }
     await withTransaction(async connection=>{
       const [rows]=await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.room_features' FOR UPDATE");
       const raw=rows[0]?.setting_value;
       const current=(typeof raw==="string"?JSON.parse(raw):raw??{}) as Record<string,unknown>;
-      const next={...current,naturalBeautyTuning:tuning,naturalBeautyTuningVersion:randomUUID()};
+      const mapping={...beautyPublicMapping(current.naturalBeautyPublicMapping),...suppliedMapping};
+      const next={...current,naturalBeautyTuning:tuning,naturalBeautyPublicMapping:mapping,naturalBeautyTuningVersion:randomUUID()};
       await connection.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.room_features',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,[JSON.stringify(next),scope.account.id]);
       await connection.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason) VALUES(?,?,'MASTER','BEAUTY_TUNING_UPDATE','settings','MEDIA_POLICY','beauty',?,?,?)`,
-        [randomUUID(),scope.account.id,JSON.stringify({tuning:current.naturalBeautyTuning}),JSON.stringify({tuning}),reason]);
+        [randomUUID(),scope.account.id,JSON.stringify({tuning:current.naturalBeautyTuning,publicMapping:current.naturalBeautyPublicMapping}),JSON.stringify({tuning,publicMapping:mapping}),reason]);
     });
   } catch { failure="Check the beauty controls (0–100) and change reason."; }
   revalidatePath("/dashboard/settings");

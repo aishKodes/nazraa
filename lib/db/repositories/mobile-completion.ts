@@ -1,6 +1,6 @@
 import "server-only";
 import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
-import { beautyTuning } from "@/lib/services/beauty-policy";
+import { beautyTuning, beautyPublicMapping } from "@/lib/services/beauty-policy";
 import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
@@ -349,6 +349,7 @@ function roomMediaDelivery(
         defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
         intensityScale: Math.max(0, Math.min(1.4, Number(features.naturalBeautyScale ?? 1))),
         tuning: beautyTuning(features.naturalBeautyTuning),
+        publicMapping: beautyPublicMapping(features.naturalBeautyPublicMapping),
       },
       playbackProtocol: "livekit" as const,
       passiveEventDelaySeconds: 0,
@@ -460,6 +461,7 @@ function roomMediaDelivery(
       landmarksEnabled: settingEnabled(features.nazraaNaturalBeautyLandmarksEnabled),
       defaultStrength: Math.max(0, Math.min(100, Number(features.nazraaNaturalBeautyDefaultStrength ?? 50))),
       tuning: beautyTuning(features.naturalBeautyTuning),
+      publicMapping: beautyPublicMapping(features.naturalBeautyPublicMapping),
     },
     playbackProtocol,
     passiveEventDelaySeconds,
