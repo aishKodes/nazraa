@@ -1612,6 +1612,38 @@ async function main() {
       [faceRoomCode],
     );
     const faceGuestRoomId = String(faceGuestRoom[0].id);
+    const providerEvidence = await import("@/lib/services/livekit-media-evidence");
+    const webhookBase = Date.now() - 10_000;
+    async function deliverMedia(identity: string, event: string, sid: string | null, at: number, kind = "AUDIO") {
+      const payload = { id: `qa-${randomUUID()}`, event, createdAt: new Date(at).toISOString(),
+        room: { name: faceRoomCode }, participant: { identity },
+        ...(sid ? { track: { sid, type: kind } } : {}) };
+      const normalized = providerEvidence.normalizeLiveKitWebhookEvent(payload, JSON.stringify(payload));
+      assert.ok(normalized);
+      await providerEvidence.recordLiveKitMediaEvidence(normalized);
+      return normalized;
+    }
+    await deliverMedia(guest.publicId, "track_published", "qa-old-webhook-mic", webhookBase);
+    const newMicrophoneEvent = await deliverMedia(guest.publicId, "track_published", "qa-new-webhook-mic", webhookBase + 4000);
+    await deliverMedia(guest.publicId, "participant_left", null, webhookBase + 2000);
+    await deliverMedia(guest.publicId, "track_unpublished", "qa-old-webhook-mic", webhookBase + 3000);
+    await deliverMedia(guest.publicId, "track_published", "qa-old-webhook-mic", webhookBase + 1000);
+    const [afterDelayedWebhook] = await root.query<RowDataPacket[]>(
+      `SELECT track_sid, active FROM livekit_active_media_tracks WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId]);
+    assert.equal(Number(afterDelayedWebhook.find(t => t.track_sid === "qa-new-webhook-mic")?.active), 1,
+      "old participant_left cannot deactivate a newer republished microphone");
+    assert.equal(Number(afterDelayedWebhook.find(t => t.track_sid === "qa-old-webhook-mic")?.active), 0,
+      "delayed publish cannot reactivate an already unpublished track");
+    const [afterGuestWebhook] = await root.query<RowDataPacket[]>(
+      `SELECT media_publishing, media_role FROM live_room_members WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId]);
+    assert.equal(Number(afterGuestWebhook[0].media_publishing), 1);
+    assert.equal(afterGuestWebhook[0].media_role, "AUDIO_GUEST");
+    assert.equal((await providerEvidence.recordLiveKitMediaEvidence(newMicrophoneEvent)).duplicate, true);
+    await root.execute(`UPDATE livekit_active_media_tracks SET active = FALSE WHERE room_id = ? AND application_user_id = ?`,
+      [faceGuestRoomId, guest.userId]);
+    console.log("PASS ordered signed-media ledger: old departure/unpublish/publish cannot erase a newer microphone; duplicate event ignored; accepted Guest role preserved");
     await root.execute(
       `UPDATE live_room_members
        SET last_seen_at = CURRENT_TIMESTAMP(3) - INTERVAL 4 MINUTE,

@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2/promise";
 import { withTransaction } from "@/lib/db/transaction";
 import { enqueueFollowerLivePush } from "@/lib/services/fcm-push-service";
+import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
 
 export type LiveKitWebhookEvent = {
   id?: unknown;
@@ -188,23 +189,36 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
       await connection.execute(
         `UPDATE livekit_active_media_tracks
          SET active = FALSE, last_event_at = ?
-         WHERE room_id = ? AND application_user_id = ? AND active = TRUE`,
-        [evidence.occurredAt, room.room_id, member.application_user_id],
+         WHERE room_id = ? AND application_user_id = ? AND active = TRUE
+           AND last_event_at < ?`,
+        [evidence.occurredAt, room.room_id, member.application_user_id, evidence.occurredAt],
       );
     } else if (evidence.trackSid && evidence.trackKind) {
+      const [departures] = await connection.query<(RowDataPacket & { occurred_at: Date })[]>(
+        `SELECT occurred_at FROM livekit_media_events
+         WHERE room_id = ? AND application_user_id = ? AND event_type = 'participant_left'
+         ORDER BY occurred_at DESC LIMIT 1`, [room.room_id, member.application_user_id],
+      );
+      // A delayed publish for an obsolete SID cannot resurrect a track after
+      // a newer departure. Equal-second republish is allowed: LiveKit's event
+      // timestamp is second precision and a full reconnect can be very quick.
+      const published = evidence.eventType === "track_published" &&
+        (!departures[0] || evidence.occurredAt >= new Date(departures[0].occurred_at));
       await connection.execute(
         `INSERT INTO livekit_active_media_tracks
           (room_id, application_user_id, track_sid, track_kind, active, last_event_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
-           track_kind = VALUES(track_kind), active = VALUES(active),
-           last_event_at = VALUES(last_event_at)`,
+           track_kind = IF(VALUES(last_event_at) >= last_event_at, VALUES(track_kind), track_kind),
+           active = IF(VALUES(last_event_at) > last_event_at OR
+             (VALUES(last_event_at) = last_event_at AND VALUES(active) = FALSE), VALUES(active), active),
+           last_event_at = GREATEST(last_event_at, VALUES(last_event_at))`,
         [
           room.room_id,
           member.application_user_id,
           evidence.trackSid,
           evidence.trackKind,
-          evidence.eventType === "track_published",
+          published,
           evidence.occurredAt,
         ],
       );
@@ -212,9 +226,12 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
 
     const isHost = room.host_public_id === evidence.participantIdentity;
     if (!isHost && member.media_role === "AUDIO_GUEST") {
-      const audioPublished =
-        evidence.eventType === "track_published" &&
-        evidence.trackKind === "AUDIO";
+      const [microphones] = await connection.query<(RowDataPacket & { count: number })[]>(
+        `SELECT COUNT(*) count FROM livekit_active_media_tracks
+         WHERE room_id = ? AND application_user_id = ? AND active = TRUE AND track_kind = 'AUDIO'`,
+        [room.room_id, member.application_user_id],
+      );
+      const audioPublished = Number(microphones[0]?.count ?? 0) > 0;
       const audioEnded =
         evidence.eventType === "track_unpublished" ||
         evidence.eventType === "participant_left";
@@ -282,15 +299,33 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
         [room.room_id, room.host_application_user_id, wantedKind],
       );
       const publishing = Number(activeTracks[0]?.count ?? 0) > 0;
-      await connection.execute(
-        `UPDATE live_session_accounting
-         SET media_publishing = ?,
-             last_media_evidence_at = CASE WHEN ? THEN CURRENT_TIMESTAMP(3) ELSE last_media_evidence_at END,
-             reconnect_state = CASE WHEN ? THEN 'PUBLISHING' ELSE 'RECONNECTING' END,
-             accounting_accuracy = 'CONFIRMED'
-         WHERE id = ? AND status = 'ACTIVE'`,
-        [publishing, publishing, publishing, room.accounting_id],
-      );
+      const [sessions] = await connection.query<(RowDataPacket & {
+        media_publishing: number; last_media_evidence_at: Date | null; server_time: Date;
+      })[]>(`SELECT media_publishing, last_media_evidence_at, CURRENT_TIMESTAMP(3) server_time
+        FROM live_session_accounting WHERE id = ? AND status = 'ACTIVE' FOR UPDATE`, [room.accounting_id]);
+      const session = sessions[0];
+      // Repeated publish/unpublish notifications do not move the clock cursor.
+      // Only a real transition checkpoints it. Otherwise the time since the
+      // previous heartbeat would silently disappear on every republish event.
+      if (session && Boolean(session.media_publishing) !== publishing) {
+        const now = new Date(session.server_time);
+        const checkpoint = publishingCheckpoint({
+          wasPublishing: Boolean(session.media_publishing), publishingNow: publishing,
+          previousEvidence: session.last_media_evidence_at ? new Date(session.last_media_evidence_at) : null,
+          serverTime: publishing ? now : new Date(Math.min(+now, +evidence.occurredAt)), evidenceWindowSeconds: 30,
+        });
+        await connection.execute(
+          `UPDATE live_session_accounting SET media_publishing = ?,
+           media_segment_seconds = media_segment_seconds + ?, valid_media_seconds = valid_media_seconds + ?,
+           eligible_seconds_committed = eligible_seconds_committed + ?,
+           last_media_evidence_at = CASE WHEN ? THEN ? ELSE last_media_evidence_at END,
+           current_publish_started_at = CASE WHEN ? THEN CURRENT_TIMESTAMP(3) ELSE NULL END,
+           reconnect_state = CASE WHEN ? THEN 'PUBLISHING' ELSE 'RECONNECTING' END,
+           accounting_accuracy = 'CONFIRMED' WHERE id = ? AND status = 'ACTIVE'`,
+          [publishing, checkpoint.seconds, checkpoint.seconds, checkpoint.seconds,
+            publishing, checkpoint.cursor, publishing, publishing, room.accounting_id],
+        );
+      }
       // A follower alert is created only after a verified host video track is
       // present. Room creation, token issuance, audience arrival and webhook
       // retries cannot generate a false or duplicate "is Live" notification.

@@ -1,4 +1,5 @@
 import "server-only";
+import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
 import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
@@ -2349,13 +2350,11 @@ export async function refreshRoomPresence(
 
       if (mediaPublishing !== undefined) {
         const publishingNow = mediaPublishing;
+        const checkpoint = publishingCheckpoint({wasPublishing,publishingNow,previousEvidence:lastMediaEvidence,serverTime,evidenceWindowSeconds});
         let segmentBroken = false;
         let acceptedDelta = 0;
         if (publishingNow && wasPublishing) {
-          acceptedDelta =
-            secondsSinceEvidence <= evidenceWindowSeconds
-              ? secondsSinceEvidence
-              : 0;
+          acceptedDelta = checkpoint.seconds;
           if (secondsSinceHeartbeat > reconnectGrace) {
             // Do not credit an unobserved gap.  A shorter gap remains one
             // recoverable session segment (so a weak-network reconnect does
@@ -2372,10 +2371,7 @@ export async function refreshRoomPresence(
           // normal Wi-Fi/mobile handoff cannot discard the last heartbeat
           // window.  The cap deliberately prevents grace/offline time from
           // being counted as publishing.
-          acceptedDelta =
-            secondsSinceEvidence <= evidenceWindowSeconds
-              ? secondsSinceEvidence
-              : 0;
+          acceptedDelta = checkpoint.seconds;
           if (secondsSinceHeartbeat > reconnectGrace) {
             rewardEligibleSeconds +=
               Math.floor(rewardSegmentSeconds / 3600) * 3600;
@@ -2417,7 +2413,7 @@ export async function refreshRoomPresence(
                  ELSE current_publish_started_at END,
                last_media_heartbeat_at = CURRENT_TIMESTAMP(3),
                last_heartbeat_at = CURRENT_TIMESTAMP(3),
-               last_media_evidence_at = CASE WHEN ? = TRUE THEN CURRENT_TIMESTAMP(3) ELSE last_media_evidence_at END,
+               last_media_evidence_at = CASE WHEN ? = TRUE THEN ? ELSE last_media_evidence_at END,
                media_segment_seconds = ?, valid_media_seconds = ?,
                eligible_duration_seconds = ?, eligible_seconds_committed = ?,
                reconnect_state = ?, accounting_accuracy = 'CONFIRMED',
@@ -2434,6 +2430,7 @@ export async function refreshRoomPresence(
             segmentBroken,
             publishingNow,
             publishingNow,
+            checkpoint.cursor,
             rewardSegmentSeconds,
             rewardValidSeconds,
             rewardEligibleSeconds,
