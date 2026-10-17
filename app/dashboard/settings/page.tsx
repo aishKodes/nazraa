@@ -2,6 +2,7 @@ import { getStartupCampaign } from "@/lib/db/repositories/startup-campaign";
 import { StartupCampaignControls } from "@/components/startup-campaign-controls";
 import { publishFaceQuality, publishBeautyPolicy } from "@/app/media-product-actions";
 import { beautyControls, beautyTuning } from "@/lib/services/beauty-policy";
+import {publishPrincessPricing} from '@/app/princess-pricing-actions';
 import { LockKeyhole, ShieldCheck } from "lucide-react";
 import Link from 'next/link';
 import {
@@ -267,6 +268,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </form>
     </Card>
 
+    {isMaster && <Card className="settings-card"><h2>Princess public-card pricing</h2>
+      <p>Cards remain an unbiased standard-deck deal. Visible-card mode quotes each chair using exact conditional odds before accepting bets. The 3% fee and whole-Coin rounding are shown to users. Quotes/outcomes are committed together and preserved on every historical payout. Old APKs cannot bet against an undisclosed quote.</p>
+      <form action={publishPrincessPricing} className="form-grid">
+        <label>Presentation / paytable<select name="mode" defaultValue={gameSettings.games.teen_patti.princessPreviewQuotes?'PUBLIC_QUOTE_V3':'HIDDEN_FIXED_V2'}><option value="HIDDEN_FIXED_V2">Hidden cards · legacy fixed 3×</option><option value="PUBLIC_QUOTE_V3">Visible first card · committed per-chair quote</option></select></label>
+        <label>Maximum theoretical net RTP<input name="targetRtp" type="number" min=".5" max="1" step=".001" required defaultValue={gameSettings.games.teen_patti.targetRtp}/><span>0.97 = 97%; rounding/cap can lower this, never guarantee profit each round.</span></label>
+        <label>Gross multiplier cap<input name="maximumMultiplier" type="number" min="1" max="30" step=".1" required defaultValue={gameSettings.games.teen_patti.princessPreviewQuotes?gameSettings.games.teen_patti.maximumPayoutMultiplier:30}/></label>
+        <label>Change reason<input name="reason" required minLength={5} maxLength={500}/></label>
+        <button className="primary-button">Publish Princess pricing</button>
+      </form>
+    </Card>}
     <Card className="settings-card">
       <div className="card-title"><div><h2>Game controls</h2><p>Server-owned availability, limits, timers, outcome weights, social history, and verified special-result controls. Saving never chooses a manual winner.</p></div></div>
       <div className="stack-form full-width">
@@ -292,12 +303,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           return <details key={gameId} className="scope-lock">
             <summary><strong>{name}</strong> · {availability.toLowerCase()} · {game.bettingSeconds ? `${game.bettingSeconds}s shared betting` : "individual spin"}</summary>
             <form action={submitGameSettings} className="form-grid" style={{ marginTop: 14 }}>
-              {gameId==='teen_patti' && <p className="span-two">Separate game: unbiased 52-card deal, Green / Blue / Red Chairs, exactly 3× gross return less 3% service fee. No Crown wager, lane weighting or RTP scaling. These payout rules are fixed.</p>}
+              {gameId==='teen_patti' && <p className="span-two">Separate unbiased 52-card game. Current mode: {game.princessPreviewQuotes?'visible first cards with committed per-chair quotes':'hidden cards, fixed 3×'}. A 3% fee applies. No Crown or bet-dependent outcomes. Master pricing above changes only future rounds.</p>}
               <input name="game" type="hidden" value={gameId} />
               <label>Availability<select name="availability" defaultValue={availability}><option value="ACTIVE">Active</option><option value="MAINTENANCE">Maintenance</option><option value="DISABLED">Disabled</option></select></label>
               <label>Reference hit frequency<input name="targetWinRate" type="number" min="0" max="1" step={chairs ? 'any' : '0.01'} readOnly={chairs} required defaultValue={game.targetWinRate} /><span>{chairs ? 'One third by symmetry of the unbiased deal; reporting only, never an outcome control.' : 'Reporting target only: 0.50 for Teen Patti/Luck77 and 0.40 for the others. Results never inspect a player\'s bets.'}</span></label>
-              <label>{chairs ? 'Nominal blind return' : 'Fixed mathematical RTP'}<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>{chairs ? 'Unweighted single-deck deal; the visible first card can inform a bet. No return-target scaling is applied.' : 'Payout scales are server-owned and verified statistically before deployment.'}</span></label>
-              <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" readOnly={chairs} required defaultValue={game.maximumPayoutMultiplier} /><span>{chairs ? 'Exactly 3× gross return before the fixed 3% service fee.' : 'Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.'}</span></label>
+              <label>{chairs ? 'Configured return ceiling' : 'Fixed mathematical RTP'}<input value={`${(game.targetRtp * 100).toFixed(1)}%`} readOnly /><span>{chairs ? 'Unbiased single deck. Visible-card quotes account for public information; payout cap and rounding may lower return.' : 'Payout scales are server-owned and verified statistically before deployment.'}</span></label>
+              <label>Maximum payout × wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" readOnly={chairs} required defaultValue={game.maximumPayoutMultiplier} /><span>{chairs ? (game.princessPreviewQuotes?'Gross quote cap before the 3% service fee.':'Legacy 3× gross before the 3% service fee.') : 'Jungle Hunt is capped at 20× to prevent tiny spins producing extreme credits.'}</span></label>
               <label>Betting seconds<input name="bettingSeconds" type="number" min="0" max="300" required defaultValue={game.bettingSeconds} /></label>
               <label>Drawing seconds<input name="drawingSeconds" type="number" min="0" max="60" required defaultValue={game.drawingSeconds} /><span>Server locks wagers during this phase.</span></label>
               <label>Result seconds<input name="resultSeconds" type="number" min="0" max="60" required defaultValue={game.resultSeconds} /><span>Server-owned visible result hold; changes are audited and apply to newly opened rounds.</span></label>

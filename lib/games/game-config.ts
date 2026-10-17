@@ -40,6 +40,7 @@ export type GameRuntimeConfig = {
   pizzaWeight?: number;
   poolContributionBps?: number;
   poolMinimumForSpecial?: number;
+  princessPreviewQuotes?: boolean;
 };
 
 export type MobileGamesConfig = {
@@ -296,7 +297,10 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       poolContributionBps: integer(stored.poolContributionBps, fallback.poolContributionBps ?? 0, 0, 10_000),
       poolMinimumForSpecial: integer(stored.poolMinimumForSpecial, fallback.poolMinimumForSpecial ?? 0, 0, 1_000_000_000),
       ...(id === 'teen_patti' ? {
-        targetRtp: 0.97, payoutScalePpm: 1_000_000, maximumPayoutMultiplier: 3,
+        princessPreviewQuotes: stored.princessPreviewQuotes===true,
+        targetRtp: stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):.97,
+        payoutScalePpm: 1_000_000,
+        maximumPayoutMultiplier: stored.princessPreviewQuotes===true?decimal(stored.maximumPayoutMultiplier,30,1,1000):3,
         minimumBet: 100, denominations: [100,500,1000,5000],
         outcomeWeights: undefined, autoPlay: false,
       } : {}),

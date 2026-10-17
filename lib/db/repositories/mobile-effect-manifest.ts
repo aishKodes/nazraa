@@ -97,6 +97,7 @@ export async function mobileEffectManifest() {
       updatedAt: row.updated_at,
       assetConfig: {
         ...config,
+        assetType: typeof config.assetType==='string'?config.assetType:null,
         assetUrl: primaryUrl,
         previewUrl,
         fallbackVisualUrl: previewUrl,

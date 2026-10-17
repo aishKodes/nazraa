@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  experimental: { serverActions: { bodySizeLimit: "8mb" } },
+  // Authenticated catalogue forms may include one bounded 12 MB PAG plus
+  // artwork/sound. Individual asset validators retain their stricter limits.
+  experimental: { serverActions: { bodySizeLimit: "16mb" } },
   turbopack: { root: process.cwd() },
 };
 

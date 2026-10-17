@@ -37,6 +37,15 @@ function assetChecksum(data: Buffer) {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function pagMinimumVersion(value: string|undefined){
+  const current=(value??'').split(/[.+]/).slice(0,3).map(Number),minimum=[2,4,93];
+  for(let n=0;n<3;n++){
+    if(!Number.isSafeInteger(current[n])||current[n]<minimum[n])return '2.4.93';
+    if(current[n]>minimum[n])return value;
+  }
+  return value??'2.4.93';
+}
+
 function assetUrl(id: string, extension?: string) {
   return `${publicAssetOrigin()}/api/v1/assets/gifts/${id}${
     extension ? `.${extension}` : ""
@@ -77,6 +86,7 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
     accent: accentValue(input.accentHex),
     ...input.effectConfig,
     assetType: input.animation?.assetType ?? (visualUrl ? "STATIC_IMAGE" : "NONE"),
+    ...(input.animation?.assetType==='PAG'?{minimumAppVersion:pagMinimumVersion(input.effectConfig.minimumAppVersion)}:{}),
     assetUrl: animationKey ?? visualUrl,
     previewUrl: visualUrl,
     fallbackVisualUrl: visualUrl,
@@ -139,6 +149,7 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
       accent: accentValue(input.accentHex),
       ...input.effectConfig,
       assetType,
+      ...(assetType==='PAG'?{minimumAppVersion:pagMinimumVersion(input.effectConfig.minimumAppVersion)}:{}),
       assetUrl: animationKey ?? visualUrl,
       previewUrl: visualUrl,
       fallbackVisualUrl: visualUrl,
@@ -327,6 +338,23 @@ export async function saveMobileSocialSettings(input: { scope: Scope; privateMes
   } });
 }
 
+export async function savePrincessPricing(input:{scope:Scope;mode:'HIDDEN_FIXED_V2'|'PUBLIC_QUOTE_V3';targetRtp:number;maximumMultiplier:number;reason:string}){
+  if(input.scope.account.role!=='MASTER')throw new Error('Forbidden.');
+  if(!Number.isFinite(input.targetRtp)||input.targetRtp<.5||input.targetRtp>1 || !Number.isFinite(input.maximumMultiplier)||input.maximumMultiplier<1||input.maximumMultiplier>30 || input.reason.trim().length<5)
+    throw new Error('Choose valid Princess pricing and a change reason.');
+  await withTransaction(async connection=>{
+    const [rows]=await connection.query<(RowDataPacket&{setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
+    const current=mobileGamesConfig(rows[0]?.setting_value);
+    const previous=current.games.teen_patti;
+    current.games.teen_patti={...current.games.teen_patti,princessPreviewQuotes:input.mode==='PUBLIC_QUOTE_V3',targetRtp:input.targetRtp,maximumPayoutMultiplier:input.maximumMultiplier};
+    await connection.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,
+      [JSON.stringify(current),input.scope.account.id]);
+    await connection.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
+      VALUES(?,?,'MASTER','settings.princess_pricing','settings','system_setting','mobile.games:teen_patti',?,?,?)`,
+      [randomUUID(),input.scope.account.id,JSON.stringify(previous),JSON.stringify(current.games.teen_patti),input.reason]);
+  });
+}
+
 export async function saveGameSettings(input: {
   scope: Scope;
   game: ConfigurableGameId;
@@ -358,10 +386,10 @@ export async function saveGameSettings(input: {
     (input.outcomeWeights?.length ?? 0) > 0
   )) throw new Error('Lion Vs Tiger test 1.1.5 has fixed 15-second betting, three outcomes, 2×/30×/2× returns and no game-specific stake cap.');
   if (input.game === 'teen_patti' && (
-    input.maximumPayoutMultiplier !== 3 || input.minimumBet !== 100 || input.autoPlay ||
+    input.minimumBet !== 100 || input.autoPlay ||
     [...new Set(input.denominations)].sort((a,b)=>a-b).join(',') !== '100,500,1000,5000' ||
     (input.outcomeWeights?.length ?? 0) > 0
-  )) throw new Error('TeenPatti has fixed 3× return, 3% fee and 100 / 500 / 1,000 / 5,000 chips. Weighted outcomes and Auto Play are not supported.');
+  )) throw new Error('Princess retains the 3% fee and 100 / 500 / 1,000 / 5,000 chips. Weighted outcomes and Auto Play are not supported. Pricing is managed separately by Master.');
   if (input.targetWinRate < 0 || input.targetWinRate > 1) throw new Error("Target win rate must be between 0 and 1.");
   if (input.maximumPayoutMultiplier < 1 || input.maximumPayoutMultiplier > 1000) throw new Error("Maximum payout multiplier must be between 1 and 1,000.");
   if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");

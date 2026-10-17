@@ -30,6 +30,7 @@ import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import {TEEN_PATTI_ID,dealChairRound,chairPreview,chairSettlement,teenPattiChairs} from '@/lib/games/teen-patti';
+import {princessQuoteRules,princessQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
@@ -1822,7 +1823,12 @@ function sharedGame(value: string): SharedRoundGame {
 
 async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig) {
   if (game === LION_VS_TIGER_ID) return dealLionTigerOutcome();
-  if(game===TEEN_PATTI_ID)return dealChairRound();
+  if(game===TEEN_PATTI_ID){
+    const dealt=dealChairRound();
+    if(!config.princessPreviewQuotes)return dealt;
+    const pricing=princessQuote(dealt.hands.map(h=>h.cards[0]),config.targetRtp,config.maximumPayoutMultiplier);
+    return {...dealt,rulesVersion:princessQuoteRules,multiplier:null,pricing,...commitPrincessQuote(dealt.hands,pricing)};
+  }
   if (game === teenPattiGame) {
     const hands = buildTeenPattiHands();
     const naturalWinner = strongestTeenPattiLane(hands);
@@ -1956,7 +1962,7 @@ function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, numbe
   const checked = validateSharedBets(game, bets, config);
   if (game === LION_VS_TIGER_ID) return {outcome, ...settleLionTiger(checked.bets, String(outcome.winner))};
   if(game===TEEN_PATTI_ID){
-    const result=chairSettlement(checked.bets,String(outcome.winner));
+    const result=princessSettlement(checked.bets,outcome);
     return {outcome,wager:result.wager,payout:result.grossPayout,commissionablePayout:result.grossPayout};
   }
   if (game === teenPattiGame) {
@@ -2138,7 +2144,7 @@ async function settleMaturedSharedRounds(
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
     const deduction = game===TEEN_PATTI_ID
-      ? chairSettlement(bets,String(finalizedOutcome.winner)).serviceFee
+      ? princessSettlement(bets,finalizedOutcome).serviceFee
       : grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
     const payout = grossPayout - deduction;
     await connection.execute(
@@ -2151,7 +2157,7 @@ async function settleMaturedSharedRounds(
     );
     if (!walletRows[0]) throw new Error("The game wallet is unavailable.");
     const balanceAfter = Number(walletRows[0].available_balance) + payout;
-    if (game === LION_VS_TIGER_ID && !Number.isSafeInteger(balanceAfter)) throw new Error('The game balance cannot be represented safely.');
+    if ((game === LION_VS_TIGER_ID || game===TEEN_PATTI_ID) && !Number.isSafeInteger(balanceAfter)) throw new Error('The game balance cannot be represented safely.');
     if (payout > 0) {
       await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [balanceAfter, walletRows[0].id]);
       await connection.execute(
@@ -2428,12 +2434,12 @@ export async function gameSharedRoundState(identity: MobileIdentity, gameValue: 
 }
 
 export async function placeSharedGameBets(identity: MobileIdentity, input: {
-  requestId: string; game: string; roundId: string; bets: Record<string, number>;
+  requestId: string; game: string; roundId: string; bets: Record<string, number>; quoteId?: string;
 }) {
   const game = sharedGame(input.game);
   const bets = canonicalBets(input.bets);
-  const transact = game === LION_VS_TIGER_ID ? withIdempotentTransaction : withTransaction;
-  return transact(async (connection) => {
+  const transact = game === LION_VS_TIGER_ID || game===TEEN_PATTI_ID ? withIdempotentTransaction : withTransaction;
+  const response = await transact(async (connection) => {
     const settings = await gameSettings(connection);
     const { timezone } = await loadFaceLiveRules(connection);
     await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
@@ -2448,9 +2454,21 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       if (String(existingRows[0].round_id) !== input.roundId || JSON.stringify(canonicalSharedRetryBets(game, asObject(existingRows[0].bets_json) as Record<string, number>)) !== JSON.stringify(canonicalSharedRetryBets(game, bets))) {
         throw new Error("This bet request ID was already used.");
       }
-      return sharedRoundStatePayload(connection, identity, round, config, now);
+      if(game===TEEN_PATTI_ID){
+        const [savedRounds]=await connection.query<RowDataPacket[]>('SELECT outcome_json FROM game_shared_rounds WHERE id=? LIMIT 1',[existingRows[0].round_id]);
+        const saved=asObject(savedRounds[0]?.outcome_json);
+        if(saved.rulesVersion===princessQuoteRules && input.quoteId!==saved.commitment)throw new Error('This bet request ID was already used with another payout quote.');
+      }
+      // A locking idempotency read can see a concurrent commit newer than
+      // this transaction's REPEATABLE READ snapshot. Do not acknowledge from
+      // that stale snapshot (wallet/myBets can predate the accepted command).
+      // Finish this transaction, then obtain one fresh authenticated state.
+      return null;
     }
     if (round.id !== input.roundId || now >= new Date(round.betting_ends_at)) throw new Error("Betting has closed for this round.");
+    const roundOutcome=asObject(round.outcome_json);
+    if(game===TEEN_PATTI_ID && roundOutcome.rulesVersion===princessQuoteRules && input.quoteId!==roundOutcome.commitment)
+      throw new Error("Use the latest Nazraa app to play Princess with visible cards and current payout quotes. No Coins were deducted.");
     const checked = validateSharedBets(game, bets, config);
     if (checked.total <= 0) throw new Error("Choose a positive game bet.");
     const [roundWagerRows] = await connection.query<(RowDataPacket & { total: number })[]>(
@@ -2488,7 +2506,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       `INSERT INTO ledger_transactions
         (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, amount, status, reason, metadata)
        VALUES (?, ?, ?, 'COIN', 'GAME_BET', 'APPLICATION_USER', ?, 'GAME', ?, 'COMPLETED', ?, ?)`,
-      [ledgerId, code("GSB"), `SHARED_BET:${identity.userId}:${input.requestId}`, identity.userId, checked.total, `${game} shared bet`, JSON.stringify({ game, sharedRoundId: round.id, requestId: input.requestId, bets: checked.bets })],
+      [ledgerId, code("GSB"), `SHARED_BET:${identity.userId}:${input.requestId}`, identity.userId, checked.total, `${game} shared bet`, JSON.stringify({ game, sharedRoundId: round.id, requestId: input.requestId, bets: checked.bets, ...(game===TEEN_PATTI_ID?{quoteId:input.quoteId,rulesVersion:roundOutcome.rulesVersion}:{}) })],
     );
     const requestRowId = randomUUID();
     await connection.execute(
@@ -2517,6 +2535,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     }
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
+  return response ?? gameSharedRoundState(identity,game);
 }
 
 function gameRoundResponse(row: RowDataPacket) {

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
-  const assetId = id.replace(/\.(?:json|webp|mp4|webm|mp3|ogg|m4a)$/i, "");
+  const assetId = id.replace(/\.(?:json|webp|mp4|webm|mp3|ogg|m4a|pag)$/i, "");
   const [rows] = await db().query<(RowDataPacket & { mime_type: string; image_data: Buffer; byte_size: number; checksum_sha256: string })[]>(
     `SELECT asset.mime_type, asset.image_data, asset.byte_size, asset.checksum_sha256 FROM gift_assets asset
      INNER JOIN gift_catalog gift ON gift.active = TRUE AND (

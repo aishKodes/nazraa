@@ -52,7 +52,12 @@ export function dealChairRound(){
 /** No dealt card may be public while a wager can still be accepted. A real
  * face-up card makes the 3x/3% paytable exploitable even with an unbiased deal.
  * Omit cards (not an empty array): old APKs index any non-null card array. */
-export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):{cards?:number[]}{
+export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
+ const quote=outcome.pricing as Record<string,unknown>|undefined;
+ if(outcome.rulesVersion==='PRINCESS_PUBLIC_CARD_QUOTE_V3' && quote?.rulesVersion===outcome.rulesVersion){
+  return {cards:quote.publicCards as number[],rulesVersion:quote.rulesVersion,quoteId:outcome.commitment,
+   grossMultiplierPpm:quote.grossMultiplierPpm,targetRtpPpm:quote.targetRtpPpm,feeBps:quote.feeBps};
+ }
  if(!bettingClosed)return {};
  const hands=outcome.hands as {cards:number[]}[];
  if(!Array.isArray(hands)||hands.length!==3)throw new Error('TeenPatti round is unavailable.');

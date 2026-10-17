@@ -26,6 +26,7 @@ async function main() {
     user: "root",
     multipleStatements: true,
   });
+  await root.query("SET time_zone = '+00:00'");
   await root.query(
     `CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
   );
@@ -42,6 +43,10 @@ async function main() {
   // Production obtains this proxy lazily in db(); the isolated harness
   // supplies its own pool, so bind the same local pool for repository calls.
   global.nazraaInstrumentedPool = global.nazraaPool;
+  // Match the UTC production MySQL container, regardless of this Mac's zone.
+  const qaConnections = await Promise.all(Array.from({length: 8}, () => global.nazraaPool!.getConnection()));
+  await Promise.all(qaConnections.map(connection => connection.query("SET time_zone = '+00:00'")));
+  for (const connection of qaConnections) connection.release();
   process.env.DOCUMENT_ENCRYPTION_KEY = "nazraa-local-mobile-qa-only-key-2026";
   let keep = false;
   try {
@@ -5202,12 +5207,37 @@ async function main() {
       countryCode: "IN",
     });
     await root.execute(
-      `UPDATE live_session_accounting SET media_segment_seconds = 3600,
-         valid_media_seconds = 3600, media_publishing = TRUE,
+      `UPDATE live_session_accounting SET media_segment_seconds = 3599,
+         valid_media_seconds = 3599, eligible_seconds_committed = 3599,
+         media_publishing = TRUE,
+         last_media_evidence_at = CURRENT_TIMESTAMP(3) - INTERVAL 1200000 MICROSECOND,
          last_media_heartbeat_at = CURRENT_TIMESTAMP(3)
        WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)`,
       [maleOwnerLiveCode],
     );
+    // A signed provider transition must finish the eligible block even when
+    // the app disappears before sending another heartbeat/finalize request.
+    const thresholdEvent = (event: string) => {
+      const payload = { id: `qa-threshold-${randomUUID()}`, event,
+        createdAt: new Date().toISOString(), room: { name: maleOwnerLiveCode },
+        participant: { identity: otherAgencyOwner.publicId },
+        track: { sid: 'qa-threshold-host-video', type: 'VIDEO' } };
+      const normalized = providerEvidence.normalizeLiveKitWebhookEvent(payload, JSON.stringify(payload));
+      assert.ok(normalized);
+      return normalized;
+    };
+    await providerEvidence.recordLiveKitMediaEvidence(thresholdEvent('track_published'));
+    const thresholdUnpublish = thresholdEvent('track_unpublished');
+    await providerEvidence.recordLiveKitMediaEvidence(thresholdUnpublish);
+    assert.equal((await providerEvidence.recordLiveKitMediaEvidence(thresholdUnpublish)).duplicate, true);
+    const [thresholdAccounting] = await root.query<RowDataPacket[]>(
+      `SELECT media_segment_seconds, eligible_duration_seconds, media_publishing, reward_rule_id
+       FROM live_session_accounting WHERE room_id=(SELECT id FROM live_rooms WHERE room_code=?)`, [maleOwnerLiveCode]);
+    assert.ok(Number(thresholdAccounting[0].media_segment_seconds) >= 3600,
+      `provider checkpoint must reach the threshold: ${JSON.stringify(thresholdAccounting[0])}`);
+    assert.equal((await product.mobileBootstrap(otherAgencyOwner)).liveRewards.filter(
+      (reward: { status: string }) => reward.status === 'unclaimed').length, 1,
+      'signed unpublish creates exactly one claimable hour before app finalization');
     assert.equal(
       (
         await rooms.finalizeLiveSession(
@@ -5271,6 +5301,8 @@ async function main() {
     const boardTests=await import('./party-board-history-tests');
     await boardTests.verifyPartyBoardHistory(root,user,owner);
     await (await import('./audio-party-pk-tests')).verifyAudioPartyPk(root,user);
+    await (await import('./princess-quoted-integration-tests')).verifyPrincessQuotes(root,owner,master);
+    await (await import('./pag-catalog-integration-tests')).verifyPagCatalog(master);
 
     if (process.env.NAZRAA_QA_KEEP === "1") {
       const fixtures = [];

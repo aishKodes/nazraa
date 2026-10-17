@@ -4,7 +4,7 @@ import { createClient, type RedisClientType } from "redis";
  * details remain on authenticated SQL APIs. */
 export type SharedGameRealtimeState = {
   game: "teen_patti" | "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football" | "lion_vs_tiger";
-  publicPreview?: {cards?:number[]};
+  publicPreview?: Record<string,unknown>&{cards?:number[]};
   round: {
     id: string;
     number: number;

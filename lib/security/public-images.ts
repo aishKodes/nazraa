@@ -16,12 +16,12 @@ export type PreparedPublicAnimation = {
 };
 
 export type PreparedPublicEffect = {
-  mimeType: "application/json" | "image/webp" | "video/mp4" | "video/webm";
+  mimeType: "application/json" | "image/webp" | "video/mp4" | "video/webm" | "application/octet-stream";
   data: Buffer;
   byteSize: number;
   originalName: string;
-  extension: "json" | "webp" | "mp4" | "webm";
-  assetType: "LOTTIE" | "ANIMATED_WEBP" | "VIDEO";
+  extension: "json" | "webp" | "mp4" | "webm" | "pag";
+  assetType: "LOTTIE" | "ANIMATED_WEBP" | "VIDEO" | "PAG";
 };
 
 export type PreparedPublicSound = {
@@ -151,6 +151,8 @@ export async function preparePublicEffect(
   maxBytes = 3 * 1024 * 1024,
   label = "Effect animation",
 ): Promise<PreparedPublicEffect> {
+  const pag=file.name.toLowerCase().endsWith('.pag');
+  if(pag && maxBytes===3*1024*1024) maxBytes=12*1024*1024;
   if (!file.size) throw new Error(`Choose a ${label.toLowerCase()} file.`);
   if (file.size > maxBytes) throw new Error(`${label} must be ${(maxBytes / 1024 / 1024).toFixed(1).replace(".0", "")} MB or smaller.`);
   const lowerName = file.name.toLowerCase();
@@ -160,6 +162,10 @@ export async function preparePublicEffect(
   }
 
   const data = Buffer.from(await file.arrayBuffer());
+  if(pag) {
+    if(data.length<8 || data.subarray(0,3).toString('ascii')!=='PAG' || !['','application/octet-stream','application/x-pag'].includes(file.type)) throw new Error(`${label} PAG data is invalid.`);
+    return {mimeType:'application/octet-stream',data,byteSize:data.length,originalName:`${safeStem(file.name,'effect')}.pag`,extension:'pag',assetType:'PAG'};
+  }
   if (lowerName.endsWith(".webp")) {
     if (file.type !== "image/webp" || detectedMime(data) !== "image/webp") {
       throw new Error(`${label} WebP data is invalid.`);
@@ -208,7 +214,7 @@ export async function preparePublicEffect(
     };
   }
 
-  throw new Error(`${label} must be Lottie JSON, animated WebP, MP4, or WebM.`);
+  throw new Error(`${label} must be PAG, Lottie JSON, animated WebP, MP4, or WebM.`);
 }
 
 /** Validate a short optional sound paired with a visual effect. */

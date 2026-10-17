@@ -62,11 +62,11 @@ export function GiftArtworkFields({
         style={preview ? { backgroundImage: `url(${JSON.stringify(preview)})` } : undefined}
       >{preview ? "" : "Choose item artwork"}</span>
     </label>}
-    <label>Animation <span>Lottie, animated WebP, MP4 or WebM; up to 3 MB</span>
+    <label>Animation <span>PAG up to 12 MB; Lottie, animated WebP, MP4 or WebM up to 3 MB</span>
       <input
         name="animation"
         type="file"
-        accept="application/json,.json,image/webp,video/mp4,video/webm,.webm"
+        accept="application/json,.json,image/webp,video/mp4,video/webm,.webm,.pag,application/x-pag"
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (!file) return;
@@ -74,7 +74,7 @@ export function GiftArtworkFields({
           const next = URL.createObjectURL(file);
           setAnimationObjectUrl(next);
           setAnimationPreview(next);
-          setAnimationPreviewType(file.type.startsWith("video/") ? "VIDEO" : file.type === "image/webp" ? "ANIMATED_WEBP" : "LOTTIE");
+          setAnimationPreviewType(file.name.toLowerCase().endsWith('.pag')?'PAG':file.type.startsWith("video/") ? "VIDEO" : file.type === "image/webp" ? "ANIMATED_WEBP" : "LOTTIE");
         }}
       />
       {animationPreview ? <span className="effect-file-preview">
@@ -82,7 +82,7 @@ export function GiftArtworkFields({
           ? <video src={animationPreview} controls muted playsInline preload="metadata" />
           : animationPreviewType === "ANIMATED_WEBP"
             ? <span role="img" aria-label="Animation preview" style={{ backgroundImage: `url(${JSON.stringify(animationPreview)})`, backgroundPosition: "center", backgroundRepeat: "no-repeat", backgroundSize: "contain", display: "block", minHeight: 180 }} />
-            : <a href={animationPreview} target="_blank" rel="noreferrer">Open validated Lottie preview file</a>}
+            : <a href={animationPreview} target="_blank" rel="noreferrer">{animationPreviewType==='PAG'?'Download PAG for native preview (use artwork thumbnail above)':'Open validated Lottie preview file'}</a>}
       </span> : null}
     </label>
     {currentAnimationKey ? <label className="checkbox-row">
