@@ -226,7 +226,10 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
       );
     }
 
-    const isHost = room.host_public_id === evidence.participantIdentity;
+    // MySQL returns ordinary BIGINT public IDs as numbers, while LiveKit
+    // identities are strings. A TS annotation does not coerce the runtime
+    // value: strict number/string comparison used to skip every Host event.
+    const isHost = String(room.host_public_id) === evidence.participantIdentity;
     if (!isHost && member.media_role === "AUDIO_GUEST") {
       const [microphones] = await connection.query<(RowDataPacket & { count: number })[]>(
         `SELECT COUNT(*) count FROM livekit_active_media_tracks
