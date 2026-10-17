@@ -19,7 +19,8 @@ invalid existing gift assets. API reports ready. No MySQL, Redis, realtime,
 worker, Caddy or OCI LiveKit restart/configuration change.
 
 Current production beauty/landmarks enabled, saved default strength 78 preserved.
-Princess quote mode remains held until quote-aware APK distribution is verified.
+Princess quote mode was held until quote-aware APK distribution was verified;
+the final activation is recorded below.
 
 ## Confirmed defects, not speculative patches
 
@@ -120,7 +121,57 @@ the existing wrapper and replacing the test transport. Neither is hidden as a
 clean production QA result. The final compiled release is tested separately.
 
 Three clients share one debug process and SwiftShader: observed roughly
-430–488 MiB PSS, latest 455,157 KiB PSS / 498,912 KiB RSS, sampled process CPU
+450 MB-class PSS, latest 455,157 KiB PSS / 498,912 KiB RSS, sampled process CPU
 55.1% (four-vCPU emulator scale). These are not a single physical Host's battery,
 hardware-GPU or production-release memory figures. Full production two-account
 seat/payment E2E is not inferred from this local transport harness.
+
+### Signed artifacts and public distribution completed
+
+- Version 2.4.93+7405, package `com.nazraa.live`, min SDK 24 / target SDK 36.
+- APK `Nazraa-Live-2.4.93-7405-release.apk`, 239,830,662 bytes.
+  SHA-256 `37bf0bc21fce2588a3beb8bae93adf1d8241aa7ff294ac39144a797fce127401`.
+- AAB `Nazraa-Live-2.4.93-7405-release.aab`, 186,566,412 bytes.
+  SHA-256 `fe517cdba338502bbae9666ee6ad0f5db8baef9aec056247472d475b3afba5f8`.
+- APK signature verified; AAB reports `jar verified`. Its normal self-signed
+  upload-certificate chain warning is not a failed integrity verification.
+  Both retain certificate SHA-256
+  `5e3d3fb10afd21f77c57721b05184453f0061d23e3000416ce409d3ead9367c4`.
+- Embedded provenance extracted from the final APK agrees with mobile commit
+  `948c4b9a275685627d98e948b0f168807473ab40`, branch production, release,
+  timestamp `2026-10-17T14:07:42.733Z`, source digest
+  `9d5dc23d8934b644f9a99a354ae0825eac7689daa5db47fbccbb7af588b3a881`.
+- Exact signed APK installed successfully on Android 16. Existing authenticated
+  Home opened; a real production Face Host video rendered; Gift panel loaded
+  and targeted that Host correctly; Party connected, seats/feed loaded and
+  Princess opened without replacing the media surface. No production wager or
+  gift was sent to an unrelated user's room for this smoke test.
+- This existing account is not face-verified, and its composer correctly
+  requires automatic verification before Face Host creation. It was not
+  promoted/bypassed to manufacture production Host QA. Host publish/reconnect
+  transport coverage is the isolated real-adapter harness described above.
+- GitHub public release published:
+  https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.4.93
+  APK, AAB and SHA256SUMS uploaded. GitHub asset digests agree. Full public APK
+  streamed back and its SHA-256 matches the local signed artifact.
+- https://nazralive.in/download and /release/latest show 2.4.93 / 7405 with the
+  correct public APK URL, size and checksum. Screenshot saved alongside report.
+- Remote latestVersion updated to 2.4.93; minimumVersion remains 2.1.0.
+  Maintenance and all protected non-mobile settings preserved by audited helper.
+- Princess PUBLIC_QUOTE_V3 enabled by owner-authorized audited maintenance only
+  after artifact verification: target RTP .97, gross cap 30×. Other game config
+  bytes remain unchanged; old round/payout snapshots were not repriced. Exact
+  release then displayed three real open first cards and six-decimal quotes
+  (observed 2.760868× / 3.269130× / 3.012924×). Existing older apps need this
+  release to bet in quote rounds; unsupported missing quote IDs fail before
+  debit, rather than exposing undisclosed odds.
+
+### Remaining measurement/content limits
+
+No hardware midrange/flagship FPS, battery or thermal certification; no complete
+human lighting/skin-tone/movement matrix. No new owned production PAG artwork
+was supplied. Diagnostics are local allowlisted counters/trace, not a fleet
+analytics dashboard. Production two-account Host/Guest financial E2E was not
+performed, and is not represented by container health or the loopback test.
+These limits are explicit; the published artifact is not claimed error-free
+under every physical device/network condition.
