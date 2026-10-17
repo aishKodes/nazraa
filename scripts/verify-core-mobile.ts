@@ -4837,6 +4837,13 @@ async function main() {
     );
     await (await import('./host-payout-tests')).verifyHostPayouts(root,user,master.account,agencyScope.account);
 
+    // This fixture represents an actively present Admin. The financial suite
+    // above can exceed the real two-minute presence TTL on a busy QA host;
+    // refresh only this isolated fixture, not the production transfer rule.
+    await root.execute(
+      "UPDATE live_room_members SET last_seen_at=CURRENT_TIMESTAMP(3) WHERE room_id=(SELECT id FROM live_rooms WHERE room_code=?) AND application_user_id=? AND left_at IS NULL",
+      [roomCode,roomAdmin.userId],
+    );
     const ownerExit = await rooms.leaveLiveRoom(owner, roomCode);
     assert.equal(ownerExit.transferredTo, roomAdmin.publicId);
     const [transferredRoom] = await root.query<RowDataPacket[]>(
