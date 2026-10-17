@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS party_room_music (
+  room_id CHAR(36) NOT NULL PRIMARY KEY,
+  track_key VARCHAR(40) NULL,
+  playing BOOLEAN NOT NULL DEFAULT FALSE,
+  position_ms INT UNSIGNED NOT NULL DEFAULT 0,
+  version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_by CHAR(36) NOT NULL,
+  CONSTRAINT fk_party_music_room FOREIGN KEY(room_id) REFERENCES live_rooms(id)
+) ENGINE=InnoDB;

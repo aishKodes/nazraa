@@ -1094,7 +1094,8 @@ export async function updateMobileProfile(
   input: {
     displayName: string;
     bio: string;
-    gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY";
+    gender?: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY";
+    genderChangeConfirmed?: boolean;
     countryCode: string;
     languageCode: string;
     whatsappE164: string;
@@ -1111,12 +1112,12 @@ export async function updateMobileProfile(
     : null;
   const profile = await withTransaction(async (connection) => {
     const [updated] = await connection.execute<ResultSetHeader>(
-      `UPDATE application_users SET full_name = ?, bio = ?, gender = ?, country_code = ?, language_code = ?, whatsapp_e164 = ?
+      `UPDATE application_users SET full_name = ?, bio = ?, gender = COALESCE(?, gender), country_code = ?, language_code = ?, whatsapp_e164 = ?
        WHERE id = ?`,
       [
         input.displayName,
         input.bio,
-        input.gender,
+        input.genderChangeConfirmed === true ? input.gender ?? null : null,
         input.countryCode,
         input.languageCode,
         input.whatsappE164,
@@ -1495,7 +1496,7 @@ export async function joinLiveRoom(
        ON DUPLICATE KEY UPDATE seat_index = IF(left_at IS NULL, seat_index, NULL),
          seat_session_id = IF(left_at IS NULL, seat_session_id, NULL),
          seat_version = IF(left_at IS NULL, seat_version, seat_version + 1),
-         room_role = IF(room_role IN ('OWNER','ADMIN') OR left_at IS NULL, room_role, VALUES(room_role)),
+         room_role = IF(VALUES(room_role) IN ('OWNER','ADMIN'), VALUES(room_role), IF(room_role='ADMIN',IF(seat_index IS NULL,'AUDIENCE','SPEAKER'),IF(left_at IS NULL,room_role,VALUES(room_role)))),
          media_role = IF(left_at IS NULL, media_role, VALUES(media_role)),
          muted = IF(left_at IS NULL, muted, VALUES(muted)), muted_by_staff = IF(left_at IS NULL, muted_by_staff, FALSE), left_at = NULL, last_seen_at = CURRENT_TIMESTAMP(3)`,
       [
@@ -3574,11 +3575,11 @@ export async function setRoomAdmin(
     const [targets] = await connection.query<
       (RowDataPacket & { id: string })[]
     >(
-      `SELECT user.id FROM live_room_members member
-       INNER JOIN application_users user ON user.id = member.application_user_id
-       WHERE member.room_id = ? AND (member.left_at IS NULL OR (? = TRUE AND ? = FALSE AND EXISTS (SELECT 1 FROM party_room_admins a WHERE a.room_id=member.room_id AND a.application_user_id=user.id AND a.revoked_at IS NULL))) AND user.public_id = ?
+      `SELECT user.id FROM application_users user
+       LEFT JOIN live_room_members member ON user.id = member.application_user_id AND member.room_id = ?
+       WHERE ((member.application_user_id IS NOT NULL AND member.left_at IS NULL) OR (? = TRUE AND ? = FALSE AND EXISTS (SELECT 1 FROM party_room_admins a WHERE a.room_id=? AND a.application_user_id=user.id AND a.revoked_at IS NULL))) AND user.public_id = ?
          AND user.account_status = 'ACTIVE' LIMIT 1`,
-      [room.id, room.room_type==='PARTY', input.makeAdmin, input.targetPublicId],
+      [room.id, room.room_type==='PARTY', input.makeAdmin,room.id, input.targetPublicId],
     );
     const target = targets[0];
     if (!target || target.id === identity.userId)

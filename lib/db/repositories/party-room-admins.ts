@@ -15,7 +15,7 @@ export async function partyRoomAdmins(
       "Only the Party Room Owner can manage persistent Room Admins.",
     );
   const [admins] = await db().query<RowDataPacket[]>(
-    `SELECT u.public_id publicId,u.full_name name,a.granted_at grantedAt,m.left_at IS NULL present
+    `SELECT u.public_id publicId,u.full_name name,a.granted_at grantedAt,(m.application_user_id IS NOT NULL AND m.left_at IS NULL) present
     FROM party_room_admins a JOIN application_users u ON u.id=a.application_user_id
     LEFT JOIN live_room_members m ON m.room_id=a.room_id AND m.application_user_id=a.application_user_id
     WHERE a.room_id=? AND a.revoked_at IS NULL ORDER BY a.granted_at`,

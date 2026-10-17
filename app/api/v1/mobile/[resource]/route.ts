@@ -71,6 +71,8 @@ import {
 } from "@/lib/services/livekit-room-authority";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import {partyRoomAdmins} from '@/lib/db/repositories/party-room-admins';
+import {partyCoinReward} from '@/lib/db/repositories/party-coin-rewards';
+import {partyMusic} from '@/lib/db/repositories/party-music';
 import {
   isLiveKitConfigured,
   mediaProviderFor,
@@ -158,6 +160,8 @@ const mediaCriticalResources = new Set([
   "room-config",
   "room-presence",
   "room-media-bootstrap",
+  "party-coin-reward",
+  "party-music",
 ]);
 
 /**
@@ -603,6 +607,20 @@ export async function POST(
         await expireEndedVipMemberships();
       }
       const body = await request.json();
+      if(resource==='party-music') {
+        const parsed=z.object({roomCode:z.string().min(3).max(80),action:z.enum(['state','search','play','pause','resume','stop']),trackId:z.string().max(40).optional(),query:z.string().max(120).optional()}).parse(body);
+        const result=await partyMusic(identity,parsed);
+        if(!['state','search'].includes(parsed.action))notifyRoom(parsed.roomCode,'settings');
+        return NextResponse.json(result,{headers:{'Cache-Control':'private, no-store'}});
+      }
+      if (resource === 'party-coin-reward') {
+        const parsed = z.object({action:z.enum(['state','heartbeat','suspend','claim']),
+          roomCode:z.string().trim().min(3).max(80).optional(),
+          intervalIndex:z.number().int().min(1).max(5).optional(), requestId:z.string().uuid().optional()})
+          .refine(v=>v.action!=='claim'||(v.intervalIndex!=null&&v.requestId!=null))
+          .refine(v=>v.action!=='heartbeat'||v.roomCode!=null).parse(body);
+        return NextResponse.json(await partyCoinReward(identity,parsed),{headers:{'Cache-Control':'private, no-store'}});
+      }
       if (resource === "room-seat") {
         const parsed = z
           .object({
@@ -758,7 +776,8 @@ export async function POST(
               "MALE",
               "NON_BINARY",
               "PREFER_NOT_TO_SAY",
-            ]),
+            ]).optional(),
+            genderChangeConfirmed: z.boolean().optional(),
             countryCode: z
               .string()
               .trim()

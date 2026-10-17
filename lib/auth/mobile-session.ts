@@ -225,7 +225,7 @@ export async function createGoogleMobileSession(input: {
       if (input.profile && profileRequired) {
         await connection.execute(
           `UPDATE application_users SET full_name = ?, avatar_url = COALESCE(?, avatar_url), country_code = ?,
-             date_of_birth = ?, gender = ?, language_code = ?, whatsapp_e164 = ?, onboarding_completed = TRUE, is_host = TRUE
+             date_of_birth = ?, gender = COALESCE(gender, ?), language_code = ?, whatsapp_e164 = ?, onboarding_completed = TRUE, is_host = TRUE
            WHERE id = ?`,
           [input.profile.fullName, input.profile.avatarUrl || google.picture || null, input.profile.countryCode,
             input.profile.dateOfBirth, input.profile.gender, input.profile.languageCode || "en",

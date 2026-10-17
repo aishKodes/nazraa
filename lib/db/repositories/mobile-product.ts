@@ -986,7 +986,17 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
       [randomUUID(), roomId, identity.userId, roomType, businessDateFor(liveRules.timezone), rewardRuleRows[0].id],
     );
     await connection.execute("UPDATE live_session_accounting SET presentation_snapshot = ? WHERE room_id = ? AND presentation_snapshot IS NULL", [JSON.stringify({ title: input.title, themeIndex: input.themeIndex, themeEnabled: input.themeEnabled, seatCount: input.seatCount }), roomId]);
-    if (roomType === "PARTY") await saveOwnerRoomProfile(connection, identity.userId, input);
+    if (roomType === "PARTY") {
+      await saveOwnerRoomProfile(connection, identity.userId, input);
+      // Recreating the owner's Party board must not expire permanent admins.
+      // Copy only the latest previous board, including its explicit revokes.
+      await connection.execute(`INSERT INTO party_room_admins
+        (room_id,application_user_id,granted_by_application_user_id,granted_at,revoked_at)
+        SELECT ?,a.application_user_id,a.granted_by_application_user_id,a.granted_at,a.revoked_at
+        FROM party_room_admins a WHERE a.room_id=(SELECT id FROM live_rooms
+          WHERE host_application_user_id=? AND room_type='PARTY' AND id<>?
+          ORDER BY started_at DESC,id DESC LIMIT 1)`,[roomId,identity.userId,roomId]);
+    }
     await connection.execute(
       "INSERT INTO live_room_members (room_id, application_user_id, room_role, media_role, muted) VALUES (?, ?, 'OWNER', ?, FALSE)",
       [roomId, identity.userId, roomType === "PARTY" ? "PARTY_OWNER" : "HOST"],

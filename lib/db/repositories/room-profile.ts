@@ -22,7 +22,7 @@ export async function ownerRoomProfile(identity: MobileIdentity) {
   const [profiles] = await db().query<RowDataPacket[]>("SELECT title, seat_count, theme_index, theme_enabled FROM owner_room_profiles WHERE owner_application_user_id = ?", [identity.userId]);
   if (profiles[0]) return { profile: presentation(profiles[0]) };
   // Existing Hosts need no reset/migration of their historical rooms.
-  const [rooms] = await db().query<RowDataPacket[]>("SELECT title, seat_count, theme_index, theme_enabled FROM live_rooms WHERE host_application_user_id = ? AND room_type = 'PARTY' ORDER BY created_at DESC LIMIT 1", [identity.userId]);
+  const [rooms] = await db().query<RowDataPacket[]>("SELECT title, seat_count, theme_index, theme_enabled FROM live_rooms WHERE host_application_user_id = ? AND room_type = 'PARTY' ORDER BY started_at DESC,id DESC LIMIT 1", [identity.userId]);
   return { profile: rooms[0] ? presentation(rooms[0]) : null };
 }
 export async function roomPresentation(identity: MobileIdentity, roomCode: string) {
