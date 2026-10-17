@@ -37,6 +37,29 @@ type EquippedCosmeticRow = EntitlementRow & {
 
 export type CosmeticLoadoutPayload = Record<string, ReturnType<typeof presentationPayload>>;
 
+// Cosmetic metadata only. ADMIN/BD share a mobile permission role with Country
+// Manager, so the client must never infer this decoration from that role.
+const countryManagerPresentation: ReturnType<typeof presentationPayload> = {
+  itemId: "role_country_manager", name: "Country Manager", type: "ROLE_PRESENTATION",
+  visualUrl: null, animationKey: null, accent: 0xffffc857, source: "ROLE",
+  effectConfig: { presentationRole: "COUNTRY_MANAGER" },
+};
+
+async function countryManagerPresentationIds(executor: PoolConnection | ReturnType<typeof db>, publicIds: readonly string[]) {
+  if (!publicIds.length) return new Set<string>();
+  const [rows] = await executor.query<RowDataPacket[]>(
+    `SELECT DISTINCT user.public_id FROM application_users user
+     INNER JOIN platform_accounts account ON account.status = 'ACTIVE'
+       AND account.role = 'COUNTRY_MANAGER'
+       AND (account.application_user_id = user.id
+         OR account.application_user_id = user.external_user_id
+         OR account.application_user_id = CAST(user.public_id AS CHAR))
+     WHERE user.account_status = 'ACTIVE'
+       AND user.public_id IN (${publicIds.map(() => "?").join(",")})`, [...publicIds],
+  );
+  return new Set(rows.map((row) => String(row.public_id)));
+}
+
 type CachedCosmeticLoadout = {
   expiresAtMs: number;
   loadout: CosmeticLoadoutPayload;
@@ -173,6 +196,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
 
   const placeholders = unresolvedIds.map(() => "?").join(",");
   const executor = connection ?? db();
+  const countryManagers = await countryManagerPresentationIds(executor, unresolvedIds);
   const [rows] = await executor.query<EquippedCosmeticRow[]>(
     `SELECT user.public_id,
             entitlement.id entitlement_id, entitlement.source, entitlement.acquired_at,
@@ -210,6 +234,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
   // cosmetic and repeatedly proving that fact was a measurable presence cost.
   for (const publicId of unresolvedIds) {
     const loadout = loadouts.get(publicId) ?? {};
+    if (countryManagers.has(publicId)) loadout.ROLE_PRESENTATION = countryManagerPresentation;
     loadouts.set(publicId, loadout);
     cacheEquippedLoadout(publicId, loadout);
   }
@@ -247,6 +272,12 @@ async function snapshotOnConnection(connection: PoolConnection, userId: string) 
     if (row.equipped_at == null || new Date(row.expires_at).getTime() <= Date.now() || !Boolean(row.active)) continue;
     const type = presentationType(String(row.catalog_type));
     if (!loadout[type]) loadout[type] = presentationPayload(row);
+  }
+  const [owners] = await connection.query<RowDataPacket[]>(
+    "SELECT public_id FROM application_users WHERE id = ? LIMIT 1", [userId],
+  );
+  if (owners[0] && (await countryManagerPresentationIds(connection, [String(owners[0].public_id)])).size) {
+    loadout.ROLE_PRESENTATION = countryManagerPresentation;
   }
   return {
     entitlements: rows.map(entitlementPayload),
