@@ -29,7 +29,7 @@ import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
-import {TEEN_PATTI_ID,dealChairRound,chairPreview,chairSettlement,teenPattiChairs} from '@/lib/games/teen-patti';
+import {TEEN_PATTI_ID,dealChairRound,chairPreview,teenPattiChairs} from '@/lib/games/teen-patti';
 import {princessQuoteRules,princessQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";

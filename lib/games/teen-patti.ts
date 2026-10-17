@@ -49,9 +49,9 @@ export function dealChairRound(){
  for(let i=51;i>0;i--){const j=randomInt(i+1);[deck[i],deck[j]]=[deck[j],deck[i]];}
  return chairOutcomeFromDeck(deck);
 }
-/** No dealt card may be public while a wager can still be accepted. A real
- * face-up card makes the 3x/3% paytable exploitable even with an unbiased deal.
- * Omit cards (not an empty array): old APKs index any non-null card array. */
+/** A real face-up card makes the legacy fixed 3x/3% paytable exploitable.
+ * Only V3's committed conditional-odds quote permits a betting-time preview.
+ * V2 omits cards (not an empty array): old APKs index any non-null array. */
 export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
  if(outcome.rulesVersion==='PRINCESS_PUBLIC_CARD_QUOTE_V3' && quote?.rulesVersion===outcome.rulesVersion){
