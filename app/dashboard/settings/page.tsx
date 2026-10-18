@@ -140,10 +140,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </form>
     </Card>}
     {isMaster && <Card className="settings-card"><h2>Nazraa on-device beauty tuning</h2>
-      <p>Bounded 0–100 Master calibration. Compatible testing apps expose Beauty, Fairness, Lips and Face independently; older APKs retain their existing controls. No frames leave the device. Settings apply on the next media-policy refresh, without restarting Live.</p>
+      <p>Bounded 0–100 Master calibration. V5 testing apps expose Beauty, Fairness, Light, Lips and Face independently; older APKs ignore V5-only parameters. Exposure/WB are shader corrections, not unsupported sensor controls. No frames leave the device. Updates apply on media-policy refresh without restarting Live.</p>
       <form action={publishBeautyPolicy} className="form-grid">
         {Object.entries(beautyControls).map(([key,value])=><label key={key}>{key.replace(/([A-Z])/g,' $1')}<input name={key} type="number" min="0" max="100" step="1" required defaultValue={beautyTuning(mediaFeatures?.naturalBeautyTuning)[key] ?? value}/></label>)}
-        <div className="span-two"><h3>Public slider curves</h3><p>Exponent: 0.5–3; larger values make the upper range stronger relative to the lower range. Cross-channel weights: 0–1. Zero stays zero; Face geometry remains bounded by Master calibration. New Hosts start at 70 / 75 / 35 / 40.</p></div>
+        <div className="span-two"><h3>Public slider curves</h3><p>Exponent: 0.5–3. Zero stays zero; geometry remains bounded. New V5 Hosts start Beauty 80 / Fairness 85 / Light 75 / Lips 35 / Face 40. Explicit saved choices and Beauty OFF are preserved. Fairness remaps complexion; Light controls relighting independently.</p></div>
         {Object.entries(beautyPublicMappingDefaults).map(([key,value])=><label key={key}>{key.replace(/([A-Z])/g,' $1')}<input name={`curve_${key}`} type="number" min={key.endsWith("Exponent")?.5:0} max={key.endsWith("Exponent")?3:1} step=".05" required defaultValue={beautyPublicMapping(mediaFeatures?.naturalBeautyPublicMapping)[key] ?? value}/></label>)}
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500}/></label>
         <button className="primary-button">Publish device beauty tuning</button>
