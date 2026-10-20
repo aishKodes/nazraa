@@ -6,6 +6,8 @@ import mysql,{type RowDataPacket} from 'mysql2/promise';
 import {autoResumeDecision} from '../lib/services/live-auto-resume-policy';
 registerHooks({resolve(s,c,n){return n(s==='server-only'?'next/dist/compiled/server-only/empty.js':s,c);}});
 async function main(){
+  const rewardAmount=Number(process.env.NAZRAA_QA_REWARD_AMOUNT||3500);
+  assert.ok([3500,4000].includes(rewardAmount),'QA amount must match default or observed production configuration');
   const database=`nazraa_resume_qa_${Date.now()}`;
   const root=await mysql.createConnection({host:'127.0.0.1',user:'root',multipleStatements:true,timezone:'Z',decimalNumbers:true});
   await root.query(`CREATE DATABASE \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
@@ -17,6 +19,14 @@ async function main(){
   for(const c of connections)c.release();
   try{
     for(const f of (await readdir('db/migrations')).filter(x=>x.endsWith('.sql')).sort())await root.query(await readFile(`db/migrations/${f}`,'utf8'));
+    if(rewardAmount!==3500){
+      const settingsOwner=randomUUID();
+      await root.execute(`INSERT INTO platform_accounts(id,public_id,role,role_code,full_name,password_hash)
+        VALUES (?,900001,'MASTER',?,'Isolated policy QA','not-a-login-credential')`,[settingsOwner,settingsOwner.slice(0,20)]);
+      await root.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by)
+        VALUES ('mobile.live_rules',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)`,
+        [JSON.stringify({hourlyRewardDiamonds:rewardAmount,timezone:'Asia/Kolkata'}),settingsOwner]);
+    }
     const {checkpointHostLive}=await import('../lib/services/live-auto-resume');
     const {withIdempotentTransaction:tx}=await import('../lib/db/transaction');
     const host=randomUUID();
@@ -91,8 +101,8 @@ async function main(){
     assert.equal(Number(wallets[0].n),0,'resuming never credits a wallet');
     console.log('PASS reward-day quota rollover; history retained; no reward/financial write from resume');
     const {loadFaceLiveRules}=await import('../lib/services/live-business-policy');
-    assert.equal((await loadFaceLiveRules()).hourlyRewardDiamonds,3500);
-    console.log('PASS canonical hourly amount unchanged at 3500 Diamonds; entitlement/claim engine untouched');
+    assert.equal((await loadFaceLiveRules()).hourlyRewardDiamonds,rewardAmount);
+    console.log(`PASS canonical hourly amount unchanged at ${rewardAmount} Diamonds; entitlement/claim engine untouched`);
     // Real canonical reward creation and claim, not a mock payout assertion.
     const master=randomUUID(),agency=randomUUID(),rule=randomUUID();
     for(const [id,role] of [[master,'MASTER'],[agency,'AGENCY']])await root.execute(
@@ -100,7 +110,7 @@ async function main(){
       [id,role==='MASTER'?100001:200001,role,id.slice(0,20),`Isolated ${role}`,'not-a-login-credential']);
     await root.execute("UPDATE application_users SET is_host=TRUE,face_verification_status='VERIFIED',agency_account_id=?,gender='MALE' WHERE id=?",[agency,host]);
     await root.execute("INSERT INTO host_profiles(id,application_user_id,agency_account_id,status,verification_status) VALUES (?,?,?,'ACTIVE','VERIFIED')",[randomUUID(),host,agency]);
-    await root.execute("INSERT INTO host_reward_rules(id,room_type,coins_per_hour,minimum_eligible_seconds,effective_from,updated_by) VALUES (?,'FACE',3500,3600,CURRENT_TIMESTAMP(3),?)",[rule,master]);
+    await root.execute("INSERT INTO host_reward_rules(id,room_type,coins_per_hour,minimum_eligible_seconds,effective_from,updated_by) VALUES (?,'FACE',?,3600,CURRENT_TIMESTAMP(3),?)",[rule,rewardAmount,master]);
     const row=await state(face);
     await root.execute('UPDATE live_rooms SET agency_account_id=? WHERE id=?',[agency,row.room_id]);
     await root.execute("INSERT INTO live_room_members(room_id,application_user_id,room_role,media_role,muted) VALUES (?,?,'OWNER','HOST',FALSE)",[row.room_id,host]);
@@ -112,12 +122,12 @@ async function main(){
       await reconcileCheckpointedLiveRewards(c,face);
     })));
     const [entitlements]=await root.query<RowDataPacket[]>('SELECT id,amount,claim_status FROM live_reward_entitlements WHERE application_user_id=?',[host]);
-    assert.equal(entitlements.length,1);assert.equal(Number(entitlements[0].amount),3500);assert.equal(entitlements[0].claim_status,'UNCLAIMED');
+    assert.equal(entitlements.length,1);assert.equal(Number(entitlements[0].amount),rewardAmount);assert.equal(entitlements[0].claim_status,'UNCLAIMED');
     const [beforeClaim]=await root.query<RowDataPacket[]>('SELECT COUNT(*) n FROM ledger_transactions WHERE destination_id=?',[host]);assert.equal(Number(beforeClaim[0].n),0);
     await Promise.all(Array.from({length:5},()=>claimLiveReward({userId:host} as never,entitlements[0].id)));
     const [credits]=await root.query<RowDataPacket[]>("SELECT COUNT(*) n,SUM(amount) amount FROM ledger_transactions WHERE destination_id=? AND transaction_type='HOST_HOURLY_DIAMONDS'",[host]);
-    assert.equal(Number(credits[0].n),1);assert.equal(Number(credits[0].amount),3500);
-    console.log('PASS 60m => one UNCLAIMED 3500-Diamond reward; no auto-credit; concurrent Claim credits once');
+    assert.equal(Number(credits[0].n),1);assert.equal(Number(credits[0].amount),rewardAmount);
+    console.log(`PASS 60m => one UNCLAIMED ${rewardAmount}-Diamond reward; no auto-credit; concurrent Claim credits once`);
   }finally{
     await global.nazraaPool.end();await root.query(`DROP DATABASE \`${database}\``);await root.end();
   }
