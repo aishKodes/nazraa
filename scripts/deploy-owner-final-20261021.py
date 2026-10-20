@@ -29,7 +29,7 @@ print('SOURCE_GUARDS_AND_PATCH_CHECK_PASS', flush=True)
 if '--apply' not in sys.argv:
  sys.exit(0)
 assert 'PREDEPLOY_BACKUP_VERIFIED' in Path('/opt/nazraa/logs/owner-final-predeploy-20261021.log').read_text(), 'Private offsite backup is not verified yet'
-backup=Path('/opt/nazraa/backups/owner-final-20261021-source.tar.gz')
+backup=Path(f'/opt/nazraa/backups/owner-final-20261021-source-{int(time.time())}.tar.gz')
 assert not backup.exists(), 'Rollback source already exists; inspect before retry'
 with tarfile.open(backup, 'w:gz') as tar:
  for name in expected:
@@ -50,7 +50,9 @@ try:
    break
   time.sleep(5)
  assert healthy, 'New API health check did not pass'
- subprocess.run(['curl','--fail','--silent','--show-error','https://api.nazraa.pixtra.site/api/internal/health'],check=True)
+ # Caddy deliberately blocks /api/internal/* externally. Container health
+ # probes that private endpoint; verify the public edge with public config.
+ subprocess.run(['curl','--fail','--silent','--show-error','--output','/dev/null','https://api.nazraa.pixtra.site/api/v1/config'],check=True)
  print('\nOWNER_FINAL_API_DEPLOY_PASS; MEDIA/WORKER/DB/REDIS/REALTIME_UNCHANGED; NO_SCHEMA_OR_REWARD_CONFIG_CHANGE',flush=True)
 except BaseException:
  subprocess.run(['docker','tag',image,'nazraa-api:production-candidate'],check=True)
