@@ -10,5 +10,9 @@ const mysql=require('mysql2/promise');
   const o=typeof r[0]?.outcome_json==='string'?JSON.parse(r[0].outcome_json):r[0]?.outcome_json;
   console.log('LATEST_PRINCESS_PAYTABLE',JSON.stringify({rulesVersion:o?.rulesVersion,multipliers:o?.pricing?.grossMultiplierPpm,feeBps:o?.pricing?.feeBps}));
   const [m]=await c.query('SELECT COUNT(*) n FROM control_schema_migrations');console.log('MIGRATIONS_UNCHANGED',m[0].n);
+  const [qa]=await c.query(`SELECT r.status,c.close_reason,c.trigger_source,c.caller_stack,c.publishing,c.created_at
+    FROM live_rooms r LEFT JOIN room_close_attempts c ON c.room_id=r.id
+    WHERE r.title='QA-RC251-252' ORDER BY c.created_at DESC LIMIT 3`);
+  console.log('CONTROLLED_QA_ROOM_ONLY',JSON.stringify(qa));
  }finally{await c.end();}
 })().catch(e=>{console.error('READ_ONLY_CHECK_FAILED',e.code||e.name);process.exitCode=1;});
