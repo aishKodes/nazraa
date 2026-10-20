@@ -5231,8 +5231,9 @@ async function main() {
        WHERE room_id = (SELECT id FROM live_rooms WHERE room_code = ?)`,
       [maleOwnerLiveCode],
     );
-    // A signed provider transition must finish the eligible block even when
-    // the app disappears before sending another heartbeat/finalize request.
+    // Fresh signed positive publishing evidence must finish the eligible
+    // block even if a heartbeat already marked publishing. The following
+    // unpublish reconciles it without awarding a provider-timeout tail.
     const thresholdEvent = (event: string) => {
       const payload = { id: `qa-threshold-${randomUUID()}`, event,
         createdAt: new Date().toISOString(), room: { name: maleOwnerLiveCode },

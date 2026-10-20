@@ -309,10 +309,13 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
       })[]>(`SELECT media_publishing, last_media_evidence_at, CURRENT_TIMESTAMP(3) server_time
         FROM live_session_accounting WHERE id = ? AND status = 'ACTIVE' FOR UPDATE`, [room.accounting_id]);
       const session = sessions[0];
-      // Repeated publish/unpublish notifications do not move the clock cursor.
-      // Only a real transition checkpoints it. Otherwise the time since the
-      // previous heartbeat would silently disappear on every republish event.
-      if (session && Boolean(session.media_publishing) !== publishing) {
+      // A fresh, signed relevant publish is positive evidence even when the
+      // last heartbeat already marked the Host publishing. The shared cursor
+      // retains fractions and event IDs dedupe retries. Negative timeout
+      // evidence must not accrue an unconfirmed tail after a crashed app.
+      const positivePublishingEvidence = publishing &&
+        evidence.eventType === 'track_published' && evidence.trackKind === wantedKind;
+      if (session && (Boolean(session.media_publishing) !== publishing || positivePublishingEvidence)) {
         await checkpointHostLive(connection, {
           accountingId:room.accounting_id, publishing, source:'PROVIDER',
           occurredAt:evidence.occurredAt,
