@@ -49,14 +49,16 @@ export function dealChairRound(){
  for(let i=51;i>0;i--){const j=randomInt(i+1);[deck[i],deck[j]]=[deck[j],deck[i]];}
  return chairOutcomeFromDeck(deck);
 }
-/** A real face-up card makes the legacy fixed 3x/3% paytable exploitable.
- * Only V3's committed conditional-odds quote permits a betting-time preview.
- * V2 omits cards (not an empty array): old APKs index any non-null array. */
+/** Committed visible-card rounds preserve their presentation across pricing
+ * versions. V2 omits cards: old APKs index any non-null array. */
 export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
- if(outcome.rulesVersion==='PRINCESS_PUBLIC_CARD_QUOTE_V3' && quote?.rulesVersion===outcome.rulesVersion){
-  return {cards:quote.publicCards as number[],rulesVersion:quote.rulesVersion,quoteId:outcome.commitment,
-   grossMultiplierPpm:quote.grossMultiplierPpm,targetRtpPpm:quote.targetRtpPpm,feeBps:quote.feeBps};
+ if(quote && ['PRINCESS_PUBLIC_CARD_QUOTE_V3','PRINCESS_PUBLIC_CARD_FIXED_3X_V4'].includes(String(outcome.rulesVersion)) && quote.rulesVersion===outcome.rulesVersion){
+  // Keep the preview protocol understood by installed V3 APKs. The separate
+  // payout version identifies the immutable V4 paytable, not a new card UI.
+  return {cards:quote.publicCards as number[],rulesVersion:'PRINCESS_PUBLIC_CARD_QUOTE_V3',payoutVersion:quote.rulesVersion,quoteId:outcome.commitment,
+   grossMultiplierPpm:quote.grossMultiplierPpm,feeBps:quote.feeBps,
+   ...(outcome.rulesVersion==='PRINCESS_PUBLIC_CARD_QUOTE_V3'?{targetRtpPpm:quote.targetRtpPpm}:{})};
  }
  if(!bettingClosed)return {};
  const hands=outcome.hands as {cards:number[]}[];

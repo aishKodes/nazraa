@@ -300,7 +300,7 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
         princessPreviewQuotes: stored.princessPreviewQuotes===true,
         targetRtp: stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):.97,
         payoutScalePpm: 1_000_000,
-        maximumPayoutMultiplier: stored.princessPreviewQuotes===true?decimal(stored.maximumPayoutMultiplier,30,1,1000):3,
+        maximumPayoutMultiplier: 3,
         minimumBet: 100, denominations: [100,500,1000,5000],
         outcomeWeights: undefined, autoPlay: false,
       } : {}),

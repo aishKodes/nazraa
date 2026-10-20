@@ -17,9 +17,12 @@ export async function verifyPrincessQuotes(root:Connection,owner:MobileIdentity,
  await root.execute('UPDATE game_shared_rounds SET round_number=round_number-1000000 WHERE id=?',[original.round.id]);
  try{
   await assert.rejects(savePrincessPricing({scope:{...master,account:{...master.account,role:'ADMIN'}},mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:30,reason:'QA forbidden price change'}),/Forbidden/);
-  await savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:30,reason:'QA owner-approved visible-card quote pricing'});
+  await assert.rejects(savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:30,reason:'QA fixed return cannot be changed'}),/valid Princess/);
+  await savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:3,reason:'QA owner-approved fixed 3.00x return'});
   const current=await product.gameSharedRoundState(owner,'teen_patti');
-  assert.equal(current.publicPreview?.rulesVersion,'PRINCESS_PUBLIC_CARD_QUOTE_V3');
+  assert.equal(current.publicPreview?.rulesVersion,'PRINCESS_PUBLIC_CARD_QUOTE_V3','installed APKs retain the same preview protocol');
+  assert.equal(current.publicPreview?.payoutVersion,'PRINCESS_PUBLIC_CARD_FIXED_3X_V4');
+  assert.deepEqual(current.publicPreview?.grossMultiplierPpm,[3_000_000,3_000_000,3_000_000]);
   assert.equal(current.publicPreview?.cards?.length,3);
   assert.equal(current.outcome,null,'public card/quote never discloses the hidden hand or winner');
   const quoteId=String(current.publicPreview?.quoteId);
@@ -38,7 +41,7 @@ export async function verifyPrincessQuotes(root:Connection,owner:MobileIdentity,
   const outcome=typeof rounds[0].outcome_json==='string'?JSON.parse(rounds[0].outcome_json):rounds[0].outcome_json;
   assert.equal(commitPrincessQuote(outcome.hands,outcome.pricing as PrincessQuote,outcome.nonce).commitment,quoteId,'proof survives MySQL JSON key order');
   const expected=princessSettlement(bets,outcome);
-  await savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.90,maximumMultiplier:10,reason:'QA future pricing cannot change accepted wagers'});
+  await savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.90,maximumMultiplier:3,reason:'QA future config cannot change accepted wagers'});
   const [same]=await root.query<RowDataPacket[]>('SELECT outcome_json FROM game_shared_rounds WHERE id=?',[current.round.id]);
   assert.deepEqual(same[0].outcome_json,rounds[0].outcome_json,'config edits must not rewrite round snapshots');
   await root.execute('UPDATE game_shared_rounds SET betting_ends_at=UTC_TIMESTAMP(3)-INTERVAL 2 SECOND,drawing_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND,result_ends_at=UTC_TIMESTAMP(3)+INTERVAL 10 SECOND WHERE id=?',[current.round.id]);
@@ -48,7 +51,8 @@ export async function verifyPrincessQuotes(root:Connection,owner:MobileIdentity,
   assert.deepEqual([Number(settled[0].gross_payout),Number(settled[0].deduction_total),Number(settled[0].payout_total)],[expected.grossPayout,expected.serviceFee,expected.payout]);
   const [untouched]=await root.query<RowDataPacket[]>('SELECT outcome_json FROM game_shared_rounds WHERE id=?',[original.round.id]);
   assert.deepEqual(untouched[0].outcome_json,historic[0].outcome_json,'legacy settled hand remains immutable');
-  console.log('PASS Princess V3 DB: real public cards/committed quotes, legacy APK rejected without debit, concurrent retry once, quote collision rejected, canonical proof round-trip, immutable old/new payout snapshots, Master-only audited config and same-round exact-once settlement.');
+  assert.equal(expected.grossPayout,3000);assert.equal(expected.serviceFee,90);assert.equal(expected.payout,2910);
+  console.log('PASS Princess fixed 3.00x DB: all chairs 3.00x gross / 3% fee, real public cards, committed quotes, concurrent retry once, quote collision rejected, immutable old/new payout snapshots and same-round exact-once settlement.');
  }finally{
   if(old===undefined)await root.execute("DELETE FROM system_settings WHERE setting_key='mobile.games'");
   else await root.execute("UPDATE system_settings SET setting_value=? WHERE setting_key='mobile.games'",[typeof old==='string'?old:JSON.stringify(old)]);

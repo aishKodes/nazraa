@@ -446,10 +446,11 @@ async function main() {
       await (await import('./host-payout-tests')).verifyHostPayouts(root,user,master.account,agency);
       return;
     }
-    if (process.env.NAZRAA_QA_ONLY_AUDIO === "1") {
+    if (process.env.NAZRAA_QA_ONLY_AUDIO === "1" || process.env.NAZRAA_QA_ONLY_OWNER_FINAL === '1') {
       const audioUpgrade = await import("./audio-room-upgrade-tests");
       await audioUpgrade.verifyAudioRoomUpgrade(root, user, owner);
       await (await import('./audio-party-pk-tests')).verifyAudioPartyPk(root,user);
+      if(process.env.NAZRAA_QA_ONLY_OWNER_FINAL === '1')await (await import('./princess-quoted-integration-tests')).verifyPrincessQuotes(root,owner,master);
       return;
     }
     const faceMaster = await import("./face-live-master-tests");

@@ -7,6 +7,7 @@ export async function verifyAudioPartyPk(root:Connection,user:(name:string)=>Pro
  const rooms=await import('@/lib/db/repositories/mobile-completion');
  const product=await import('@/lib/db/repositories/mobile-product');
  const authority=await import('@/lib/services/livekit-room-authority');
+ const seats=await import('@/lib/db/repositories/mobile-seats');
  const red=await user('QA Audio PK Red'),blue=await user('QA Audio PK Blue'),guest=await user('QA Audio PK Guest'),audience=await user('QA Audio PK Audience'),stranger=await user('QA Audio PK Stranger');
  const redCode=`QA_RED_${randomUUID().slice(0,8)}`,blueCode=`QA_BLUE_${randomUUID().slice(0,8)}`;
  for(const [host,roomCode] of [[red,redCode],[blue,blueCode]] as const)await product.createRoom(host,{roomCode,kind:'party',title:'QA Audio PK Board',category:'Talk',language:'Hindi',privacy:'public',seatCount:10,themeIndex:0,themeEnabled:true});
@@ -26,14 +27,27 @@ export async function verifyAudioPartyPk(root:Connection,user:(name:string)=>Pro
   await pk.audioPkAction(blue,{roomCode:blueCode,sessionId:id,action:'ACCEPT'});
   await pk.audioPkAction(blue,{roomCode:blueCode,sessionId:id,action:'ACCEPT'});
   const snapshot=await pk.audioPkSnapshot(audience,blueCode);assert.equal(snapshot.session?.status,'ACTIVE');assert.equal(snapshot.session?.localTeam,'BLUE');
+  const localSeats=snapshot.session!.red.seats;
+  assert.equal(localSeats.length,4);assert.equal(new Set(localSeats.map(s=>s.seatIndex)).size,4);
+  const emptyIndex=Number(localSeats.find(s=>s.id==null)!.seatIndex);
+  await assert.rejects(seats.actOnRoomSeat(guest,{roomCode:redCode,action:'lock',seatIndex:emptyIndex}),/Only the Room Owner/);
+  await seats.actOnRoomSeat(red,{roomCode:redCode,action:'lock',seatIndex:emptyIndex});
+  assert.equal((await pk.audioPkSnapshot(blue,blueCode)).session!.red.seats.find(s=>s.seatIndex===emptyIndex)?.locked,true);
+  await assert.rejects(seats.actOnRoomSeat(guest,{roomCode:redCode,action:'request',seatIndex:emptyIndex}),/locked/);
+  await seats.actOnRoomSeat(red,{roomCode:redCode,action:'unlock',seatIndex:emptyIndex});
+  await seats.actOnRoomSeat(guest,{roomCode:redCode,action:'request',seatIndex:emptyIndex});
+  assert.equal((await pk.audioPkSnapshot(red,redCode)).session!.red.seats.find(s=>String(s.id)===guest.publicId)?.seatIndex,emptyIndex);
+  await seats.actOnRoomSeat(guest,{roomCode:redCode,action:'leave'});
   assert.equal(new Date(snapshot.session!.endsAt!).getTime()-new Date(snapshot.session!.startedAt).getTime(),durationMinutes*60000);
   assert.equal(new Date(snapshot.session!.resultEndsAt!).getTime()-new Date(snapshot.session!.endsAt!).getTime(),20000);
   await assert.rejects(pk.audioPkAction(guest,{roomCode:redCode,sessionId:id,action:'END'}),/Only the battling/);
   const bridge=await pk.authorizeAudioPkBridge(audience,{roomCode:blueCode,sessionId:id});assert.equal(bridge.remoteRoomId,redCode);assert(bridge.bridgeIdentity.startsWith(`apk:${id}:`));
   const normalGrant=await authority.authorizeLiveKitRoom(audience,{roomCode:blueCode,canPublish:false});assert.equal(normalGrant.publishMode,'none');
   await assert.rejects(authority.authorizeLiveKitRoom(audience,{roomCode:blueCode,canPublish:true}),/active speaker/);
-  await pk.audioPkAction(red,{roomCode:redCode,sessionId:id,action:'END'});
+  await Promise.all([red,blue,red].map(host=>pk.audioPkAction(host,{roomCode:host===red?redCode:blueCode,sessionId:id,action:'END'})));
   assert.equal((await pk.audioPkSnapshot(blue,blueCode)).session,null);
+  const [active]=await root.query<RowDataPacket[]>('SELECT status FROM live_rooms WHERE room_code IN (?,?)',[redCode,blueCode]);
+  assert(active.every(r=>r.status==='ACTIVE'),'Racing PK close must not end either base Party');
  }
  // Random selection is genuine; isolate available targets in this QA database
  // rather than assuming the random picker chooses Blue among unrelated fixtures.

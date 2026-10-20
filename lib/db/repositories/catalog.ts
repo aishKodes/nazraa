@@ -340,13 +340,13 @@ export async function saveMobileSocialSettings(input: { scope: Scope; privateMes
 
 export async function savePrincessPricing(input:{scope:Scope;mode:'HIDDEN_FIXED_V2'|'PUBLIC_QUOTE_V3';targetRtp:number;maximumMultiplier:number;reason:string}){
   if(input.scope.account.role!=='MASTER')throw new Error('Forbidden.');
-  if(!Number.isFinite(input.targetRtp)||input.targetRtp<.5||input.targetRtp>1 || !Number.isFinite(input.maximumMultiplier)||input.maximumMultiplier<1||input.maximumMultiplier>30 || input.reason.trim().length<5)
+  if(!Number.isFinite(input.targetRtp)||input.targetRtp<.5||input.targetRtp>1 || input.maximumMultiplier!==3 || input.reason.trim().length<5)
     throw new Error('Choose valid Princess pricing and a change reason.');
   await withTransaction(async connection=>{
     const [rows]=await connection.query<(RowDataPacket&{setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
     const current=mobileGamesConfig(rows[0]?.setting_value);
     const previous=current.games.teen_patti;
-    current.games.teen_patti={...current.games.teen_patti,princessPreviewQuotes:input.mode==='PUBLIC_QUOTE_V3',targetRtp:input.targetRtp,maximumPayoutMultiplier:input.maximumMultiplier};
+    current.games.teen_patti={...current.games.teen_patti,princessPreviewQuotes:input.mode==='PUBLIC_QUOTE_V3',targetRtp:input.targetRtp,maximumPayoutMultiplier:3};
     await connection.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,
       [JSON.stringify(current),input.scope.account.id]);
     await connection.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
@@ -386,7 +386,7 @@ export async function saveGameSettings(input: {
     (input.outcomeWeights?.length ?? 0) > 0
   )) throw new Error('Lion Vs Tiger test 1.1.5 has fixed 15-second betting, three outcomes, 2×/30×/2× returns and no game-specific stake cap.');
   if (input.game === 'teen_patti' && (
-    input.minimumBet !== 100 || input.autoPlay ||
+    input.minimumBet !== 100 || input.autoPlay || input.maximumPayoutMultiplier !== 3 ||
     [...new Set(input.denominations)].sort((a,b)=>a-b).join(',') !== '100,500,1000,5000' ||
     (input.outcomeWeights?.length ?? 0) > 0
   )) throw new Error('Princess retains the 3% fee and 100 / 500 / 1,000 / 5,000 chips. Weighted outcomes and Auto Play are not supported. Pricing is managed separately by Master.');

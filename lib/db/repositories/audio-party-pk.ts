@@ -55,7 +55,7 @@ async function linked(connection:PoolConnection,roomId:string,includeTerminal=fa
 async function team(connection:PoolConnection,roomId:string){
   const [rows]=await connection.query<RowDataPacket[]>(`SELECT u.public_id id,u.full_name name,
    CASE WHEN a.updated_at IS NOT NULL THEN CONCAT(?,u.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(a.updated_at)*1000)) ELSE u.avatar_url END avatarUrl,
-   m.seat_index seatIndex,m.muted,m.media_role mediaRole
+   m.seat_index seatIndex,m.muted,m.media_role mediaRole,r.seat_count seatCount
    FROM live_rooms r JOIN application_users u ON u.id=r.host_application_user_id
    LEFT JOIN live_room_members m ON m.room_id=r.id AND m.application_user_id=u.id AND m.left_at IS NULL
    LEFT JOIN application_user_avatars a ON a.application_user_id=u.id WHERE r.id=?`,[`${publicApiOrigin()}/api/v1/mobile/avatar/`,roomId]);
@@ -66,7 +66,16 @@ async function team(connection:PoolConnection,roomId:string){
    LEFT JOIN application_user_avatars a ON a.application_user_id=u.id
    WHERE m.room_id=? AND m.left_at IS NULL AND m.seat_index IS NOT NULL
    AND m.application_user_id<>(SELECT host_application_user_id FROM live_rooms WHERE id=?) ORDER BY m.seat_index LIMIT 4`,[`${publicApiOrigin()}/api/v1/mobile/avatar/`,roomId,roomId]);
-  return {host:rows[0],seats:speakers};
+  const [locks]=await connection.query<RowDataPacket[]>('SELECT seat_index FROM live_room_seat_locks WHERE room_id=?',[roomId]);
+  const locked=new Set(locks.map(row=>Number(row.seat_index)));
+  // Four real Party indices, never independent PK seats. Keep current speaker
+  // ordering, fill vacancies from the same board and return canonical locks.
+  const selected:RowDataPacket[]=speakers.map(member=>({...member,locked:locked.has(Number(member.seatIndex))}));
+  for(let index=0;selected.length<4&&index<Number(rows[0].seatCount);index++){
+    if(rows[0].seatIndex!=null&&Number(rows[0].seatIndex)===index || selected.some(member=>Number(member.seatIndex)===index))continue;
+    selected.push({id:null,name:null,seatIndex:index,muted:true,locked:locked.has(index)} as RowDataPacket);
+  }
+  return {host:rows[0],seats:selected};
 }
 export async function audioPkSnapshot(identity:MobileIdentity,roomCode:string){
   let changed:Session|undefined;

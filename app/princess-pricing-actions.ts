@@ -12,7 +12,7 @@ export async function publishPrincessPricing(formData:FormData){
  try{
   const input=z.object({mode:z.enum(['HIDDEN_FIXED_V2','PUBLIC_QUOTE_V3']),
     targetRtp:z.coerce.number().finite().min(.5).max(1),
-    maximumMultiplier:z.coerce.number().finite().min(1).max(30),
+    maximumMultiplier:z.coerce.number().refine(value=>value===3),
     reason:z.string().trim().min(5).max(500)}).parse(Object.fromEntries(formData));
   await savePrincessPricing({scope,...input});
  }catch{failed=true;}

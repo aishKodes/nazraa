@@ -47,20 +47,40 @@ export async function verifyAudioRoomUpgrade(root: Connection, user: (name: stri
   // writes. No synthetic leaderboard amounts are returned by Flutter.
   const [giftRows] = await root.query<RowDataPacket[]>("SELECT gift_key, coin_price FROM gift_catalog WHERE catalog_type='VIRTUAL_GIFT' AND active=TRUE ORDER BY coin_price LIMIT 1");
   const [ownerRows] = await root.query<RowDataPacket[]>("SELECT public_id FROM application_users WHERE id = ?", [owner.userId]);
+  let expectedSession=0;let sender:MobileIdentity|undefined;
   for (let index = 0; index < 6; index++) {
     const fan = await user(`QA Audio Fan ${index}`);
     await rooms.joinLiveRoom(fan, nextCode);
     await root.execute("UPDATE wallet_balances SET available_balance=100000 WHERE owner_type='APPLICATION_USER' AND owner_id=? AND asset_type='COIN'", [fan.userId]);
-    await product.sendGift(fan, {roomCode: nextCode, giftId: String(giftRows[0].gift_key), recipientPublicId: String(ownerRows[0].public_id), quantity: index + 1, clientGiftId: randomUUID()});
+    const sent=await product.sendGift(fan, {roomCode: nextCode, giftId: String(giftRows[0].gift_key), recipientPublicId: String(ownerRows[0].public_id), quantity: index + 1, clientGiftId: randomUUID()});
+    assert(sent.event);expectedSession+=sent.event.diamondValue;sender=fan;
   }
   const ranks = await social.faceLiveSocial(owner, nextCode);
   assert.equal(ranks.daily.length, 5);
   assert.equal(ranks.monthly.length, 5);
   assert.equal(ranks.daily[0].user.name, "QA Audio Fan 5");
   assert.equal(ranks.topFanId, ranks.monthly[0].user.id);
-  assert(ranks.sessionDiamonds > 0);
+  assert.equal(ranks.sessionDiamonds,expectedSession);
   for (let index = 1; index < ranks.daily.length; index++) assert(ranks.daily[index - 1].diamonds >= ranks.daily[index].diamonds);
   assert(ranks.daily.every((row) => String(row.user.name).startsWith("QA Audio Fan")), "Face gifting must not leak into Party rankings");
+  await rooms.joinLiveRoom(guest,nextCode);
+  const seatApi=await import('@/lib/db/repositories/mobile-seats');
+  await seatApi.actOnRoomSeat(guest,{roomCode:nextCode,action:'request',seatIndex:2});
+  const giftId=randomUUID();
+  const recipientGift={roomCode:nextCode,giftId:String(giftRows[0].gift_key),recipientPublicId:guest.publicId,quantity:2,clientGiftId:giftId};
+  const received=await product.sendGift(sender!,recipientGift);
+  await product.sendGift(sender!,recipientGift);
+  assert(received.event);expectedSession+=received.event.diamondValue;
+  const after=await social.faceLiveSocial(owner,nextCode);
+  assert.equal(after.sessionDiamonds,expectedSession,'Host and seated participant gifts aggregate; replay counts once');
+  assert.equal(after.monthlyDiamonds,ranks.monthlyDiamonds,'Host personal/monthly ranking remains unchanged');
+  await rooms.leaveLiveRoom(guest,nextCode);
+  await rooms.joinLiveRoom(guest,nextCode);
+  assert.equal((await social.faceLiveSocial(guest,nextCode)).sessionDiamonds,expectedSession,'late entry/rejoin restores authoritative total');
   await rooms.finalizeLiveSession(owner, nextCode);
+  const fresh=`QA_AP_${randomUUID().slice(0,8)}`;
+  await product.createRoom(owner,{...initial,roomCode:fresh});
+  assert.equal((await social.faceLiveSocial(owner,fresh)).sessionDiamonds,0,'new session excludes historical gifts');
+  await rooms.finalizeLiveSession(owner,fresh);
   console.log("PASS Audio Room: persistent owner profile, immutable history, live title/theme/layout version, occupied-seat safety, member/owner authorization, six real Gift senders, Daily/Monthly Top5 and canonical Top Fan with Face/Party isolation");
 }

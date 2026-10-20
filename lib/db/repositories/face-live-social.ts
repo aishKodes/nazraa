@@ -26,7 +26,7 @@ export async function faceLiveSocial(identity: MobileIdentity, roomCode: string,
   const month = `${day.slice(0, 7)}-01`;
   const redis = await roomRedis().catch(() => undefined);
   const epoch = await redis?.get(`face:social-version:${room.id}`).catch(() => null) ?? '0';
-  const key = `face:social:v2:${room.id}:${room.session_id}:${day}:${epoch}`;
+  const key = `face:social:v3:${room.id}:${room.session_id}:${day}:${epoch}`;
   const cached = await redis?.get(key).catch(() => null);
   if (cached) return JSON.parse(cached) as RoomGiftSocial;
   const ranking = async (start: string, end: string): Promise<GiftRank[]> => {
@@ -47,7 +47,10 @@ export async function faceLiveSocial(identity: MobileIdentity, roomCode: string,
   };
   const [daily, monthly, sessionRows, contributions, admins, monthRows] = await Promise.all([
     ranking(day, day), ranking(month, day),
-    db().query<RowDataPacket[]>("SELECT COALESCE(SUM(diamond_value),0) diamonds FROM live_room_gift_events WHERE live_session_id = ? AND receiver_application_user_id = ?", [room.session_id, room.host_id]),
+    // Each committed event is unique and already validated by sendGift.
+    // Party authorizes its own recipients; include all of them for this
+    // session even after a seated receiver leaves. Face keeps Host-only totals.
+    db().query<RowDataPacket[]>("SELECT COALESCE(SUM(diamond_value),0) diamonds FROM live_room_gift_events WHERE live_session_id = ? AND (? = 'PARTY' OR receiver_application_user_id = ?)", [room.session_id, room.room_type, room.host_id]),
     db().query<RowDataPacket[]>(`SELECT user.public_id, SUM(event.diamond_value) diamonds, MAX(event.created_at) last_gift_at
       FROM live_room_gift_events event JOIN application_users user ON user.id = event.sender_application_user_id
       WHERE event.live_session_id = ? AND event.receiver_application_user_id = ?

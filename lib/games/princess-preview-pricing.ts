@@ -2,6 +2,10 @@ import {createHash,randomBytes} from 'node:crypto';
 import {evaluateChairHand,teenPattiChairs,teenPattiCard,chairSettlement} from './teen-patti';
 
 export const princessQuoteRules='PRINCESS_PUBLIC_CARD_QUOTE_V3';
+export const princessFixedQuoteRules='PRINCESS_PUBLIC_CARD_FIXED_3X_V4';
+export function isPrincessQuotedRules(value:unknown){
+  return value===princessQuoteRules || value===princessFixedQuoteRules;
+}
 const PAIRS=49*48/2;
 export const conditionalDeals=PAIRS*(47*46/2)*(45*44/2);
 let handRanks:Int32Array|undefined;
@@ -72,6 +76,15 @@ export function princessQuote(publicCards:readonly number[],targetRtp=.97,maximu
   return {rulesVersion:princessQuoteRules,publicCards:[...publicCards],winCompletions:[...wins],
     totalCompletions:conditionalDeals,grossMultiplierPpm,targetRtpPpm,feeBps,maximumMultiplier};
 }
+/** Owner-fixed gross return, not conditional-odds pricing. Preserve the actual
+ * public card, fair deck and fee. Never rewrite V3's accepted round snapshots. */
+export function princessFixedQuote(publicCards:readonly number[]):PrincessQuote {
+  if(publicCards.length!==3 || new Set(publicCards).size!==3)throw new Error('Invalid Princess preview.');
+  publicCards.forEach(teenPattiCard);
+  return {rulesVersion:princessFixedQuoteRules,publicCards:[...publicCards],winCompletions:[],
+    totalCompletions:0,grossMultiplierPpm:[3_000_000,3_000_000,3_000_000],
+    targetRtpPpm:970_000,feeBps:300,maximumMultiplier:3};
+}
 export function commitPrincessQuote(hands:unknown,quote:PrincessQuote,nonce=randomBytes(32).toString('hex')){
   // MySQL JSON reorders object keys. Canonicalize recursively so the public
   // proof survives durable round trips without changing a single value.
@@ -80,7 +93,7 @@ export function commitPrincessQuote(hands:unknown,quote:PrincessQuote,nonce=rand
     if(value && typeof value==='object')return Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>[k,canonical(v)]));
     return value;
   }
-  const commitment=createHash('sha256').update(JSON.stringify(canonical({rulesVersion:princessQuoteRules,hands,quote,nonce}))).digest('hex');
+  const commitment=createHash('sha256').update(JSON.stringify(canonical({rulesVersion:quote.rulesVersion,hands,quote,nonce}))).digest('hex');
   return {commitment,nonce};
 }
 export function quotedPrincessSettlement(bets:Record<string,number>,winner:string,quote:PrincessQuote){
@@ -94,10 +107,11 @@ export function quotedPrincessSettlement(bets:Record<string,number>,winner:strin
 }
 export function princessSettlement(bets:Record<string,number>,outcome:Record<string,unknown>){
  const validated=chairSettlement(bets,String(outcome.winner));
- if(outcome.rulesVersion!==princessQuoteRules)return validated;
+ if(!isPrincessQuotedRules(outcome.rulesVersion))return validated;
  const quote=outcome.pricing as PrincessQuote;
- if(!quote || quote.rulesVersion!==princessQuoteRules || quote.grossMultiplierPpm?.length!==3 ||
+ if(!quote || quote.rulesVersion!==outcome.rulesVersion || quote.grossMultiplierPpm?.length!==3 ||
    quote.grossMultiplierPpm.some(v=>!Number.isSafeInteger(v)||v<1||v>1_000_000_000) || quote.feeBps!==300 ||
+   (outcome.rulesVersion===princessFixedQuoteRules && (quote.maximumMultiplier!==3 || quote.grossMultiplierPpm.some(v=>v!==3_000_000))) ||
    typeof outcome.nonce!=='string' || commitPrincessQuote(outcome.hands,quote,outcome.nonce).commitment!==outcome.commitment)
    throw new Error('The Princess round commitment is invalid.');
  return {wager:validated.wager,...quotedPrincessSettlement(bets,String(outcome.winner),quote)};
