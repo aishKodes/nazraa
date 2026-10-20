@@ -76,6 +76,19 @@ async function main(){
     await step(party,false,false,'PROVIDER');await step(party,true,false,'PROVIDER');
     assert.equal(await count(),5);assert.equal(Number((await state(party)).media_segment_seconds),200);
     console.log('PASS brief internal LiveKit recovery consumes no quota, even after five');
+    const lateEnd=await session();
+    await root.execute(`UPDATE live_session_accounting SET media_segment_seconds=900,valid_media_seconds=900,
+      eligible_seconds_committed=900,media_publishing=TRUE,last_media_evidence_at=CURRENT_TIMESTAMP(3)-INTERVAL 24 SECOND WHERE id=?`,[lateEnd]);
+    const beforeLateEnd=await state(lateEnd);
+    await step(lateEnd,false,false,'PROVIDER');
+    assert.equal(Number((await state(lateEnd)).media_segment_seconds),900,'provider timeout must not award the offline tail');
+    const [lateInterruptions]=await root.query<RowDataPacket[]>(
+      'SELECT disconnected_at FROM live_session_interruptions WHERE live_session_accounting_id=?',[lateEnd]);
+    assert.equal(+new Date(lateInterruptions[0].disconnected_at),+new Date(beforeLateEnd.last_media_evidence_at));
+    await step(lateEnd,true,false,'PROVIDER');
+    assert.equal(Number((await state(lateEnd)).media_segment_seconds),900);
+    assert.equal(await count(),5,'short internal recovery does not consume quota');
+    console.log('PASS delayed provider destroy never credits unconfirmed offline seconds or moves the restore boundary forward');
     const partyRow=await state(party),activeGrant=randomUUID();
     await root.execute(`INSERT INTO livekit_media_access_grants(id,room_id,application_user_id,media_role,publish_mode,expires_at)
       VALUES (?,?,?,'PARTY_OWNER','audio_only',CURRENT_TIMESTAMP(3)+INTERVAL 1 HOUR)`,[activeGrant,partyRow.room_id,host]);

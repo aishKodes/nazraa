@@ -38,21 +38,26 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   let cycle = Number(row.reward_cycle_version), interruptionId = row.auto_resume_interruption_id as string|null;
   const checkpoint = publishingCheckpoint({wasPublishing, publishingNow:input.publishing,
     previousEvidence:previous, serverTime:effectiveNow, evidenceWindowSeconds:30});
-  segment += checkpoint.seconds; valid += checkpoint.seconds; committed += checkpoint.seconds;
+  // A destroy/false event can arrive only after the provider's disconnect
+  // timeout. It proves that publishing stopped, not that media continued up
+  // to that timestamp. Conservatively retain the last positive checkpoint;
+  // never award the unconfirmed tail of a crashed/offline publisher.
+  const confirmedSeconds=input.publishing?checkpoint.seconds:0;
+  segment += confirmedSeconds; valid += confirmedSeconds; committed += confirmedSeconds;
 
   // Crash detection is conservative: the last server-confirmed checkpoint,
   // not receipt time or an imagined offline interval, is the interruption.
   const missedCheckpoint = wasPublishing && previous != null && gap > 30_000;
   const legacyInterrupted = !wasPublishing && input.publishing && segment>0 && previous!=null;
   if (!interruptionId && (missedCheckpoint || legacyInterrupted || (wasPublishing && !input.publishing))) {
-    const at = missedCheckpoint || legacyInterrupted ? previous! : effectiveNow;
+    const at = previous ?? effectiveNow;
     interruptionId = randomUUID();
     await connection.execute(`INSERT INTO live_session_interruptions
       (id,live_session_accounting_id,host_application_user_id,live_type,disconnected_at,
        grace_expires_at,saved_continuous_seconds,reward_cycle_version,qualifying,source)
       VALUES (?,?,?,?,?,?,?,?,?,?)`, [interruptionId,row.id,row.host_application_user_id,
       row.room_type==='PARTY'?'PARTY':'FACE',at,new Date(+at+AUTO_RESUME_SECONDS*1000),segment,cycle,
-      missedCheckpoint || legacyInterrupted || input.applicationInterrupted===true,input.source]);
+      missedCheckpoint || (legacyInterrupted && gap>30_000) || input.applicationInterrupted===true,input.source]);
   }
   if (interruptionId) {
     const [interruptions] = await connection.query<RowDataPacket[]>(
