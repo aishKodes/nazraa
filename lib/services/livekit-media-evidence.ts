@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2/promise";
 import { withTransaction } from "@/lib/db/transaction";
 import { enqueueFollowerLivePush } from "@/lib/services/fcm-push-service";
-import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
+import { checkpointHostLive } from "@/lib/services/live-auto-resume";
 import { reconcileCheckpointedLiveRewards } from "@/lib/db/repositories/mobile-completion";
 
 export type LiveKitWebhookEvent = {
@@ -313,23 +313,10 @@ export async function recordLiveKitMediaEvidence(evidence: NormalizedEvidence) {
       // Only a real transition checkpoints it. Otherwise the time since the
       // previous heartbeat would silently disappear on every republish event.
       if (session && Boolean(session.media_publishing) !== publishing) {
-        const now = new Date(session.server_time);
-        const checkpoint = publishingCheckpoint({
-          wasPublishing: Boolean(session.media_publishing), publishingNow: publishing,
-          previousEvidence: session.last_media_evidence_at ? new Date(session.last_media_evidence_at) : null,
-          serverTime: publishing ? now : new Date(Math.min(+now, +evidence.occurredAt)), evidenceWindowSeconds: 30,
+        await checkpointHostLive(connection, {
+          accountingId:room.accounting_id, publishing, source:'PROVIDER',
+          occurredAt:evidence.occurredAt,
         });
-        await connection.execute(
-          `UPDATE live_session_accounting SET media_publishing = ?,
-           media_segment_seconds = media_segment_seconds + ?, valid_media_seconds = valid_media_seconds + ?,
-           eligible_seconds_committed = eligible_seconds_committed + ?,
-           last_media_evidence_at = CASE WHEN ? THEN ? ELSE last_media_evidence_at END,
-           current_publish_started_at = CASE WHEN ? THEN CURRENT_TIMESTAMP(3) ELSE NULL END,
-           reconnect_state = CASE WHEN ? THEN 'PUBLISHING' ELSE 'RECONNECTING' END,
-           accounting_accuracy = 'CONFIRMED' WHERE id = ? AND status = 'ACTIVE'`,
-          [publishing, checkpoint.seconds, checkpoint.seconds, checkpoint.seconds,
-            publishing, checkpoint.cursor, publishing, publishing, room.accounting_id],
-        );
       }
       await reconcileCheckpointedLiveRewards(connection,room.accounting_id);
       // A follower alert is created only after a verified host video track is

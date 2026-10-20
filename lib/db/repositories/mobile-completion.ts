@@ -1,5 +1,5 @@
 import "server-only";
-import { publishingCheckpoint } from "@/lib/services/live-session-checkpoint";
+import { checkpointHostLive } from "@/lib/services/live-auto-resume";
 import { beautyTuning, beautyPublicMapping } from "@/lib/services/beauty-policy";
 import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile, assertSafeAudioLayout } from "./room-profile";
@@ -2100,6 +2100,7 @@ export async function refreshRoomPresence(
   mediaPublishing?: boolean,
   runtimeDiagnostics?: RoomRuntimeDiagnostics,
   preferredFacePlaybackProtocol?: "hls" | "flv",
+  publisherGrantId?: string,
 ) {
   let deferredMediaUsage: DeferredMediaUsageHeartbeat | null = null;
   // A passive viewer never needs to serialize the complete social snapshot
@@ -2129,7 +2130,7 @@ export async function refreshRoomPresence(
   const serializedPresence =
     membership != null &&
       (mediaPublishing === true ||
-      (membership.room_type !== "PARTY" && membership.room_role === "OWNER"));
+      membership.room_role === "OWNER");
 
   // A client may display an interpolated timer, but only this database-clock
   // settlement decides the PK result/rewards. This runs on the already
@@ -2281,6 +2282,15 @@ export async function refreshRoomPresence(
         [rows[0].id],
       );
     }
+    if (rows[0].room_role==='OWNER' && (identity.sessionId || publisherGrantId) && mediaPublishing!==undefined) {
+      const [grants]=await connection.query<RowDataPacket[]>(`SELECT id,mobile_session_id FROM livekit_media_access_grants
+        WHERE room_id=? AND application_user_id=? AND revoked_at IS NULL AND publish_mode<>'none'
+        ORDER BY issued_at DESC LIMIT 1`,[rows[0].id,identity.userId]);
+      // A delayed heartbeat from the replaced device is not a fresh Host
+      // interruption. Keep both membership and accounting untouched.
+      if((grants[0]?.mobile_session_id && grants[0].mobile_session_id!==identity.sessionId) ||
+        (publisherGrantId && grants[0]?.id!==publisherGrantId))mediaPublishing=undefined;
+    }
     if (mediaPublishing !== undefined) {
       const publishAuthorized = [
         "HOST",
@@ -2304,25 +2314,36 @@ export async function refreshRoomPresence(
       );
       mediaPublishing = effectivePublishing;
     }
+    if (rows[0].room_role === 'OWNER' && rows[0].reward_accounting_id && mediaPublishing !== undefined) {
+      const checkpointed = await checkpointHostLive(connection, {
+        accountingId:String(rows[0].reward_accounting_id), publishing:mediaPublishing,
+        source:'HEARTBEAT', applicationInterrupted:runtimeDiagnostics?.applicationInterrupted,
+      });
+      if (checkpointed) for (const [field,key] of Object.entries({
+        reward_media_segment_seconds:'media_segment_seconds', reward_valid_media_seconds:'valid_media_seconds',
+        reward_eligible_seconds:'eligible_duration_seconds',reward_committed_seconds:'eligible_seconds_committed',
+        reward_media_publishing:'media_publishing',reward_reconnect_state:'reconnect_state',
+      })) rows[0][field]=checkpointed[key];
+    }
     // There used to be two clocks here: the UI used room.started_at while the
     // reward path used a separately rounded heartbeat segment.  That allowed
     // a red Live clock to continue while the reward countdown stopped.  The
     // ledger below is the one source for both.  It records only server-time
     // intervals supported by a positive publishing heartbeat; an outage is
     // recoverable for the room, but unobserved offline time is not rewarded.
-    let rewardSegmentSeconds = Number(
+    const rewardSegmentSeconds = Number(
       rows[0].reward_media_segment_seconds ?? 0,
     );
-    let rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
-    let rewardEligibleSeconds = Number(rows[0].reward_eligible_seconds ?? 0);
-    let rewardCommittedSeconds = Math.max(
+    const rewardValidSeconds = Number(rows[0].reward_valid_media_seconds ?? 0);
+    const rewardEligibleSeconds = Number(rows[0].reward_eligible_seconds ?? 0);
+    const rewardCommittedSeconds = Math.max(
       Number(rows[0].reward_committed_seconds ?? 0),
       rewardValidSeconds,
     );
-    let rewardReconnectState = String(
+    const rewardReconnectState = String(
       rows[0].reward_reconnect_state ?? "STARTING",
     );
-    let rewardAccountingAccuracy = String(
+    const rewardAccountingAccuracy = String(
       rows[0].reward_accounting_accuracy ?? "CONFIRMED",
     );
     let rewardCurrentlyAccruing = Boolean(rows[0].reward_media_publishing);
@@ -2339,11 +2360,6 @@ export async function refreshRoomPresence(
         : rows[0].reward_last_media_heartbeat_at
           ? new Date(rows[0].reward_last_media_heartbeat_at as string | Date)
           : null;
-      const lastHeartbeat = rows[0].reward_last_heartbeat_at
-        ? new Date(rows[0].reward_last_heartbeat_at as string | Date)
-        : rows[0].reward_last_media_heartbeat_at
-          ? new Date(rows[0].reward_last_media_heartbeat_at as string | Date)
-          : null;
       const secondsSinceEvidence =
         lastMediaEvidence == null
           ? 0
@@ -2351,15 +2367,6 @@ export async function refreshRoomPresence(
               0,
               Math.floor(
                 (serverTime.getTime() - lastMediaEvidence.getTime()) / 1000,
-              ),
-            );
-      const secondsSinceHeartbeat =
-        lastHeartbeat == null
-          ? 0
-          : Math.max(
-              0,
-              Math.floor(
-                (serverTime.getTime() - lastHeartbeat.getTime()) / 1000,
               ),
             );
       // Current clients send a positive evidence checkpoint every 20 seconds.
@@ -2371,100 +2378,10 @@ export async function refreshRoomPresence(
           ? secondsSinceEvidence
           : 0;
 
-      if (mediaPublishing !== undefined) {
-        const publishingNow = mediaPublishing;
-        const checkpoint = publishingCheckpoint({wasPublishing,publishingNow,previousEvidence:lastMediaEvidence,serverTime,evidenceWindowSeconds});
-        let segmentBroken = false;
-        let acceptedDelta = 0;
-        if (publishingNow && wasPublishing) {
-          acceptedDelta = checkpoint.seconds;
-          if (secondsSinceHeartbeat > reconnectGrace) {
-            // Do not credit an unobserved gap.  A shorter gap remains one
-            // recoverable session segment (so a weak-network reconnect does
-            // not throw away already-earned progress); a gap beyond the
-            // configured grace breaks an unfinished continuous block.
-            rewardEligibleSeconds +=
-              Math.floor(rewardSegmentSeconds / 3600) * 3600;
-            rewardSegmentSeconds = 0;
-            segmentBroken = true;
-          }
-        } else if (!publishingNow && wasPublishing) {
-          // A publish-state transition is itself media evidence.  Commit the
-          // final bounded interval before marking the Host reconnecting so a
-          // normal Wi-Fi/mobile handoff cannot discard the last heartbeat
-          // window.  The cap deliberately prevents grace/offline time from
-          // being counted as publishing.
-          acceptedDelta = checkpoint.seconds;
-          if (secondsSinceHeartbeat > reconnectGrace) {
-            rewardEligibleSeconds +=
-              Math.floor(rewardSegmentSeconds / 3600) * 3600;
-            rewardSegmentSeconds = 0;
-            segmentBroken = true;
-          }
-        } else if (publishingNow && !wasPublishing) {
-          // The Host may reconnect to the same room/session.  A short grace
-          // keeps already-earned progress intact, while actual offline time
-          // remains excluded because no delta is added for this transition.
-          if (secondsSinceHeartbeat > reconnectGrace) {
-            rewardEligibleSeconds +=
-              Math.floor(rewardSegmentSeconds / 3600) * 3600;
-            rewardSegmentSeconds = 0;
-            segmentBroken = true;
-          }
-        }
-
-        if (acceptedDelta > 0) {
-          rewardSegmentSeconds += acceptedDelta;
-          rewardValidSeconds += acceptedDelta;
-          rewardCommittedSeconds += acceptedDelta;
-        }
-        rewardCurrentlyAccruing = publishingNow;
-        rewardReconnectState = publishingNow
-          ? "PUBLISHING"
-          : wasPublishing
-            ? "RECONNECTING"
-            : "GRACE";
-        rewardAccountingAccuracy = "CONFIRMED";
-        visibleUncommittedSeconds = 0;
-
-        await connection.execute(
-          `UPDATE live_session_accounting
-               SET media_publishing = ?, current_publish_started_at = CASE
-                 WHEN ? = TRUE AND (current_publish_started_at IS NULL OR ? = TRUE)
-                   THEN CURRENT_TIMESTAMP(3)
-                 WHEN ? = FALSE THEN NULL
-                 ELSE current_publish_started_at END,
-               last_media_heartbeat_at = CURRENT_TIMESTAMP(3),
-               last_heartbeat_at = CURRENT_TIMESTAMP(3),
-               last_media_evidence_at = CASE WHEN ? = TRUE THEN ? ELSE last_media_evidence_at END,
-               media_segment_seconds = ?, valid_media_seconds = ?,
-               eligible_duration_seconds = ?, eligible_seconds_committed = ?,
-               reconnect_state = ?, accounting_accuracy = 'CONFIRMED',
-               reconnect_segments = CASE
-                 WHEN reconnect_state <> ? THEN JSON_ARRAY_APPEND(
-                   COALESCE(reconnect_segments, JSON_ARRAY()), '$',
-                   JSON_OBJECT('state', ?, 'at', UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000)
-                 )
-                 ELSE reconnect_segments END
-           WHERE id = ? AND status = 'ACTIVE'`,
-          [
-            publishingNow,
-            publishingNow,
-            segmentBroken,
-            publishingNow,
-            publishingNow,
-            checkpoint.cursor,
-            rewardSegmentSeconds,
-            rewardValidSeconds,
-            rewardEligibleSeconds,
-            rewardCommittedSeconds,
-            rewardReconnectState,
-            rewardReconnectState,
-            rewardReconnectState,
-            rows[0].reward_accounting_id,
-          ],
-        );
-      }
+      // The shared durable checkpoint above already committed this sample.
+      // A response must not checkpoint it again or accrue an offline gap.
+      rewardCurrentlyAccruing = Boolean(rows[0].reward_media_publishing) && mediaPublishing !== false;
+      visibleUncommittedSeconds = mediaPublishing === undefined ? visibleUncommittedSeconds : 0;
 
       // `eligibleLiveSeconds` is the immutable server-derived clock exposed to
       // Flutter.  The display can interpolate only the small uncommitted

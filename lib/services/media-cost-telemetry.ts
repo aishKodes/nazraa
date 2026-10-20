@@ -14,6 +14,7 @@ export type LiveMediaUsageType =
   | "PARTY_PASSIVE_RTC_FALLBACK";
 
 export type RoomRuntimeDiagnostics = {
+  applicationInterrupted?: boolean;
   connectionPhase: string;
   reconnectCount: number;
   publishing: boolean;

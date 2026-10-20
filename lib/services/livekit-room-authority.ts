@@ -145,13 +145,14 @@ export async function authorizeLiveKitRoom(
        WHERE room_id = ? AND application_user_id = ? AND revoked_at IS NULL`,
       [room.room_id, identity.userId],
     );
+    const publisherGrantId = randomUUID();
     await connection.execute(
       `INSERT INTO livekit_media_access_grants
         (id, room_id, application_user_id, mobile_session_id, media_role,
          publish_mode, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3) + INTERVAL ? SECOND)`,
       [
-        randomUUID(),
+        publisherGrantId,
         room.room_id,
         identity.userId,
         identity.sessionId ?? null,
@@ -161,6 +162,7 @@ export async function authorizeLiveKitRoom(
       ],
     );
     return {
+      publisherGrantId,
       roomId: room.room_id,
       roomCode: input.roomCode,
       roomType: room.room_type,

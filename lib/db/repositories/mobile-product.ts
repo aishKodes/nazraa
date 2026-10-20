@@ -868,7 +868,7 @@ export async function setFollow(identity: MobileIdentity, type: "user" | "agency
   return { followed };
 }
 
-export async function createRoom(identity: MobileIdentity, input: { roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; themeEnabled: boolean; countryCode?: string; photoDataUrl?: string; faceBackgroundDataUrl?: string; password?: string }) {
+export async function createRoom(identity: MobileIdentity, input: { autoResumeVersion?: number; roomCode: string; kind: string; title: string; category: string; language: string; privacy: "public" | "followers" | "locked"; seatCount: number; themeIndex: number; themeEnabled: boolean; countryCode?: string; photoDataUrl?: string; faceBackgroundDataUrl?: string; password?: string }) {
   const roomType = input.kind === "party" ? "PARTY" : "FACE";
   const policy = LiveAccessPolicyService.for(identity);
   const access = roomType === "PARTY" ? policy.party : policy.face;
@@ -893,6 +893,27 @@ export async function createRoom(identity: MobileIdentity, input: { roomCode: st
   }
   const passwordHash = input.privacy === "locked" ? await bcrypt.hash(input.password!, 10) : null;
   const createdRoom = await withTransaction(async (connection) => {
+    // Serialize room creation across devices. New clients understand the
+    // canonical returned room; old APKs retain their historical response.
+    await connection.query('SELECT id FROM application_users WHERE id=? FOR UPDATE',[identity.userId]);
+    if (input.autoResumeVersion === 1) {
+      const [owned] = await connection.query<RowDataPacket[]>(`SELECT room.* FROM live_rooms room
+        JOIN live_session_accounting accounting ON accounting.room_id=room.id AND accounting.status='ACTIVE'
+        WHERE room.host_application_user_id=? AND room.room_type=? AND room.status IN ('ACTIVE','LOCKED')
+        ORDER BY room.started_at DESC LIMIT 1 FOR UPDATE`,[identity.userId,roomType]);
+      if (owned[0]) {
+        const r=owned[0];
+        return {id:r.id,roomCode:r.room_code,status:r.status,alreadyExisted:true,room:{
+          id:r.room_code,title:r.title,host:{id:identity.publicId,name:identity.fullName},
+          kind:roomType==='PARTY'?'party':'face',category:r.category,language:r.language_code,
+          privacy:String(r.privacy).toLowerCase(),seatCount:Number(r.seat_count),
+          themeIndex:Number(r.theme_index),themeEnabled:Boolean(r.theme_enabled),
+          countryCode:r.country_code,listeners:Number(r.audience_count),isActive:true,
+          photoUrl:r.room_photo_asset_id?`${publicApiOrigin()}/api/v1/assets/rooms/${r.room_photo_asset_id}`:null,
+          faceBackgroundUrl:r.face_background_asset_id?`${publicApiOrigin()}/api/v1/assets/rooms/${r.face_background_asset_id}`:null,
+        }};
+      }
+    }
     const liveRules = await loadFaceLiveRules(connection);
     if (roomType === "FACE" && !identity.playReviewerAccessOverride) {
       const schedule = evaluateFaceLiveSchedule(liveRules);

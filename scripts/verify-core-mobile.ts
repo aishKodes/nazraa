@@ -462,6 +462,7 @@ async function main() {
       displayName: "QA Profile Editor Updated",
       bio: "Server-authoritative profile update",
       gender: "MALE",
+      genderChangeConfirmed: true,
       countryCode: "BD",
       languageCode: "bn",
       whatsappE164: "+8801712345678",
@@ -758,6 +759,14 @@ async function main() {
       themeEnabled: false,
       countryCode: "IN",
     });
+    const restoredFace = await product.createRoom(owner, {
+      autoResumeVersion:1,roomCode:`QARESTORE${Date.now()}`,kind:'face',title:'QA Restore',category:'Talk',
+      language:'Hindi',privacy:'public',seatCount:0,themeIndex:0,themeEnabled:false,
+    });
+    assert.equal(restoredFace.roomCode,boundaryFaceCode);
+    assert.equal(restoredFace.alreadyExisted,true);
+    assert.equal(restoredFace.room?.id,boundaryFaceCode);
+    console.log('PASS process-recreated Host receives canonical existing room, not a duplicate board');
     const blockedQaRules = {
       ...qaLiveRules,
       startTime: qaClock(60),

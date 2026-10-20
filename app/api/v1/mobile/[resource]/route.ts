@@ -1090,6 +1090,7 @@ export async function POST(
       if (resource === "rooms") {
         const parsed = z
           .object({
+            autoResumeVersion: z.literal(1).optional(),
             roomCode: z.string().trim().min(3).max(80),
             kind: z.enum(["party", "face"]),
             title: z.string().trim().min(3).max(80),
@@ -1143,7 +1144,7 @@ export async function POST(
             );
           }
           const result = await createRoom(identity, parsed);
-          notifyRoom(parsed.roomCode, "presence");
+          notifyRoom(result.roomCode, "presence");
           // The Host will confirm publishing in its first presence heartbeat. A
           // best-effort sync here is still useful for room types whose publisher
           // signal is already present, and never delays room creation.
@@ -1219,9 +1220,11 @@ export async function POST(
           .object({
             roomCode: z.string().trim().min(3).max(80),
             mediaPublishing: z.boolean().optional(),
+            publisherGrantId: z.string().uuid().optional(),
             preferredPassivePlaybackProtocol: z.enum(["hls", "flv"]).optional(),
             runtimeDiagnostics: z
               .object({
+                applicationInterrupted: z.boolean().optional(),
                 connectionPhase: z.enum([
                   "idle",
                   "connecting",
@@ -1260,6 +1263,7 @@ export async function POST(
           parsed.mediaPublishing,
           parsed.runtimeDiagnostics,
           parsed.preferredPassivePlaybackProtocol,
+          parsed.publisherGrantId,
         );
         // A room presence response is on the critical tap-to-first-frame path.
         // Do not make it wait for a remote mixer command and then run the
@@ -1819,6 +1823,7 @@ export async function POST(
         return NextResponse.json({
           ...credentials,
           provider: "LIVEKIT",
+          publisherGrantId: authorization.publisherGrantId,
           mediaRole: authorization.mediaRole,
           publishMode: authorization.publishMode,
           microphoneMuted: authorization.microphoneMuted,
