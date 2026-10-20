@@ -38,7 +38,7 @@
         VALUES (?,NULL,'SYSTEM','settings.mobile_app_release_update','settings','system_setting','mobile.app_config',?,?,?,?)`,
         [randomUUID(), JSON.stringify(previous), JSON.stringify(next),
           `Owner-authorized signed website release ${version}; latest/download only. Minimum version, maintenance and all other settings preserved.`,
-          'Nazraa approved release maintenance 2026-10-16']);
+          'Nazraa owner-approved release maintenance']);
     }
     if (await protectedDigest() !== before) throw new Error('PROTECTED_SETTINGS_CHANGED');
     await connection.commit();
