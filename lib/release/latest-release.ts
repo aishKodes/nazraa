@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.4.93";
-const releaseBuild = 7405;
+const releaseVersion = "2.5.00";
+const releaseBuild = 7412;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.4.93/Nazraa-Live-2.4.93-7405-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.00/Nazraa-Live-2.5.00-7412-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,15 +34,15 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 239_830_662,
-  sha256: "37bf0bc21fce2588a3beb8bae93adf1d8241aa7ff294ac39144a797fce127401",
-  releaseDate: "2026-10-17",
+  apkSizeBytes: 259_180_422,
+  sha256: "6e5b79eadecd2cdcb5f2ed264099f67b05300a6762e6c662a72a1def747faf74",
+  releaseDate: "2026-10-20",
   releaseNotes: [
-    "Live reliability: recover SDK cleanup without leaving the room; fix a camera-switch beauty-buffer crash.",
-    "Live time: retain checkpoint fractions and reconcile signed publishing evidence with the existing claimable-reward ledger.",
-    "Stronger device-local beauty, protected facial detail and low-tier fallback; remotely managed PAG effect support.",
-    "Teen Patti Princess supports visible first-card rounds with transparent, committed per-chair quotes when enabled by Master.",
-    "About identifies the exact source commit. Existing LiveKit infrastructure, Party seats, other games and historical payout records are preserved.",
+    "Release candidate: server-authoritative Host Auto Resume preserves unfinished publishing progress for up to 180 seconds, without counting offline time.",
+    "Five successful qualifying restores per Host per business day, shared across Face and Party; retry-safe accounting preserves the existing reward policy and manual Claim flow.",
+    "Beauty V5.1 tuning is preserved, with sustained-pressure tier fallback, a minimal fail-open path and gradual recovery.",
+    "About identifies the exact source commit; bounded media diagnostics help investigate real-device video issues without exporting credentials or private messages.",
+    "LiveKit infrastructure, Party seats, games, gifts, wallet and historical payout records are unchanged. Physical-device field certification remains pending.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
