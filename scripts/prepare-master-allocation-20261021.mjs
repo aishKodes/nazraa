@@ -7,10 +7,11 @@ import {join,resolve} from 'node:path';
 import {gzipSync} from 'node:zlib';
 
 const root=resolve(import.meta.dirname,'..');
-const baseline='cd08af8f2dfb048e352c39239a498aac5e11bd62';
+const labelFix=process.argv.includes('--button-label-fix');
+const baseline=labelFix?'c4d8ab9f58795f419ed3f168cf0c67a7e35e61d4':'cd08af8f2dfb048e352c39239a498aac5e11bd62';
 const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root}).toString().trim();
 const paths=execFileSync('git',['diff','--name-only',baseline,commit],{cwd:root}).toString().trim().split('\n').filter(path=>/^(app|components|lib)\//.test(path));
-if(paths.length!==8)throw new Error('Unexpected deployment scope');
+if(paths.length!==(labelFix?1:8)||(labelFix&&paths[0]!=='components/master-allocation-search.tsx'))throw new Error('Unexpected deployment scope');
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const files=paths.map(path=>{
   const contents=execFileSync('git',['show',`${commit}:${path}`],{cwd:root});

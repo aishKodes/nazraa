@@ -12,9 +12,12 @@ import time
 assert os.geteuid() == 0
 root = Path('/opt/nazraa/app-next')
 os.chdir(root)
-name = 'master-allocation-20261021'
+label_fix = '--button-label-fix' in sys.argv
+name = 'master-allocation-20261021' + ('-label' if label_fix else '')
 capsule = json.loads(Path(f'/opt/nazraa/tools/{name}.json').read_text())
-assert capsule['baseline'] == 'cd08af8f2dfb048e352c39239a498aac5e11bd62'
+assert capsule['baseline'] == ('c4d8ab9f58795f419ed3f168cf0c67a7e35e61d4' if label_fix else 'cd08af8f2dfb048e352c39239a498aac5e11bd62')
+if label_fix:
+    assert [item['path'] for item in capsule['files']] == ['components/master-allocation-search.tsx']
 originals = {}
 for item in capsule['files']:
     path = root / item['path']
