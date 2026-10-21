@@ -11,6 +11,7 @@ import { withTransaction } from "@/lib/db/transaction";
 import type { PreparedDocument } from "@/lib/security/documents";
 import type { PageRequest, PageResult, Role, Scope } from "@/types/platform";
 import { isPanelCountry } from "@/lib/countries";
+import { can } from "@/lib/auth/permissions";
 
 export { rolesCreatableBy } from "@/lib/auth/role-hierarchy";
 
@@ -215,6 +216,8 @@ export async function createPlatformAccount(input: {
   const passwordHash = await bcrypt.hash(input.password, 12);
   let publicId = 0;
   await withTransaction(async (connection) => {
+    const [currentParents]=await connection.query<RowDataPacket[]>("SELECT role,country_code FROM platform_accounts WHERE id=? AND status='ACTIVE' AND removed_at IS NULL FOR UPDATE",[parent.id]);
+    if(!currentParents[0]||!isParentRoleValid(input.role,currentParents[0].role))throw new Error('The selected parent is no longer active. Refresh before creating this account.');
     publicId = await generateManagementPublicId(connection);
     await connection.execute(
       `INSERT INTO platform_accounts
@@ -318,22 +321,37 @@ export async function updateAccountStatus(input: { scope: Scope; accountId: stri
   });
 }
 
-export async function updatePlatformAccount(input: { scope: Scope; accountId: string; fullName: string; email?: string; mobile?: string; countryCode: string; reason: string }) {
-  if (input.scope.account.role === "ADMIN") throw new Error("Admin cannot edit team accounts.");
-  const target = await manageableAccount(input.scope, input.accountId);
-  const [countries] = await db().query<(RowDataPacket & { country_code: string | null; parent_country: string | null; parent_role: Role | null })[]>("SELECT a.country_code, p.country_code parent_country, p.role parent_role FROM platform_accounts a LEFT JOIN platform_accounts p ON p.id = a.parent_account_id WHERE a.id = ?", [target.id]);
-  const country = countries[0];
-  if (country?.country_code && country.country_code.toUpperCase() !== input.countryCode) throw new Error("Country cannot be changed through contact editing. Keep the assigned country and hierarchy consistent.");
-  if (!country?.country_code && (!isPanelCountry(input.countryCode) || (country?.parent_country && country.parent_role !== "MASTER" && country.parent_country.toUpperCase() !== input.countryCode))) throw new Error("Select the same country as this account's parent branch.");
-  await withTransaction(async (connection) => {
-    await connection.execute("UPDATE platform_accounts SET full_name = ?, email = ?, mobile = ?, country_code = ? WHERE id = ?", [input.fullName, input.email || null, input.mobile || null, input.countryCode, target.id]);
+export async function updatePlatformAccount(input: { scope: Scope; accountId: string; fullName: string; email?: string; mobile?: string; countryCode: string; reason: string; publicId?: string; expectedPublicId?: string }) {
+  if (!can(input.scope.account.role, 'accounts.edit')) throw new Error("Your role cannot edit team accounts.");
+  if (input.reason.trim().length<5 || input.reason.trim().length>500 || input.fullName.trim().length<2 || input.fullName.trim().length>120) throw new Error('Provide a valid name and audit reason.');
+  if (input.publicId!==undefined && (input.scope.account.role!=='MASTER'||!/^\d{6}$/.test(input.publicId)||Number(input.publicId)<100000)) throw new Error('Only Master can edit a six-digit management ID.');
+  try { await withTransaction(async (connection) => {
+    const scoped=scopeWhere(input.scope,'a.id');
+    const [rows]=await connection.query<RowDataPacket[]>(`SELECT a.*,p.country_code parent_country,p.role parent_role FROM platform_accounts a
+      LEFT JOIN platform_accounts p ON p.id=a.parent_account_id WHERE a.id=? AND a.removed_at IS NULL AND ${scoped.clause} FOR UPDATE`,[input.accountId,...scoped.values]);
+    const target=rows[0];
+    if(!target||target.id===input.scope.account.id||target.role==='MASTER'||!canManageRole(input.scope.account.role,target.role))throw new Error('That account cannot be managed in your branch.');
+    if(input.expectedPublicId!==undefined&&String(target.public_id)!==input.expectedPublicId)throw new Error('The management ID has changed. Refresh before editing.');
+    if (target.country_code && target.country_code.toUpperCase() !== input.countryCode) throw new Error("Country cannot be changed through contact editing. Keep the assigned country and hierarchy consistent.");
+    if (!target.country_code && (!isPanelCountry(input.countryCode) || (target.parent_country && target.parent_role !== "MASTER" && target.parent_country.toUpperCase() !== input.countryCode))) throw new Error("Select the same country as this account's parent branch.");
+    const publicId=input.publicId?Number(input.publicId):Number(target.public_id);
+    if(publicId!==Number(target.public_id)) {
+      const [duplicates]=await connection.query<RowDataPacket[]>('SELECT id FROM platform_accounts WHERE public_id=? AND id<>?',[publicId,target.id]);
+      if(duplicates.length)throw new Error('This management ID is already in use.');
+    }
+    // UUID remains unchanged: every hierarchy, ledger, payout and audit FK
+    // keeps the same identity. Saved historical public-ID snapshots stay intact.
+    await connection.execute("UPDATE platform_accounts SET public_id=?, full_name = ?, email = ?, mobile = ?, country_code = ? WHERE id = ?", [publicId,input.fullName.trim(), input.email || null, input.mobile || null, input.countryCode, target.id]);
     await connection.execute(
       `INSERT INTO audit_logs
         (id, actor_account_id, actor_role, action, module, target_type, target_id, previous_data, new_data, reason)
-       VALUES (?, ?, ?, 'account.edit', 'accounts', 'platform_account', ?, NULL, ?, ?)`,
-      [randomUUID(), input.scope.account.id, input.scope.account.role, target.id, JSON.stringify({ fullName: input.fullName, email: input.email || null, mobile: input.mobile || null, countryCode: input.countryCode }), input.reason],
+       VALUES (?, ?, ?, 'account.edit', 'accounts', 'platform_account', ?, ?, ?, ?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, target.id, JSON.stringify({publicId:String(target.public_id),fullName:target.full_name,email:target.email,mobile:target.mobile,countryCode:target.country_code}),JSON.stringify({ publicId:String(publicId),fullName: input.fullName.trim(), email: input.email || null, mobile: input.mobile || null, countryCode: input.countryCode }), input.reason.trim()],
     );
-  });
+  }); } catch(error) {
+    if(error&&typeof error==='object'&&'code' in error&&error.code==='ER_DUP_ENTRY')throw new Error('That management ID or email is already in use.');
+    throw error;
+  }
 }
 
 export async function listRoleChangeDescendants(scope: Scope, accountId: string) {
@@ -438,16 +456,23 @@ export async function changePlatformAccountRole(input: {
 
 export async function permanentlyRemovePlatformAccount(input: { scope: Scope; accountId: string; reason: string; confirmed: boolean }) {
   if (input.scope.account.role !== "MASTER" || !input.confirmed) throw new Error("Master confirmation is required for permanent removal.");
-  const [dependencies] = await db().query<(RowDataPacket & { child_count: number; host_count: number })[]>(
-    `SELECT
-       (SELECT COUNT(*) FROM platform_accounts WHERE parent_account_id = ? AND status != 'DISABLED') child_count,
-       (SELECT COUNT(*) FROM host_profiles WHERE agency_account_id = ?) host_count`,
-    [input.accountId, input.accountId],
-  );
-  if (Number(dependencies[0]?.child_count ?? 0) || Number(dependencies[0]?.host_count ?? 0)) {
-    throw new Error("Reassign all downstream accounts and hosts before permanently removing this account.");
-  }
-  await updateAccountStatus({ scope: input.scope, accountId: input.accountId, nextStatus: "DISABLED", reason: input.reason });
+  if(input.reason.trim().length<5||input.reason.trim().length>500)throw new Error('Provide a clear permanent-removal reason.');
+  await withTransaction(async connection=>{
+    const [targets]=await connection.query<RowDataPacket[]>('SELECT id,role,status FROM platform_accounts WHERE id=? AND removed_at IS NULL FOR UPDATE',[input.accountId]);
+    const target=targets[0];
+    if(!target||target.id===input.scope.account.id||target.role==='MASTER')throw new Error('That account cannot be permanently removed.');
+    // Dependency checks and retirement share the locked account transaction.
+    // All UUID rows remain: no DELETE and no financial/security FK cascade.
+    const [children]=await connection.query<RowDataPacket[]>("SELECT id FROM platform_accounts WHERE parent_account_id=? AND removed_at IS NULL FOR UPDATE",[target.id]);
+    const [hosts]=await connection.query<RowDataPacket[]>('SELECT id FROM host_profiles WHERE agency_account_id=? FOR UPDATE',[target.id]);
+    const [users]=await connection.query<RowDataPacket[]>('SELECT id FROM application_users WHERE agency_account_id=? FOR UPDATE',[target.id]);
+    const [applications]=await connection.query<RowDataPacket[]>("SELECT id FROM agency_membership_applications WHERE agency_account_id=? AND status='PENDING' FOR UPDATE",[target.id]);
+    if(children.length||hosts.length||users.length||applications.length)throw new Error('Reassign downstream accounts, Hosts and users, and resolve pending Agency applications before permanent deletion.');
+    await connection.execute("UPDATE platform_accounts SET status='DISABLED',removed_at=CURRENT_TIMESTAMP(3),removed_by=? WHERE id=?",[input.scope.account.id,target.id]);
+    await connection.execute('INSERT INTO account_status_history (id,account_id,from_status,to_status,reason,actor_account_id) VALUES (?,?,?,\'DISABLED\',?,?)',[randomUUID(),target.id,target.status,input.reason.trim(),input.scope.account.id]);
+    await connection.execute(`INSERT INTO audit_logs (id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
+      VALUES (?,?,'MASTER','account.permanent_retirement','accounts','platform_account',?,?,?,?)`,[randomUUID(),input.scope.account.id,target.id,JSON.stringify({status:target.status,role:target.role}),JSON.stringify({status:'DISABLED',retention:'UUID and financial/audit records preserved',dependenciesChecked:true}),input.reason.trim()]);
+  });
 }
 
 export async function resetAccountPassword(input: { scope: Scope; accountId: string; password: string; reason: string }) {

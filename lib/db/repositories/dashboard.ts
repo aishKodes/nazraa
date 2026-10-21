@@ -32,7 +32,7 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
        (SELECT COUNT(*) FROM application_users WHERE ${users.clause}) users,
        (SELECT COUNT(*) FROM host_profiles WHERE ${hosts.clause} AND status IN ('APPROVED','ACTIVE')) hosts,
        (SELECT COUNT(*) FROM platform_accounts WHERE ${accountIds.clause} AND role = 'AGENCY' AND status = 'ACTIVE') agencies,
-       (SELECT COUNT(DISTINCT country_code) FROM platform_accounts WHERE role = 'COUNTRY_MANAGER' AND removed_at IS NULL AND country_code IS NOT NULL) countries,
+       (SELECT COUNT(DISTINCT UPPER(TRIM(country_code))) FROM platform_accounts WHERE role = 'COUNTRY_MANAGER' AND removed_at IS NULL AND status <> 'DISABLED' AND country_code IS NOT NULL AND TRIM(country_code)<>'') countries,
        (SELECT COUNT(*) FROM live_rooms WHERE ${rooms.clause} AND status = 'ACTIVE') active_rooms,
        (SELECT COALESCE(SUM(money_amount), 0) FROM ledger_transactions WHERE ${ledger.clause} AND asset_type = 'CASH' AND status = 'COMPLETED') revenue,
        (SELECT COUNT(*) FROM withdrawal_requests WHERE ${withdrawals.clause} AND status IN ('PENDING','UNDER_REVIEW')) pending_withdrawals,

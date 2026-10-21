@@ -11,6 +11,7 @@ for (const role of roles) {
   assert.equal(can(role, "face_live.suspend"), role === "MASTER" || role === "MONITORING_CS", `${role} dedicated Face Live suspension rule`);
   assert.equal(can(role, "accounts.permanent"), role === "MASTER", `${role} permanent-account rule`);
   assert.equal(can(role, "coins.mint"), role === "MASTER", `${role} coin-mint rule`);
+  assert.equal(can(role, "wallet.adjust"), role === "MASTER", `${role} manual-user-balance adjustment rule`);
   assert.equal(can(role, "settings.manage"), role === "MASTER", `${role} global-settings rule`);
   assert.equal(can(role, "accounts.reassign"), role === "MASTER", `${role} hierarchy-reassignment rule`);
   assert.equal(can(role, "accounts.roles"), ["MASTER", "COUNTRY_MANAGER"].includes(role), `${role} role assignment rule`);

@@ -368,6 +368,8 @@ export async function submitAccountEdit(formData: FormData) {
   const parsed = z
     .object({
       accountId: z.string().uuid(),
+      publicId: z.string().regex(/^[1-9]\d{5}$/).optional(),
+      expectedPublicId: z.string().regex(/^[1-9]\d{5}$/).optional(),
       fullName: z.string().trim().min(2).max(120),
       email: z.string().trim().email().optional().or(z.literal("")),
       mobile: z.string().trim().max(24).optional(),
@@ -394,7 +396,7 @@ export async function submitAccountEdit(formData: FormData) {
       destination(
         `/dashboard/accounts/${parsed.data.accountId}`,
         "error",
-        error instanceof Error
+        error instanceof Error && !("code" in error)
           ? error.message
           : "Account details could not be updated.",
       ),

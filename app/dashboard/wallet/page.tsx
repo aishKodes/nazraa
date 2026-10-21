@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import Image from "next/image";
+import Link from "next/link";
 import { Coins, Search, Send, UserRound } from "lucide-react";
 import { submitCoinInventoryAdjustment, submitCoinTransfer, submitPlatformCoinAllocation } from "@/app/actions";
 import { Card, EmptyState, Notice, SectionHeading, StatusBadge } from "@/components/ui";
@@ -24,7 +25,7 @@ export default async function WalletPage({ searchParams }: { searchParams: Promi
   const allocationKey = randomUUID();
   const inventoryAccounts = accounts.filter((account) => account.id !== scope.account.id && account.role !== "MASTER" && account.status === "ACTIVE");
   return <>
-    <SectionHeading title="Wallet & economy" description="Balances are snapshots. The immutable ledger is the financial source of truth." />
+    <SectionHeading title="Wallet & economy" description="Balances are snapshots. The immutable ledger is the financial source of truth." action={can(scope.account.role,'wallet.adjust') ? <Link className="primary-button" href="/dashboard/wallet/adjustments">Master · Adjust user Coins / Diamonds</Link>:undefined} />
     {success ? <Notice type="success">{success}</Notice> : null}{error ? <Notice type="error">{error}</Notice> : null}
     <div className="split-grid">
       <Card className="transfer-card"><div className="card-title"><div><h2>Coin transfer</h2><p>Moves allocated inventory to one valid application user.</p></div><Coins size={20} /></div>

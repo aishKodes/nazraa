@@ -91,7 +91,7 @@ export async function maintainPartyBoardHistory() {
   await withTransaction(async connection=>{await reconcilePartyBoardTerminals(connection);await expireAbsentPartyBoardSegments(connection);});
 }
 
-export async function mobilePartyBoardHistory(identity:MobileIdentity,input:{before?:string;day?:string}={}) {
+export async function mobilePartyBoardHistory(identity:Pick<MobileIdentity,'userId'>,input:{before?:string;day?:string}={}) {
   for(const date of [input.before,input.day])if(date&&!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('Choose a valid history date.');
   const rules=await loadFaceLiveRules();
   await withTransaction(async connection=>{await reconcilePartyBoardTerminals(connection,identity.userId);await expireAbsentPartyBoardSegments(connection,identity.userId);});

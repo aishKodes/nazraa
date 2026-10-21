@@ -97,6 +97,7 @@ export default async function AccountDetailPage({ params, searchParams }: { para
 <form action={submitAccountEdit} className="admin-form">
 <input type="hidden" name="accountId" value={account.id} />
 <div className="form-grid">
+{scope.account.role==='MASTER'?<label>Management ID<input name="publicId" defaultValue={account.code} required pattern="[1-9][0-9]{5}" maxLength={6} inputMode="numeric"/><input type="hidden" name="expectedPublicId" value={account.code}/><small>Current ID: {account.code}. Internal UUID and historical financial references are preserved.</small></label>:null}
 <label>Full name<input name="fullName" defaultValue={account.name} required minLength={2} />
 </label>
 <label>Email<input name="email" type="email" defaultValue={account.email ?? ""} />

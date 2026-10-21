@@ -16,9 +16,9 @@ export async function searchMonitoring(scope: Scope, query: string) {
   const exactId = /^\d{1,12}$/.test(search);
   const cs = scope.account.role==='MONITORING_CS';
   const condition = cs ? (exactId ? '(u.public_id=? OR u.external_user_id=?)' : 'u.full_name LIKE ?') : exactId
-    ? "(u.public_id = ? OR u.external_user_id = ? OR u.whatsapp_e164 LIKE ?)"
+    ? "(u.public_id = ? OR u.external_user_id = ?)"
     : "(u.full_name LIKE ? OR u.whatsapp_e164 LIKE ? OR u.email LIKE ?)";
-  const searchValues = cs ? (exactId ? [Number(search),search] : [`%${search}%`]) : exactId ? [Number(search), search, `%${search}%`] : [`%${search}%`, `%${search}%`, `%${search}%`];
+  const searchValues = cs ? (exactId ? [Number(search),search] : [`%${search}%`]) : exactId ? [Number(search), search] : [`%${search}%`, `%${search}%`, `%${search}%`];
   const [rows] = await db().query<(RowDataPacket & {
     id: string; public_id: number; external_user_id: string; full_name: string; whatsapp_e164: string | null;
     country_code: string | null; account_status: string; face_verification_status: string; is_host: number;

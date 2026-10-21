@@ -23,6 +23,7 @@ export type Permission =
   | "devices.read"
   | "devices.manage"
   | "wallet.read"
+  | "wallet.adjust"
   | "coins.mint"
   | "coins.allocate"
   | "coins.transfer"
@@ -61,7 +62,7 @@ const master: Permission[] = [
   "dashboard.read", "accounts.read", "accounts.create", "accounts.manage", "accounts.edit",
   "accounts.reassign", "accounts.roles", "accounts.permanent", "users.read", "users.moderate", "users.permanent", "face_live.suspend",
   "hosts.read", "hosts.review", "agencies.read", "agencies.create", "agencies.review",
-  "hierarchy.read", "monitoring.read", "devices.read", "devices.manage", "wallet.read",
+  "hierarchy.read", "monitoring.read", "devices.read", "devices.manage", "wallet.read", "wallet.adjust",
   "coins.mint", "coins.allocate", "coins.transfer", "coin_orders.read", "coin_orders.manage",
   "coin_packages.manage", "sellers.manage", "withdrawals.read", "withdrawals.review",
   "transactions.read", "rooms.read", "rooms.restrict", "rooms.manage", "documents.read",

@@ -14,8 +14,11 @@ export function HostOperationalActivity({data,showCoins=false}:{data:Awaited<Ret
     <div><dt>Party Live hours</dt><dd>{(data.partySeconds/3600).toFixed(2)}</dd></div>
     <div><dt>Party activity status</dt><dd>{data.partyWorking?'Working':'No recorded activity'}</dd></div>
     <div><dt>Party gifting Diamonds</dt><dd>{formatNumber(data.partyGiftDiamonds)}</dd></div>
-    <div><dt>Party Valid Days</dt><dd>Canonical rule not configured</dd></div>
-    <div><dt>Party Board completed days / hours</dt><dd>Canonical completion records not configured</dd></div>
-    <div><dt>Target status</dt><dd>Target source not configured</dd></div>
+    <div><dt>Party Board · current month</dt><dd>{(data.partyBoard.monthlySeconds/3600).toFixed(2)} / {(data.partyBoard.monthlyTargetSeconds/3600).toFixed(0)} hours</dd></div>
+    <div><dt>Party Board valid days · current month</dt><dd>{data.partyBoard.validDays} / {data.partyBoard.validDayTarget}</dd></div>
+    <div><dt>Party Board remaining</dt><dd>{(data.partyBoard.monthlyRemainingSeconds/3600).toFixed(2)} hours · {data.partyBoard.remainingValidDays} valid days</dd></div>
+    <div><dt>Party Board today</dt><dd>{Math.floor(data.partyBoard.todaySeconds/60)} / {data.partyBoard.dailyTargetSeconds/60} minutes · {data.partyBoard.dailyCompleted?'Completed':'In progress'}</dd></div>
+    <div><dt>Party Board completion</dt><dd>{data.partyBoard.monthlyCompleted?'Completed':'Not yet completed'} · {data.partyBoardTimezone}</dd></div>
+    <div><dt>Face assigned target</dt><dd>No separate assigned-target source configured</dd></div>
   </dl></Card>;
 }

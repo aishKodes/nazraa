@@ -9,7 +9,9 @@ import { requirePermission } from "@/lib/auth/guard";
 import { listAgenciesPage } from "@/lib/db/repositories/directory";
 import { listAgencyApplications } from "@/lib/db/repositories/agency-applications";
 import { submitAgencyApplicationReview } from "@/app/admin-actions";
-import { formatDate } from "@/lib/utils/format";
+import { formatDate,formatNumber,formatCurrency } from "@/lib/utils/format";
+import { agencyOperationalTotals } from "@/lib/db/repositories/host-operations";
+import tableStyles from "@/components/control-financial-table.module.css";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +24,7 @@ export default async function AgenciesPage({ searchParams }: { searchParams: Pro
     canReview ? listAgencyApplications(scope) : Promise.resolve([]),
   ]);
   const agencies = result.items;
+  const finances=scope.account.role==='MASTER'?await agencyOperationalTotals(scope,agencies.map(agency=>agency.id)):[];
   return <>
     <SectionHeading title={scope.account.role === "AGENCY" ? "My Agency" : "Agencies"} description={scope.account.role === "AGENCY" ? "Your Agency, host count, and current status." : "Create and review agencies only inside your permitted branch."} action={can(scope.account.role, "agencies.create") ? <Link className="primary-button" href="/dashboard/accounts#create-account">
 <Building2 size={16} />Create Agency</Link> : <span className="scope-lock">
@@ -116,5 +119,10 @@ export default async function AgenciesPage({ searchParams }: { searchParams: Pro
 </table>
 </div> : <EmptyState title="No agencies in this branch" detail="New agencies will inherit their Admin, Super Admin, and Country Manager scope." />}<Pagination path="/dashboard/agencies" page={result.page} hasNext={result.hasNext} query={{ q }} />
 </Card>
+    {scope.account.role==='MASTER'?<Card><div className="card-title"><div><h2>Agency operational & financial tracking</h2><p>Current wallet balances and saved payout snapshots are separate. Agency Owners’ own Host wallets belong to their own Agency, matching the existing payout rule. No new target or commission formula.</p></div><Link className="secondary-button" href="/dashboard/host-payouts">Payouts / saved commission / CSV</Link></div>
+      <div className="table-scroll"><table className={tableStyles.table}><thead><tr><th>Agency</th><th>Admin / Super Admin</th><th>Users / Hosts</th><th>Coins</th><th>Available / reserved Diamonds</th><th>Submitted Diamonds</th><th>Host USD paid / pending</th><th>Agency USD paid / pending</th><th>Assigned Agency target</th></tr></thead><tbody>{finances.map(row=>{const agency=agencies.find(a=>a.id===row.agencyId)!;return <tr key={row.agencyId}>
+        <td>{agency.name}<small className="block">{agency.code}</small></td><td>{row.adminName??'—'} · {row.adminId??'—'}<small className="block">{row.superAdminName??'—'} · {row.superAdminId??'—'}</small></td><td>{row.users} / {row.hosts}</td><td>{formatNumber(row.coins)}</td><td>{formatNumber(row.diamonds)} / {formatNumber(row.reservedDiamonds)}</td><td>{formatNumber(row.submittedDiamonds)}</td><td>{formatCurrency(row.hostPaidUsd,'USD')} / {formatCurrency(row.hostPendingUsd,'USD')}</td><td>{formatCurrency(row.agencyPaidUsd,'USD')} / {formatCurrency(row.agencyPendingUsd,'USD')}</td><td>Not configured</td>
+      </tr>})}</tbody></table></div>
+    </Card>:null}
   </>;
 }

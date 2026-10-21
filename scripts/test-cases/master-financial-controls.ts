@@ -1,0 +1,115 @@
+import assert from 'node:assert/strict';
+import {createHash,randomUUID} from 'node:crypto';
+import type {Connection,RowDataPacket} from 'mysql2/promise';
+import type {Role,Scope} from '@/types/platform';
+import {adjustUserBalance,findAdjustmentTarget,listMasterAdjustments} from '@/lib/db/repositories/master-adjustments';
+import type {MasterAdjustmentInput} from '@/lib/finance/master-adjustment';
+import * as admin from '@/lib/db/repositories/administration';
+import * as accounts from '@/lib/db/repositories/accounts';
+import * as monitoring from '@/lib/db/repositories/monitoring';
+import {getDashboardMetrics} from '@/lib/db/repositories/dashboard';
+import {listFaceVerificationRequests} from '@/lib/db/repositories/mobile-administration';
+import {agencyOperationalTotals,hostOperationalActivity,transferHostAgency} from '@/lib/db/repositories/host-operations';
+import {mobilePartyBoardHistory} from '@/lib/db/repositories/party-board-history';
+
+/** Destructive fixtures exist only inside verify-control-integration's new,
+ * isolated local database. Never run this function against production. */
+export async function verifyMasterFinancialControls(root:Connection,scopes:Map<Role,Scope>,own:{id:string;publicId:string},other:{id:string;publicId:string},otherAgency:Scope) {
+  const master=scopes.get('MASTER')!,agency=scopes.get('AGENCY')!,cm=await accounts.scopeFor(scopes.get('COUNTRY_MANAGER')!.account),cs=scopes.get('MONITORING_CS')!;
+  const targetId=randomUUID(),externalId='9988770011';
+  await root.execute("INSERT INTO application_users (id,external_user_id,full_name,agency_account_id,gender,email,whatsapp_e164,is_host,face_verification_status) VALUES (?,?,'QA Finance Host',?,'FEMALE','qa-finance@example.invalid','+910000000001',TRUE,'PENDING')",[targetId,externalId,agency.account.id]);
+  const hostId=randomUUID();
+  await root.execute("INSERT INTO host_profiles (id,application_user_id,agency_account_id,status) VALUES (?,?,?,'ACTIVE')",[hostId,targetId,agency.account.id]);
+  await root.execute("INSERT INTO wallet_balances (id,owner_type,owner_id,asset_type,available_balance,reserved_balance) VALUES (?,'APPLICATION_USER',?,'COIN',1000,0),(?,'APPLICATION_USER',?,'DIAMOND',5000,99)",[randomUUID(),targetId,randomUUID(),targetId]);
+  const [ids]=await root.query<RowDataPacket[]>('SELECT public_id FROM application_users WHERE id=?',[targetId]);
+  const publicId=String(ids[0].public_id);
+  assert.equal((await findAdjustmentTarget(master,` ${publicId} `))?.id,targetId);
+  assert.equal((await findAdjustmentTarget(master,externalId))?.id,targetId);
+  assert.equal(await findAdjustmentTarget(master,'QA Finance Host'),null);
+  const request=(overrides:Partial<MasterAdjustmentInput>={}):MasterAdjustmentInput=>({userId:targetId,asset:'COIN',action:'ADD',amount:100,expectedBalance:1000,reason:'QA exact ledger correction',internalNote:'Private QA note',idempotencyKey:randomUUID(),confirmed:true,...overrides});
+  const initial=request();
+  const duplicates=await Promise.all(Array.from({length:20},()=>adjustUserBalance(master,initial)));
+  assert.equal(new Set(duplicates.map(r=>r.id)).size,1);assert.equal(duplicates.filter(r=>!r.replayed).length,1);
+  assert.equal((await findAdjustmentTarget(master,publicId))?.coins,1100);
+  const debit=request({action:'REMOVE',amount:25,expectedBalance:1100});
+  await adjustUserBalance(master,debit);assert.equal((await adjustUserBalance(master,debit)).replayed,true);
+  const diamondCredit=request({asset:'DIAMOND',amount:2000,expectedBalance:5000});
+  await adjustUserBalance(master,diamondCredit);await adjustUserBalance(master,diamondCredit);
+  const diamondDebit=request({asset:'DIAMOND',action:'REMOVE',amount:300,expectedBalance:7000});
+  await adjustUserBalance(master,diamondDebit);await adjustUserBalance(master,diamondDebit);
+  let target=await findAdjustmentTarget(master,publicId);assert.deepEqual([target?.coins,target?.diamonds],[1075,6700]);
+  for(const amount of [0,-1,1.2,Number.NaN,Number.MAX_SAFE_INTEGER+1])await assert.rejects(adjustUserBalance(master,request({amount,expectedBalance:1075})));
+  await assert.rejects(adjustUserBalance(master,request({action:'REMOVE',amount:1076,expectedBalance:1075})),/too low/);
+  await assert.rejects(adjustUserBalance(master,request({expectedBalance:1000})),/balance changed/);
+  await assert.rejects(adjustUserBalance(master,{...initial,amount:200}),/different adjustment/);
+  await assert.rejects(adjustUserBalance(master,{...initial,userId:other.id,expectedBalance:0}),/different adjustment/);
+  await assert.rejects(adjustUserBalance(master,{...initial,confirmed:false} as unknown as MasterAdjustmentInput));
+  for(const [role,scope] of scopes)if(role!=='MASTER') {
+    await assert.rejects(adjustUserBalance(scope,initial),{status:403});
+    await assert.rejects(findAdjustmentTarget(scope,publicId));await assert.rejects(listMasterAdjustments(scope));
+  }
+  const race=await Promise.allSettled([adjustUserBalance(master,request({expectedBalance:1075})),adjustUserBalance(master,request({expectedBalance:1075}))]);
+  assert.equal(race.filter(r=>r.status==='fulfilled').length,1);assert.equal(race.filter(r=>r.status==='rejected').length,1);
+  target=await findAdjustmentTarget(master,publicId);assert.equal(target?.coins,1175);
+  const [wallets]=await root.query<RowDataPacket[]>("SELECT reserved_balance FROM wallet_balances WHERE owner_id=? AND asset_type='DIAMOND'",[targetId]);assert.equal(Number(wallets[0].reserved_balance),99);
+  const [ledgers]=await root.query<RowDataPacket[]>("SELECT * FROM ledger_transactions WHERE idempotency_key LIKE 'master-adjust:%'");
+  const [audits]=await root.query<RowDataPacket[]>("SELECT * FROM audit_logs WHERE action='wallet.master_adjustment'");
+  assert.equal(ledgers.length,5);assert.equal(audits.length,5);
+  assert.deepEqual([...new Set(ledgers.map(r=>r.transaction_type))].sort(),['MASTER_COIN_CREDIT','MASTER_COIN_DEBIT','MASTER_DIAMOND_CREDIT','MASTER_DIAMOND_DEBIT']);
+  assert.equal((await listMasterAdjustments(master)).items.length,5);
+  // Country is counted from the existing Country Manager records, not users
+  // or duplicate branches/aliases for the same ISO code.
+  assert.equal((await getDashboardMetrics(master)).countries,1);
+  const [hostRows]=await root.query<RowDataPacket[]>('SELECT id FROM host_profiles WHERE application_user_id=?',[own.id]);
+  await transferHostAgency({scope:master,hostId:String(hostRows[0].id),destinationAgencyId:otherAgency.account.id,expectedAgencyId:agency.account.id,reason:'QA transfer without rewriting history',confirmed:true});
+  const [mapped]=await root.query<RowDataPacket[]>('SELECT u.agency_account_id user_agency,h.agency_account_id host_agency FROM application_users u JOIN host_profiles h ON h.application_user_id=u.id WHERE u.id=?',[own.id]);
+  assert.equal(mapped[0].user_agency,otherAgency.account.id);assert.equal(mapped[0].host_agency,otherAgency.account.id);
+  await assert.rejects(transferHostAgency({scope:master,hostId:String(hostRows[0].id),destinationAgencyId:null,expectedAgencyId:agency.account.id,reason:'QA stale form cannot remove transferred Host',confirmed:true}),/Agency changed/);
+  await transferHostAgency({scope:master,hostId:String(hostRows[0].id),destinationAgencyId:null,expectedAgencyId:otherAgency.account.id,reason:'QA remove membership only',confirmed:true});
+  await transferHostAgency({scope:master,hostId:String(hostRows[0].id),destinationAgencyId:agency.account.id,expectedAgencyId:null,reason:'QA restore Agency membership',confirmed:true});
+  const verificationId=randomUUID();
+  await root.execute("INSERT INTO face_verification_requests (id,application_user_id,status) VALUES (?,?,'PENDING')",[verificationId,targetId]);
+  assert.equal((await listFaceVerificationRequests(master,1,'review',publicId))[0].id,verificationId);
+  assert.equal((await listFaceVerificationRequests(master,1,'verified',externalId))[0].id,verificationId);
+  const lookup=await monitoring.searchMonitoring(cs,publicId);assert.equal(lookup.length,1);
+  assert.equal(lookup[0].agencyPublicId,agency.account.publicId);assert.equal(lookup[0].adminPublicId,scopes.get('ADMIN')!.account.publicId);
+  assert.equal(lookup[0].whatsapp,null);assert.equal('email' in lookup[0],false);
+  const boardId=randomUUID(),segmentId=randomUUID();
+  await root.execute("INSERT INTO live_rooms (id,room_code,host_application_user_id,room_type,title,status,ended_at) VALUES (?,?,?,'PARTY','QA completed attendance','ENDED',UTC_TIMESTAMP())",[boardId,randomUUID(),own.id]);
+  await root.execute("INSERT INTO party_board_seat_segments (id,application_user_id,board_owner_user_id,room_id,seat_session_id,seat_index,board_title,business_timezone,started_at,ended_at,end_reason) VALUES (?,?,?,?,?,2,'QA completed attendance','Asia/Kolkata',UTC_TIMESTAMP()-INTERVAL 50 MINUTE,UTC_TIMESTAMP(),'SEAT_ENDED')",[segmentId,targetId,own.id,boardId,randomUUID()]);
+  await root.execute("INSERT INTO party_board_segment_days (segment_id,application_user_id,business_date,eligible_milliseconds) VALUES (?,?,DATE(UTC_TIMESTAMP()+INTERVAL 330 MINUTE),3000000)",[segmentId,targetId]);
+  const activity=(await hostOperationalActivity(master,[targetId]))[0];
+  const sameBoard=await mobilePartyBoardHistory({userId:targetId});assert.deepEqual(activity.partyBoard,sameBoard.summary);
+  assert.equal(activity.partyBoard.dailyTargetSeconds,3000);assert.equal(activity.partyBoard.monthlyTargetSeconds,72000);assert.equal(activity.partyBoard.validDayTarget,24);
+  assert.equal(activity.partyBoard.validDays,1);assert.equal(activity.partyBoard.dailyCompleted,true);assert.equal(activity.partyBoard.monthlyRemainingSeconds,69000);
+  const [totals]=await agencyOperationalTotals(master,[agency.account.id]);
+  assert.equal(totals.coins,1175);assert.equal(totals.diamonds,6700);assert.equal(totals.reservedDiamonds,99);
+  await assert.rejects(agencyOperationalTotals(cm,[agency.account.id]));
+  const sessionId=randomUUID(),token=randomUUID(),deviceHash=createHash('sha256').update(randomUUID()).digest('hex');
+  await root.execute("INSERT INTO mobile_sessions (id,application_user_id,token_hash,device_label,device_id_hash,expires_at) VALUES (?,?,?,'QA Country device',?,UTC_TIMESTAMP()+INTERVAL 1 DAY)",[sessionId,targetId,createHash('sha256').update(token).digest('hex'),deviceHash]);
+  await monitoring.blockUserDevice({scope:cm,sessionId,reason:'QA Country uses existing device block'});
+  const [blocks]=await root.query<RowDataPacket[]>("SELECT id FROM mobile_device_blocks WHERE application_user_id=? AND status='ACTIVE'",[targetId]);assert.equal(blocks.length,1);
+  assert.equal((await monitoring.listUserDevices(master,targetId))[0].blockId,blocks[0].id);
+  await monitoring.unblockUserDevice({scope:cm,blockId:String(blocks[0].id),reason:'QA restore test device only'});
+  assert.equal((await monitoring.listUserDevices(master,targetId))[0].blockId,null);
+  const [otherSessions]=await root.query<RowDataPacket[]>('SELECT id FROM mobile_sessions WHERE application_user_id=?',[other.id]);
+  if(otherSessions[0])await assert.rejects(monitoring.blockUserDevice({scope:cm,sessionId:String(otherSessions[0].id),reason:'QA cannot cross country branch'}));
+  // ID changes preserve every UUID-based reference; collisions do not mutate.
+  const result=await admin.createPlatformAccount({scope:master,role:'COIN_SELLER',fullName:'QA Editable Seller',countryCode:'IN',requestedParentId:scopes.get('ADMIN')!.account.id,password:'Local-QA-Only-2026!',documents:[]});
+  let newPublicId=990001;
+  while(await accounts.accountByManagementId(String(newPublicId)))newPublicId++;
+  const edit={scope:master,accountId:result.accountId,fullName:'QA Edited Seller',countryCode:'IN',reason:'QA safely change public management ID',expectedPublicId:String(result.publicId),publicId:String(newPublicId)};
+  await admin.updatePlatformAccount(edit);
+  assert.equal((await accounts.accountByManagementId(String(newPublicId)))?.id,result.accountId);
+  assert.equal(await accounts.accountByManagementId(String(result.publicId)),null);
+  await assert.rejects(admin.updatePlatformAccount({...edit,expectedPublicId:String(newPublicId),publicId:agency.account.publicId}),/already in use/);
+  await assert.rejects(admin.permanentlyRemovePlatformAccount({scope:master,accountId:agency.account.id,reason:'QA dependency blocks unsafe removal',confirmed:true}),/Reassign/);
+  const historyId=randomUUID();
+  await root.execute("INSERT INTO ledger_transactions (id,transaction_code,asset_type,transaction_type,source_type,destination_type,amount,actor_account_id) VALUES (?,?,'COIN','QA_RETAIN_HISTORY','PLATFORM_CONTROL','PLATFORM_CONTROL',1,?)",[historyId,`QA-${randomUUID()}`,result.accountId]);
+  await admin.permanentlyRemovePlatformAccount({scope:master,accountId:result.accountId,reason:'QA retire only disposable local account',confirmed:true});
+  const [retired]=await root.query<RowDataPacket[]>('SELECT status,removed_at FROM platform_accounts WHERE id=?',[result.accountId]);assert.equal(retired[0].status,'DISABLED');assert.ok(retired[0].removed_at);
+  const [retained]=await root.query<RowDataPacket[]>('SELECT actor_account_id FROM ledger_transactions WHERE id=?',[historyId]);assert.equal(retained[0].actor_account_id,result.accountId);
+  await assert.rejects(admin.updateAccountStatus({scope:master,accountId:result.accountId,nextStatus:'ACTIVE',reason:'QA retired account must not reactivate'}));
+  console.log('PASS: Master finance — four adjustment directions, 20 concurrent retries, stale/overdraw/invalid/reused-key rejects, exact ledger/audit, seven role denials, immutable history, ID uniqueness, safe retirement, Host transfer/remove, verification ID, Country device parity, CS privacy, canonical Board metrics.');
+  return {targetPublicId:publicId,targetHostId:hostId};
+}

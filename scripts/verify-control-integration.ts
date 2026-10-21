@@ -150,6 +150,11 @@ async function main() {
     }
     const ownUser = await user(agency.account.id, "QA Own Host");
     const otherUser = await user(agencyOther.account.id, "QA Other Host");
+    if(process.env.NAZRAA_QA_ONLY_MASTER_FINANCE==='1') {
+      const financeQa=await (await import('./test-cases/master-financial-controls')).verifyMasterFinancialControls(root,scopes,ownUser,otherUser,agencyOther);
+      if(process.env.NAZRAA_QA_KEEP==='1') {keep=true;console.log(`QA_DATABASE=${database}`);console.log(JSON.stringify({accounts:[...scopes].map(([role,scope])=>({role,publicId:scope.account.publicId})),...financeQa}));}
+      return;
+    }
     const ownAgencyReport = await ownerReports.agencyHostReport(await refresh(agency));
     assert.equal(ownAgencyReport.items.some((row) => row.hostId === ownUser.publicId), true, "Agency report includes its authorized Host");
     assert.equal(ownAgencyReport.items.some((row) => row.hostId === otherUser.publicId), false, "Agency report never includes a cross-Agency Host");
