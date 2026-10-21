@@ -16,9 +16,11 @@ import time
 assert os.geteuid() == 0
 root = Path('/opt/nazraa/app-next')
 os.chdir(root)
-capsule_path = Path('/opt/nazraa/tools/master-controls-20261021.json')
+listing_fix = '--listing-fix' in sys.argv
+deployment_name = 'master-controls-20261021' + ('-listing' if listing_fix else '')
+capsule_path = Path(f'/opt/nazraa/tools/{deployment_name}.json')
 capsule = json.loads(capsule_path.read_text())
-assert capsule['baseline'] == '5088fdd'
+assert capsule['baseline'] == ('b232ef3' if listing_fix else '5088fdd')
 originals = {}
 for item in capsule['files']:
     name = item['path']
@@ -34,14 +36,15 @@ print(f'SOURCE_GUARDS_PASS {len(originals)} scoped files', flush=True)
 if '--apply' not in sys.argv:
     sys.exit(0)
 assert 'PREDEPLOY_BACKUP_VERIFIED' in Path('/opt/nazraa/logs/master-finance-20261021-predeploy.log').read_text()
-backup = Path(f'/opt/nazraa/backups/master-controls-20261021-source-{int(time.time())}.tar.gz')
+backup = Path(f'/opt/nazraa/backups/{deployment_name}-source-{int(time.time())}.tar.gz')
 with tarfile.open(backup, 'w:gz') as archive:
     for name, original in originals.items():
         if original is not None:
             archive.add(root / name, arcname=name)
 backup.chmod(0o600)
 image = subprocess.check_output(['docker','inspect','-f','{{.Image}}','nazraa-api-1'], text=True).strip()
-subprocess.run(['docker','tag',image,'nazraa-api:master-controls-rollback-20261021'], check=True)
+rollback_tag = 'nazraa-api:master-controls-' + ('listing-' if listing_fix else '') + 'rollback-20261021'
+subprocess.run(['docker','tag',image,rollback_tag], check=True)
 compose = ['docker','compose','-f','/opt/nazraa/compose.yaml']
 try:
     for item in capsule['files']:

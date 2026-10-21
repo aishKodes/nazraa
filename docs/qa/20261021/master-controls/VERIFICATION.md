@@ -27,6 +27,13 @@ Previous API image tag: `nazraa-api:master-controls-rollback-20261021`.
 Deployment helper automatically restores scoped sources and the old API image
 on build/start/health failure. No worker/Redis/DB/realtime/LiveKit restart.
 
+The final retirement-list correction is a separately guarded one-file
+follow-up, backed by `nazraa-api:master-controls-listing-rollback-20261021`
+and its `master-controls-20261021-listing-source-*` source archive. The original
+pre-task rollback image/archive above remain available. Its new regression
+assertions verify exclusion from Team exact-ID search and normal selectors,
+while retained ledger references still resolve.
+
 ## Implemented / reused
 
 - Wallet → Master adjustments: exact User/Host ID search; DP or placeholder,
@@ -64,6 +71,8 @@ on build/start/health failure. No worker/Redis/DB/realtime/LiveKit restart.
   and pending Agency applications. UUID/tombstone and immutable financial,
   gift, withdrawal, security and audit references remain. 57 existing account
   foreign-key references were inventoried; no physical DELETE/cascade is used.
+  A final follow-up excludes retired records from both normal Team pagination
+  and account selectors; exact old/new public-ID searches cannot resurface them.
 - Existing Master Host Agency remove/transfer reused. Current Agency ID is
   shown; expected-source protection is also accepted by the direct API.
   Host/user mappings change together; historical payout snapshots remain.

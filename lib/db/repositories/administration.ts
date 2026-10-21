@@ -75,7 +75,7 @@ export async function listPlatformAccounts(scope: Scope, role?: Role, limit = 25
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
   const safeLimit = Math.min(500, Math.max(1, Math.trunc(limit)));
   const [rows] = await db().query<AccountRow[]>(
-    `${accountSelect(`${scoped.clause}${role ? " AND a.role = ?" : ""}`)}
+    `${accountSelect(`${scoped.clause} AND a.removed_at IS NULL${role ? " AND a.role = ?" : ""}`)}
      ORDER BY a.created_at DESC LIMIT ?`,
     [...scoped.values, ...(role ? [role] : []), safeLimit],
   );
@@ -88,7 +88,7 @@ export async function listPlatformAccountsPage(
 ): Promise<PageResult<ReturnType<typeof mapAccount>>> {
   const { page, pageSize, offset, search } = normalizedPage(input);
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.id");
-  const filters = [scoped.clause];
+  const filters = [scoped.clause, "a.removed_at IS NULL"];
   const values: unknown[] = [...scoped.values];
   if (input.role) {
     filters.push("a.role = ?");

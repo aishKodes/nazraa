@@ -109,6 +109,8 @@ export async function verifyMasterFinancialControls(root:Connection,scopes:Map<R
   await admin.permanentlyRemovePlatformAccount({scope:master,accountId:result.accountId,reason:'QA retire only disposable local account',confirmed:true});
   const [retired]=await root.query<RowDataPacket[]>('SELECT status,removed_at FROM platform_accounts WHERE id=?',[result.accountId]);assert.equal(retired[0].status,'DISABLED');assert.ok(retired[0].removed_at);
   const [retained]=await root.query<RowDataPacket[]>('SELECT actor_account_id FROM ledger_transactions WHERE id=?',[historyId]);assert.equal(retained[0].actor_account_id,result.accountId);
+  assert.equal((await admin.listPlatformAccounts(master)).some(row=>row.id===result.accountId),false,'retired account is absent from normal account selectors');
+  assert.equal((await admin.listPlatformAccountsPage(master,{search:String(newPublicId)})).items.length,0,'retired account is absent from Team exact-ID search');
   await assert.rejects(admin.updateAccountStatus({scope:master,accountId:result.accountId,nextStatus:'ACTIVE',reason:'QA retired account must not reactivate'}));
   console.log('PASS: Master finance — four adjustment directions, 20 concurrent retries, stale/overdraw/invalid/reused-key rejects, exact ledger/audit, seven role denials, immutable history, ID uniqueness, safe retirement, Host transfer/remove, verification ID, Country device parity, CS privacy, canonical Board metrics.');
   return {targetPublicId:publicId,targetHostId:hostId};
