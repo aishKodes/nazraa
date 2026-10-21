@@ -48,9 +48,37 @@ History can be filtered by current/snapshotted public ID, Host ID, transaction U
 
 ## Production deployment
 
-Encrypted private OCI predeploy backup verified: `nazraa-predeploy-20261021T104229Z`, 5,648,772,184 bytes. Guarded API-only helper is prepared to compare every existing source hash to baseline `cd08af8f2dfb048e352c39239a498aac5e11bd62`, archive source, retain API rollback image, roll back on failure, and compare config/schema/FK inventory before/after.
+**Deployed to production:** main implementation `c4d8ab9f58795f419ed3f168cf0c67a7e35e61d4`, final compact/accessibility label correction `252226aec0e2e95889c43b828f82a26e9b153cc4`. Browser access was restored and the existing authenticated Hostinger Web console used; no new credential/access/firewall change was needed.
 
-**Deployment not yet performed.** After the backup completed, the browser-control tool began returning “Local browser use is disabled in Work settings.” A fresh official SSH attempt with the existing key also timed out during banner exchange. No patch capsule was transmitted/applied and the existing production API is unchanged. Re-enable local browser access to resume the authenticated Hostinger Web console. No password, new infrastructure or database migration is required.
+Fresh encrypted private OCI predeploy backup verified: `nazraa-predeploy-20261021T141247Z`, **5,675,008,755 bytes**. All eight scoped runtime files passed pre-change guards against baseline `cd08af8f2dfb048e352c39239a498aac5e11bd62` and post-deployment SHA-256 verification against the committed patch. Only the API container was rebuilt/recreated; API health is **healthy**, public config HTTP200, anonymous allocation search HTTP401.
+
+Deployment helper returned `ALLOCATION_DEPLOY_PASS`. Before/after checks confirmed unchanged settings digest, foreign-key inventory and all **111 migrations**, latest `0109_host_auto_resume.sql`. No migrations/config writes, mobile changes, real wallet adjustments, media/realtime/worker/Redis/MySQL restarts were performed.
+
+Rollback retained:
+
+- API image: `nazraa-api:master-allocation-20261021-rollback`
+- Source: `/opt/nazraa/backups/master-allocation-20261021-source-1792592372.tar.gz`
+- Deployment record: `/opt/nazraa/tools/master-allocation-20261021-deployed.json`
+- Log: `/opt/nazraa/logs/master-allocation-20261021-deploy.log`
+- One-file label follow-up rollback: `nazraa-api:master-allocation-20261021-label-rollback`; `/opt/nazraa/backups/master-allocation-20261021-label-source-1792592803.tar.gz`.
+- Final combined eight-file verification: `/opt/nazraa/tools/master-allocation-20261021-final.json`.
+
+Read-only production DB preflight confirmed a `range` plan using `uq_application_user_public_id` and existing normal/inactive users, Agency Hosts, independent Hosts, active Admin wallets and suspended Admin wallets. These are real existing account categories, not production test fixtures.
+
+Authenticated production browser verification:
+
+- Whitespace-normalized exact Agency Host ID `12000006`: correct App wallet, Agency and active status; Select opens asset/action/amount/reason controls.
+- Normal user `12000751`: `USER / INACTIVE`, not a misleading not-found.
+- Independent Host `12000000`: correct Host App wallet.
+- Platform Admin `358705`: distinct `ADMIN / Platform wallet / ACTIVE`.
+- Suspended platform Admin `374433`: visible `SUSPENDED` status.
+- Prefix `1200`: 20 initial cards, Show more expands to **40 unique cards**; no duplicate IDs/wallets.
+- Rapid successive inputs `12000006 → 358705 → 12000751`: only the latest one-account result remains.
+- History User ID `12000015`: two real matching legacy records, no other target; transaction code filter returns exactly its one matching legacy record. Existing reasons/internal notes/before-after balances and IST timestamps remain intact.
+- Final visible button reads simply **Select**, while accessible name retains exact target ID and wallet type.
+- Real production balances were not adjusted for QA. All four write operations, duplicate requests, overdrafts and forced-failure rollback were executed only against disposable local fixtures. The local QA server/proxy, temporary DB user and fixture database were cleaned up.
+
+**Remaining blocker: none.** No mobile code changed or APK rebuild required.
 
 ## Screenshots
 
@@ -58,5 +86,7 @@ Encrypted private OCI predeploy backup verified: `nazraa-predeploy-20261021T1042
 - `confirmation-qa.png`
 - `debit-modal-qa.png`
 - `balance-updated-qa.png`
+- `allocation-live.png` — deployed interface and actual platform-wallet result.
+- `deployment-health-live.png` — guarded deployment/source/config/schema/health evidence.
 
 Live/media, games, gifting, rewards, payout rules, ordinary Coin transfers and unrelated Control sections are outside this change.
