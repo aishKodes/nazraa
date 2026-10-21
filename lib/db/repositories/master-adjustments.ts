@@ -48,8 +48,8 @@ export async function searchAdjustmentTargets(scope: Scope, query: string, page 
     (SELECT id,'APPLICATION_USER' owner_type,public_id,IF(public_id=?,0,1) match_rank
       FROM application_users FORCE INDEX (uq_application_user_public_id) WHERE ${numeric.sql} ORDER BY public_id LIMIT ${limit})
     UNION ALL
-    (SELECT id,'APPLICATION_USER',public_id,IF(external_user_id=?,0,1) FROM application_users
-      WHERE external_user_id ${exact ? '= ?' : "LIKE ? ESCAPE '!'"} ORDER BY external_user_id LIMIT ${limit})
+    (SELECT id,'APPLICATION_USER',public_id,IF(external_user_id=?,0,1) match_rank FROM application_users
+      WHERE external_user_id ${exact ? '= ?' : "LIKE ? ESCAPE '!'"} ORDER BY match_rank,public_id LIMIT ${limit})
     UNION ALL
     (SELECT id,'PLATFORM_ACCOUNT',public_id,IF(public_id=?,0,1) FROM platform_accounts FORCE INDEX (uq_platform_account_public_id)
       WHERE ${numeric.sql} AND removed_at IS NULL AND EXISTS

@@ -23,7 +23,7 @@ export function MasterAllocationSearch({initialQuery=''}:{initialQuery?:string})
   const [selected,setSelected]=useState<AdjustmentTarget|null>(null);
   const [page,setPage]=useState(1);
   const [hasNext,setHasNext]=useState(false);
-  const [busy,setBusy]=useState(false);
+  const [busy,setBusy]=useState(initialQuery.replace(/\s+/g,'').length>=2);
   const [error,setError]=useState('');
   const [retry,setRetry]=useState(0);
   const [pending,setPending]=useState(false);

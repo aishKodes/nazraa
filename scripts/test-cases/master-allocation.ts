@@ -23,6 +23,10 @@ export async function verifyMasterAllocation(root:Connection, scopes:Map<Role,Sc
   const second=await searchAdjustmentTargets(master,'8855',2);
   assert.equal(second.items.length,6);assert.equal(second.hasNext,false);
   assert.equal(new Set([...first.items,...second.items].map(r=>r.id)).size,26);
+  const hostPrefixFirst=await searchAdjustmentTargets(master,'alloc-');
+  const hostPrefixSecond=await searchAdjustmentTargets(master,'alloc-',2);
+  assert.equal(hostPrefixFirst.items.length,20);assert.equal(hostPrefixSecond.items.length,6);
+  assert.equal(new Set([...hostPrefixFirst.items,...hostPrefixSecond.items].map(row=>row.id)).size,26,'Host-ID candidate ordering must match page ordering, not lexicographic external IDs');
   assert.equal((await searchAdjustmentTargets(master,'88550001')).items[0].id,userIds[1]);
   assert.equal((await searchAdjustmentTargets(master,' aLLoC-1 ')).items[0].id,userIds[1],'case-normalized exact Host ID precedes similar prefixes');
   assert.equal((await searchAdjustmentTargets(master,'00088550001')).items[0].id,userIds[1]);
@@ -41,6 +45,15 @@ export async function verifyMasterAllocation(root:Connection, scopes:Map<Role,Sc
   const diamond=await adjustUserBalance(master,request({asset:'DIAMOND',expectedBalance:0}));assert.equal(diamond.after,100);
   const diamondDebit=await adjustUserBalance(master,request({asset:'DIAMOND',action:'REMOVE',amount:50,expectedBalance:100}));assert.equal(diamondDebit.after,50);
   await assert.rejects(adjustUserBalance(master,request({action:'REMOVE',amount:1051,expectedBalance:1050})),/Insufficient Coin/);
+  // A failure after wallet/ledger writes must roll both back, not leave an
+  // unaudited allocation. This trigger exists only in the disposable QA DB.
+  await root.query("CREATE TRIGGER qa_allocation_audit_failure BEFORE INSERT ON audit_logs FOR EACH ROW BEGIN IF NEW.reason='QA forced audit failure' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='QA audit unavailable'; END IF; END");
+  const rollbackRequest=request({expectedBalance:1050,reason:'QA forced audit failure'});
+  try {await assert.rejects(adjustUserBalance(master,rollbackRequest));}
+  finally {await root.query('DROP TRIGGER qa_allocation_audit_failure');}
+  assert.equal((await searchAdjustmentTargets(master,'88550000')).items[0].coins,1050);
+  const [rolledBack]=await root.query<RowDataPacket[]>('SELECT id FROM ledger_transactions WHERE idempotency_key=?',[`master-adjust:${rollbackRequest.idempotencyKey}`]);
+  assert.equal(rolledBack.length,0,'audit failure rolls back both ledger entry and balance');
   const platformCredit=request({userId:platform.account.id,ownerType:'PLATFORM_ACCOUNT',expectedBalance:200});
   await adjustUserBalance(master,platformCredit);
   assert.equal((await adjustUserBalance(master,platformCredit)).replayed,true);

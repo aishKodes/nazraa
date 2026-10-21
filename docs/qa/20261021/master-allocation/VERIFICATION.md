@@ -39,8 +39,8 @@ History can be filtered by current/snapshotted public ID, Host ID, transaction U
 
 - Focused fixture integration with all 111 existing migrations: PASS.
 - Original Master finance tests including concurrent/stale/overdraw, reserved balances and seven unauthorized roles: PASS.
-- New allocation fixture: 26 similar public IDs; normal/Host/Agency-associated/independent/suspended/platform IDs; case/space/leading-zero normalization; exact before prefix; 20+6 pagination; wildcard input literal; identical display names distinguish by ID: PASS.
-- All four operations on app and platform wallets; 20 concurrent same-key requests once; negative/overdraw/stale/key-payload rejects; searchable target/transaction history; IST conversion; index plan: PASS.
+- New allocation fixture: 26 similar public IDs; normal/Host/Agency-associated/independent/suspended/platform IDs; case/space/leading-zero normalization; exact before prefix; 20+6 pagination for public and external Host prefixes with no duplicates/missing accounts; wildcard input literal; identical display names distinguish by ID: PASS.
+- All four operations on app and platform wallets; 20 concurrent same-key requests once; negative/overdraw/stale/key-payload rejects; forced audit-write failure rolls back both balance and ledger; searchable target/transaction history; IST conversion; index plan: PASS.
 - Optimized-build direct HTTP: anonymous401, all seven non-Master roles403 for search/writes, cross-origin403, unconfirmed400, no-store/privacy, page limits/concurrent searches, 20 parallel POST retries once, changed payload409: PASS.
 - Browser UI against disposable local database, through loopback-only QA proxy: +100 Coins, -50 Coins, +100 Diamonds, -50 Diamonds. Final fixture balances **1,100 Coins / 100 Diamonds**. DB independently confirmed **four ledger entries and four audit records** for these UI actions. Current/new preview, modal, debit warning, selected-card refresh, history: PASS.
 - `npm run test:roles`, `npm run typecheck`, scoped ESLint, `npm run build`, `git diff --check`: PASS.
@@ -48,7 +48,9 @@ History can be filtered by current/snapshotted public ID, Host ID, transaction U
 
 ## Production deployment
 
-Encrypted private OCI predeploy backup verified: `nazraa-predeploy-20261021T104229Z`, 5,648,772,184 bytes. Guarded API-only helper compares every existing source hash to baseline `cd08af8f2dfb048e352c39239a498aac5e11bd62`, archives source, retains API rollback image, and rolls back on failure. Config/schema/FK inventory compared before/after. Live verification evidence will be recorded after deployment.
+Encrypted private OCI predeploy backup verified: `nazraa-predeploy-20261021T104229Z`, 5,648,772,184 bytes. Guarded API-only helper is prepared to compare every existing source hash to baseline `cd08af8f2dfb048e352c39239a498aac5e11bd62`, archive source, retain API rollback image, roll back on failure, and compare config/schema/FK inventory before/after.
+
+**Deployment not yet performed.** After the backup completed, the browser-control tool began returning “Local browser use is disabled in Work settings.” A fresh official SSH attempt with the existing key also timed out during banner exchange. No patch capsule was transmitted/applied and the existing production API is unchanged. Re-enable local browser access to resume the authenticated Hostinger Web console. No password, new infrastructure or database migration is required.
 
 ## Screenshots
 
