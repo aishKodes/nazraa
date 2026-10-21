@@ -152,6 +152,7 @@ async function main() {
     const otherUser = await user(agencyOther.account.id, "QA Other Host");
     if(process.env.NAZRAA_QA_ONLY_MASTER_FINANCE==='1') {
       const financeQa=await (await import('./test-cases/master-financial-controls')).verifyMasterFinancialControls(root,scopes,ownUser,otherUser,agencyOther);
+      await (await import('./test-cases/master-allocation')).verifyMasterAllocation(root,scopes);
       if(process.env.NAZRAA_QA_KEEP==='1') {keep=true;console.log(`QA_DATABASE=${database}`);console.log(JSON.stringify({accounts:[...scopes].map(([role,scope])=>({role,publicId:scope.account.publicId})),...financeQa}));}
       return;
     }
