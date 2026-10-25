@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.5.02";
-const releaseBuild = 7414;
+const releaseVersion = "2.5.06";
+const releaseBuild = 7418;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.02/Nazraa-Live-2.5.02-7414-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.06/Nazraa-Live-2.5.06-7418-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,15 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 259_262_338,
-  sha256: "28d3fdebf4d616f318d236e6693885cc3bae1c55bd8357eb30e71187fccad07a",
-  releaseDate: "2026-10-21",
+  apkSizeBytes: 259_196_682,
+  sha256: "112ad5345ae51c81dbea62647de336810661a2c8b062f0a2ab537e36174183a7",
+  releaseDate: "2026-10-25",
   releaseNotes: [
-    "Party now has one Main Settings control with Theme Setting inside, plus a distinct Tools icon.",
-    "Larger Audio PK seats reuse Party controls; the close button ends only PK and preserves the Party. Your local team appears left/red.",
-    "The Party Diamond counter shows committed gifts across the current session, including seated participants, without changing personal balances.",
-    "New Teen Patti Princess rounds pay exactly 3.00× gross less the existing 3% fee. Accepted historical quotes and Teen Patti Pro remain unchanged.",
-    "Preserves LiveKit startup/recovery, the smooth authoritative clock, three-line Face feed, beauty and current reward/Claim rules. Five successful Host restores within 180 seconds exclude offline time.",
+    "Improved reliability when Hosts recover from temporary connection or camera interruptions.",
+    "More accurate Agency availability and reliable join-request retries.",
+    "Includes the latest completed Face, Party and beauty updates.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
