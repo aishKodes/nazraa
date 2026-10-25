@@ -441,6 +441,12 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if (process.env.NAZRAA_QA_ONLY_STABILIZATION === '1') {
+      await (await import('./production-stabilization-tests')).verifyProductionStabilization(
+        root,user,owner,qaAgency.accountId,String(qaAgency.publicId),
+      );
+      return;
+    }
     if(process.env.NAZRAA_QA_ONLY_PAYOUT==='1') {
       const agency=(await accounts.accountByManagementId(String(qaAgency.publicId)))!;
       await (await import('./host-payout-tests')).verifyHostPayouts(root,user,master.account,agency);
@@ -4484,7 +4490,11 @@ async function main() {
       "SELECT available_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'",
       [staleRewardHost.userId],
     );
-    await product.pruneInactiveRooms();
+    const staleAdminPrototype=(await import('@/lib/services/livekit-room-admin')).LiveKitRoomAdmin.prototype;
+    const realHostPresence=staleAdminPrototype.hostPresence;
+    staleAdminPrototype.hostPresence=async()=>"ABSENT";
+    try { await product.pruneInactiveRooms(); }
+    finally { staleAdminPrototype.hostPresence=realHostPresence; }
     const [cleanup] = await root.query<RowDataPacket[]>(
       "SELECT status, reward_coins FROM live_session_accounting WHERE room_id = ?",
       [staleRoomId],

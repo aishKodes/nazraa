@@ -8,6 +8,7 @@ import { withTransaction } from "@/lib/db/transaction";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { publicImageFromDataUrl } from "@/lib/security/public-images";
 import { encryptPrivateText, preparePrivateDocumentDataUrl } from "@/lib/security/documents";
+import { agencyJoinPolicy } from "@/lib/services/agency-join-policy";
 
 export async function agencyApplicationsForUser(identity: MobileIdentity) {
   try {
@@ -47,19 +48,20 @@ export async function searchAgency(rawQuery: string) {
   const exactPublicId = /^\d{6}$/.test(query) ? query : null;
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT agency.id, agency.public_id, agency.full_name, agency.country_code, agency.status,
-            owner.public_id owner_public_id, owner.full_name owner_name,
+            owner.public_id owner_public_id, owner.full_name owner_name, owner.account_status owner_status,
             COUNT(host.id) host_count
      FROM platform_accounts agency
      LEFT JOIN application_users owner
-       ON owner.id = agency.application_user_id
-       OR owner.external_user_id = agency.application_user_id
-       OR CAST(owner.public_id AS CHAR) = agency.application_user_id
+       ON owner.id = TRIM(agency.application_user_id)
+       OR owner.external_user_id = TRIM(agency.application_user_id)
+       OR CAST(owner.public_id AS CHAR) = TRIM(agency.application_user_id)
      LEFT JOIN host_profiles host ON host.agency_account_id = agency.id AND host.status = 'ACTIVE'
      WHERE agency.role = 'AGENCY'
+       AND agency.removed_at IS NULL
        AND (? IS NULL OR agency.public_id = ?)
        AND (? IS NOT NULL OR agency.full_name LIKE CONCAT('%', ?, '%'))
      GROUP BY agency.id, agency.public_id, agency.full_name, agency.country_code, agency.status,
-              owner.public_id, owner.full_name
+              owner.public_id, owner.full_name, owner.account_status
      ORDER BY (agency.public_id = ?) DESC, (agency.status = 'ACTIVE') DESC,
               agency.full_name ASC, agency.public_id ASC
      LIMIT 20`,
@@ -68,18 +70,15 @@ export async function searchAgency(rawQuery: string) {
   return {
     query,
     results: rows.map((agency) => {
-      const eligible = agency.status === "ACTIVE" && agency.owner_public_id != null;
+      const eligibility = agencyJoinPolicy({ agencyStatus: agency.status, ownerStatus: agency.owner_status ?? null });
+      const eligible = eligibility.canApply;
       return {
         id: String(agency.public_id),
         name: String(agency.full_name),
         logoUrl: `${publicApiOrigin()}/api/v1/assets/agencies/${agency.public_id}`,
         country: agency.country_code ?? "",
         status: eligible ? "ACTIVE" : "UNAVAILABLE",
-        statusMessage: eligible
-          ? null
-          : agency.status !== "ACTIVE"
-            ? "This Agency is currently unavailable."
-            : "This Agency is waiting for an active owner.",
+        statusMessage: eligibility.message,
         canApply: eligible,
         hostCount: Number(agency.host_count),
         owner: agency.owner_public_id == null ? null : { id: String(agency.owner_public_id), name: String(agency.owner_name) },
@@ -105,7 +104,7 @@ async function agencyOwnedByIdentity(connection: PoolConnection, identity: Mobil
     `SELECT account.id, account.full_name
      FROM platform_accounts account
      WHERE account.role = 'AGENCY'
-       AND (account.application_user_id = ? OR account.application_user_id = ? OR account.application_user_id = ?)
+       AND (TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ?)
      LIMIT 1 FOR UPDATE`,
     [identity.userId, identity.externalUserId, identity.publicId],
   );
@@ -119,17 +118,20 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
     if (users[0].agency_account_id) throw new Error("Your Agency Owner or Master must remove you before you can join another Agency.");
     const ownedAgency = await agencyOwnedByIdentity(connection, identity);
     if (ownedAgency) throw new Error(`You already own ${ownedAgency.full_name}. An Agency Owner cannot join or create another Agency.`);
-    const [agencies] = await connection.query<(RowDataPacket & { id: string; full_name: string; owner_user_id: string | null })[]>(
-      `SELECT agency.id, agency.full_name,
-              (SELECT owner.id FROM application_users owner
-               WHERE owner.id = agency.application_user_id OR owner.external_user_id = agency.application_user_id
-                  OR CAST(owner.public_id AS CHAR) = agency.application_user_id LIMIT 1) owner_user_id
+    const [agencies] = await connection.query<(RowDataPacket & { id: string; full_name: string; status: string; removed_at: Date | null; owner_user_id: string | null; owner_status: string | null })[]>(
+      `SELECT agency.id, agency.full_name, agency.status, agency.removed_at,
+              owner.id owner_user_id, owner.account_status owner_status
        FROM platform_accounts agency
-       WHERE agency.public_id = ? AND agency.role = 'AGENCY' AND agency.status = 'ACTIVE' AND agency.removed_at IS NULL LIMIT 1`,
+       LEFT JOIN application_users owner ON owner.id = TRIM(agency.application_user_id)
+         OR owner.external_user_id = TRIM(agency.application_user_id)
+         OR CAST(owner.public_id AS CHAR) = TRIM(agency.application_user_id)
+       WHERE agency.public_id = ? AND agency.role = 'AGENCY' LIMIT 1 FOR UPDATE`,
       [publicId],
     );
-    if (!agencies[0]) throw new Error("No active Agency was found with that six-digit ID.");
-    if (!agencies[0].owner_user_id) throw new Error("This Agency does not have an active Agency Owner yet.");
+    if (!agencies[0]) throw new Error("No Agency was found with that six-digit ID.");
+    const eligibility = agencyJoinPolicy({ agencyStatus: agencies[0].status,
+      removed: agencies[0].removed_at != null, ownerStatus: agencies[0].owner_status });
+    if (!eligibility.canApply) throw new Error(eligibility.message!);
     if (agencies[0].owner_user_id === identity.userId) throw new Error("You already own this Agency.");
     await connection.execute(
       "INSERT IGNORE INTO agency_membership_application_keys (application_user_id, agency_account_id) VALUES (?, ?)",
@@ -174,8 +176,8 @@ export async function applyToJoinAgency(identity: MobileIdentity, publicId: stri
 export async function agencyOwnerSnapshot(identity: MobileIdentity) {
   const [ownerRows] = await db().query<(RowDataPacket & { id: string })[]>(
     `SELECT account.id FROM platform_accounts account
-     WHERE account.role = 'AGENCY' AND account.status = 'ACTIVE'
-       AND (account.application_user_id = ? OR account.application_user_id = ? OR account.application_user_id = ?)
+     WHERE account.role = 'AGENCY' AND account.status = 'ACTIVE' AND account.removed_at IS NULL
+       AND (TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ?)
      LIMIT 1`,
     [identity.userId, identity.externalUserId, identity.publicId],
   );
@@ -230,8 +232,8 @@ export async function agencyOwnerSnapshot(identity: MobileIdentity) {
 async function agencyOwnedBy(connection: PoolConnection, identity: MobileIdentity) {
   const [rows] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
     `SELECT account.id, account.full_name FROM platform_accounts account
-     WHERE account.role = 'AGENCY' AND account.status = 'ACTIVE'
-       AND (account.application_user_id = ? OR account.application_user_id = ? OR account.application_user_id = ?)
+     WHERE account.role = 'AGENCY' AND account.status = 'ACTIVE' AND account.removed_at IS NULL
+       AND (TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ? OR TRIM(account.application_user_id) = ?)
      LIMIT 1 FOR UPDATE`,
     [identity.userId, identity.externalUserId, identity.publicId],
   );

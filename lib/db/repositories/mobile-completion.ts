@@ -50,6 +50,7 @@ import {
 } from "@/lib/services/live-business-policy";
 import type { MediaProvider } from "@/lib/services/media-provider";
 import { mediaProviderFor } from "@/lib/services/media-provider";
+import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 
 function code(prefix: string) {
@@ -1678,10 +1679,11 @@ export async function leaveLiveRoom(
 
 export async function finalizeStaleLiveSession(roomCode: string) {
   const [rows] = await db().query<
-    (RowDataPacket & { host_application_user_id: string })[]
+    (RowDataPacket & { host_application_user_id: string; host_public_id: number })[]
   >(
-    `SELECT room.host_application_user_id
+    `SELECT room.host_application_user_id, host.public_id host_public_id
      FROM live_rooms room
+     INNER JOIN application_users host ON host.id = room.host_application_user_id
      INNER JOIN live_room_members host_member
        ON host_member.room_id = room.id AND host_member.application_user_id = room.host_application_user_id
      LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
@@ -1699,11 +1701,18 @@ export async function finalizeStaleLiveSession(roomCode: string) {
     [roomCode],
   );
   if (!rows[0]) return;
-  // The finalizer only reads userId from the identity and rechecks/locks the
-  // active session, so the server can close a crashed broadcaster cleanly.
+  // A delayed API heartbeat is not proof of a departed media publisher.
+  // Do this bounded RPC before taking DB locks; UNKNOWN must defer cleanup.
+  if (mediaProviderFor() === "LIVEKIT") {
+    const presence = await new LiveKitRoomAdmin(3).hostPresence(
+      roomCode, String(rows[0].host_public_id),
+    );
+    if (presence !== "ABSENT") return;
+  }
   await finalizeLiveSession(
     { userId: rows[0].host_application_user_id } as MobileIdentity,
     roomCode,
+    { reason: "STALE_HOST_CONFIRMED_ABSENT", requireStaleHost: true },
   );
 }
 
@@ -1748,6 +1757,7 @@ export async function finalizeClosedFaceLiveSession(roomCode: string) {
   await finalizeLiveSession(
     { userId: active.host_application_user_id } as MobileIdentity,
     roomCode,
+    { reason: "SCHEDULE_CLOSED" },
   );
   return true;
 }
@@ -2144,7 +2154,8 @@ export async function refreshRoomPresence(
   // directly to the critical viewer path without making the stream safer.
   if (serializedPresence) {
     await finalizeClosedFaceLiveSession(roomCode);
-    await finalizeStaleLiveSession(roomCode);
+    // An authenticated returning publisher must first refresh its checkpoint.
+    // Discovery/maintenance own stale cleanup, with an SFU + locked DB check.
   }
   // Presence checkpoints are monotonic; reward units have durable DB unique
   // keys. A concurrent MariaDB ER_CHECKREAD must roll back the whole attempt
@@ -4523,8 +4534,35 @@ export async function unblockRoomMember(
 export async function finalizeLiveSession(
   identity: Pick<MobileIdentity, "userId"> & Partial<Omit<MobileIdentity, "userId">>,
   roomCode: string,
+  options: {
+    reason: "HOST_EXPLICIT_LEAVE" | "SCHEDULE_CLOSED" | "STALE_HOST_CONFIRMED_ABSENT";
+    requireStaleHost?: boolean;
+  } = { reason: "HOST_EXPLICIT_LEAVE" },
 ) {
   return withTransaction(async (connection) => {
+    // Use the same room -> member -> accounting lock order as presence.
+    const [lockedRooms] = await connection.query<(RowDataPacket & { id: string })[]>(
+      "SELECT id FROM live_rooms WHERE room_code = ? LIMIT 1 FOR UPDATE", [roomCode],
+    );
+    if (options.requireStaleHost && lockedRooms[0]) {
+      const [stale] = await connection.query<RowDataPacket[]>(
+        `SELECT room.id FROM live_rooms room
+         INNER JOIN live_room_members host_member ON host_member.room_id = room.id
+           AND host_member.application_user_id = room.host_application_user_id
+         LEFT JOIN live_session_accounting accounting ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
+         LEFT JOIN system_settings settings ON settings.setting_key = 'mobile.room_features'
+         WHERE room.id = ? AND room.host_application_user_id = ?
+           AND room.room_type IN ('FACE','LIVE') AND room.status IN ('ACTIVE','LOCKED')
+           AND host_member.last_seen_at < TIMESTAMPADD(SECOND,
+             -LEAST(600, GREATEST(60, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.roomStaleGraceSeconds')) AS UNSIGNED), 300))), CURRENT_TIMESTAMP(3))
+           AND (accounting.last_media_heartbeat_at IS NULL OR accounting.last_media_heartbeat_at < TIMESTAMPADD(SECOND,
+             -LEAST(600, GREATEST(60, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.roomStaleGraceSeconds')) AS UNSIGNED), 300))), CURRENT_TIMESTAMP(3)))
+           AND (accounting.last_media_evidence_at IS NULL OR accounting.last_media_evidence_at < TIMESTAMPADD(SECOND,
+             -LEAST(600, GREATEST(60, COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(settings.setting_value, '$.roomStaleGraceSeconds')) AS UNSIGNED), 300))), CURRENT_TIMESTAMP(3)))
+         LIMIT 1 FOR UPDATE`, [lockedRooms[0].id, identity.userId],
+      );
+      if (!stale.length) return { skipped: true, reason: "FRESH_HOST_EVIDENCE" as const };
+    }
     const [rows] = await connection.query<
       (RowDataPacket & {
         accounting_id: string;
@@ -4578,6 +4616,15 @@ export async function finalizeLiveSession(
         alreadyFinalized: true,
       };
     }
+    await connection.execute(
+      `INSERT INTO room_close_attempts
+       (id, room_id, live_session_accounting_id, application_user_id, close_reason,
+        trigger_source, connection_phase, publishing, backend_room_state,
+        host_participant_present, participant_count)
+       VALUES (?, ?, ?, ?, ?, 'SERVER_FINALIZER', 'backend', ?, 'ACTIVE', FALSE, 0)`,
+      [randomUUID(), session.room_id, session.accounting_id, identity.userId,
+        options.reason, Boolean(session.media_publishing)],
+    );
     const reconnectGrace = Math.max(
       5,
       Math.min(300, Number(session.media_reconnect_grace_seconds ?? 180)),

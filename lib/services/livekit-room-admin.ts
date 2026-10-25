@@ -28,6 +28,22 @@ export class LiveKitRoomAdmin {
       this.requestTimeoutSeconds == null ? undefined : {requestTimeout: this.requestTimeoutSeconds});
   }
 
+  /** Only used for stale-room candidates, never on the normal heartbeat path.
+   * A connected Host with a failed camera is still recovering, not departed.
+   * Management failure is uncertainty, not evidence that the room is empty.
+   */
+  async hostPresence(roomCode: string, publicId: string): Promise<"PRESENT" | "ABSENT" | "UNKNOWN"> {
+    const client = this.client();
+    if (!client) return "UNKNOWN";
+    try {
+      const participants = await client.listParticipants(roomCode);
+      return participants.some((participant) => participant.identity === publicId)
+        ? "PRESENT" : "ABSENT";
+    } catch (error) {
+      return (error as { code?: string }).code === "not_found" ? "ABSENT" : "UNKNOWN";
+    }
+  }
+
   /** Audio PK subscribers only; never touches a base Party publisher. */
   async disconnectAudioPkBridges(roomCode: string, sessionId: string) {
     const client=this.client();if(!client)return;

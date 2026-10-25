@@ -216,6 +216,24 @@ export async function createPlatformAccount(input: {
   const passwordHash = await bcrypt.hash(input.password, 12);
   let publicId = 0;
   await withTransaction(async (connection) => {
+    let applicationUserId = input.applicationUserId?.trim() || null;
+    if (input.role === "AGENCY" && applicationUserId) {
+      const [owners] = await connection.query<(RowDataPacket & { id: string; account_status: string; external_user_id: string; public_id: number })[]>(
+        `SELECT id, account_status, external_user_id, public_id FROM application_users
+         WHERE id = ? OR external_user_id = ? OR CAST(public_id AS CHAR) = ? FOR UPDATE`,
+        [applicationUserId, applicationUserId, applicationUserId],
+      );
+      if (owners.length !== 1 || owners[0].account_status !== "ACTIVE") {
+        throw new Error("Choose an existing active Nazraa owner account using its User ID.");
+      }
+      applicationUserId = owners[0].id;
+      const [owned] = await connection.query<RowDataPacket[]>(
+        `SELECT id FROM platform_accounts WHERE role='AGENCY'
+         AND (TRIM(application_user_id) = ? OR TRIM(application_user_id) = ? OR TRIM(application_user_id) = ?)
+         LIMIT 1`, [applicationUserId, owners[0].external_user_id, String(owners[0].public_id)],
+      );
+      if (owned.length) throw new Error("This Nazraa account already owns an Agency.");
+    }
     const [currentParents]=await connection.query<RowDataPacket[]>("SELECT role,country_code FROM platform_accounts WHERE id=? AND status='ACTIVE' AND removed_at IS NULL FOR UPDATE",[parent.id]);
     if(!currentParents[0]||!isParentRoleValid(input.role,currentParents[0].role))throw new Error('The selected parent is no longer active. Refresh before creating this account.');
     publicId = await generateManagementPublicId(connection);
@@ -224,7 +242,7 @@ export async function createPlatformAccount(input: {
         (id, public_id, role, admin_kind, role_code, full_name, application_user_id, email, mobile,
          password_hash, status, parent_account_id, country_code, created_by)
        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
-      [accountId, publicId, input.role, roleCode, input.fullName, input.applicationUserId || null, input.email || null, input.mobile || null, passwordHash, parent.id, input.countryCode, input.scope.account.id],
+      [accountId, publicId, input.role, roleCode, input.fullName, applicationUserId, input.email || null, input.mobile || null, passwordHash, parent.id, input.countryCode, input.scope.account.id],
     );
     if (input.role === "COIN_SELLER") await connection.execute("INSERT INTO seller_profiles (account_id) VALUES (?)", [accountId]);
     for (const document of input.documents) {
