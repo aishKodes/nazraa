@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Keep the newest verified nightly for one UTC day; never age-delete data.
+"""Keep verified redundant local nightly copies bounded.
 
 Invoked only after backup-to-oci.sh verifies an immutable offsite upload.
-All predeploy, cutover, recovery and other-day files are excluded. Failing an
-OCI check preserves every local candidate. No bucket objects are removed.
+Default: same-day dedupe only. The separately approved rolling opt-in keeps
+seven daily + four weekly representatives. All predeploy, September cutover
+and recovery files are excluded. Failed OCI checks preserve local candidates.
+No bucket objects or database records are removed.
 """
 import argparse
 import datetime
@@ -58,7 +60,7 @@ def main():
         raise SystemExit('Root required')
     candidates = duplicate_candidates(BACKUPS.iterdir(), args.verified_backup, args.rolling_retention)
     if not candidates:
-        print('Nightly retention: no same-day duplicates')
+        print('Nightly retention: no redundant nightlies')
         return
     latest = BACKUPS / args.verified_backup
     if latest.is_symlink() or not latest.is_file():
