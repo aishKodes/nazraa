@@ -100,9 +100,9 @@ oci os object head "${oci_args[@]}" --bucket-name "$bucket" \
 
 echo "Offsite backup verified: $base (${db_name}, $(stat -c '%s' "$backup") bytes)."
 
-# Owner-approved local same-day dedupe only, after offsite verification. A
+# Owner-approved seven-daily/four-weekly retention, after offsite verification. A
 # retention error must preserve files and must not hide the successful backup.
 if [[ $tag == nightly ]]; then
-  python3 "$(dirname "$0")/retain-local-nightly.py" --verified-backup "${base}.sql.gz" --apply \
+  python3 "$(dirname "$0")/retain-local-nightly.py" --verified-backup "${base}.sql.gz" --apply --rolling-retention \
     || echo 'Nightly retention deferred: inspect metadata; local backups preserved.' >&2
 fi
