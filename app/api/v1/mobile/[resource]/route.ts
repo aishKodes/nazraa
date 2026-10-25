@@ -1,5 +1,6 @@
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
+import { roomCloseContextSchema } from "@/lib/services/room-termination-diagnostics";
 import { sharedBetCommandSchema } from '@/lib/games/shared-bet-command';
 import {
   authenticateMobileRequest,
@@ -1323,6 +1324,7 @@ export async function POST(
             backendRoomState: z.string().trim().min(3).max(32),
             hostParticipantPresent: z.boolean(),
             participantCount: z.number().int().min(0).max(100000),
+            context: roomCloseContextSchema.optional(),
           })
           .parse(body);
         await recordRoomCloseAttempt(identity, parsed);

@@ -4,6 +4,7 @@ import type mysql from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
 import { agencyJoinPolicy } from "@/lib/services/agency-join-policy";
+import { roomCloseAuditData, roomCloseContextSchema } from "@/lib/services/room-termination-diagnostics";
 import * as social from "@/lib/db/repositories/mobile-social";
 import * as rooms from "@/lib/db/repositories/mobile-completion";
 
@@ -27,6 +28,32 @@ export async function verifyProductionStabilization(
     return rows[0].status;
   };
   try {
+    const context = roomCloseContextSchema.parse({
+      appVersion: '2.5.06+7418', cameraOn: true, beautyState: 'enabled',
+      liveKitState: 'connected', networkType: 'wifi', iceState: 'completed', reconnectAttempts: 2,
+    });
+    assert.equal(roomCloseContextSchema.safeParse({...context, ip: '192.0.2.1'}).success,false);
+    assert.equal(roomCloseContextSchema.safeParse({...context, reconnectAttempts: -1}).success,false);
+    const diagnosticRoom=await makeRoom();
+    const diagnostic = {
+      roomCode: diagnosticRoom.code, closeReason: 'HOST_EXPLICIT_LEAVE', triggerSource: 'explicit_button',
+      connectionPhase: 'connected', publishing: true, backendRoomState: 'ACTIVE',
+      hostParticipantPresent: true, participantCount: 1,
+    };
+    await rooms.recordRoomCloseAttempt(owner,{...diagnostic,context});
+    await rooms.recordRoomCloseAttempt(owner,diagnostic); // Older APKs remain compatible.
+    assert.equal(await status(diagnosticRoom.id),'ACTIVE','diagnostics cannot end a room');
+    const [diagnostics]=await root.query<mysql.RowDataPacket[]>(
+      "SELECT new_data FROM audit_logs WHERE target_id=? AND action='room.close_context' ORDER BY created_at",
+      [diagnosticRoom.id]);
+    assert.equal(diagnostics.length,2);
+    const data=diagnostics.map(row=>typeof row.new_data==='string'?JSON.parse(row.new_data):row.new_data);
+    assert.ok(data.some(row=>row.appVersion===context.appVersion && row.cameraState==='on' && row.reconnectAttempts===2));
+    assert.ok(data.some(row=>row.appVersion==='unknown' && row.cameraState==='unknown'));
+    assert.ok(data.every(row=>row.roomHash.length===20 && Number(row.heartbeatAgeSeconds)>=0));
+    const sanitized=JSON.stringify(roomCloseAuditData({roomId:'private-room',sessionId:'private-session',
+      liveType:'FACE',reason:'test',source:'test',phase:'connected',publishing:true,heartbeatAgeSeconds:0,context}));
+    assert.ok(!sanitized.includes('private-room') && !sanitized.includes('private-session'));
     for (const evidence of ["PRESENT","UNKNOWN"] as const) {
       const room=await makeRoom();
       LiveKitRoomAdmin.prototype.hostPresence=async()=>evidence;
@@ -52,6 +79,13 @@ export async function verifyProductionStabilization(
     await rooms.finalizeStaleLiveSession(stale.code);
     const [events]=await root.query<mysql.RowDataPacket[]>("SELECT close_reason FROM room_close_attempts WHERE room_id=? AND trigger_source='SERVER_FINALIZER'",[stale.id]);
     assert.equal(events.length,1);assert.equal(events[0].close_reason,"STALE_HOST_CONFIRMED_ABSENT");
+    const [serverAudit]=await root.query<mysql.RowDataPacket[]>(
+      "SELECT new_data FROM audit_logs WHERE target_id=? AND action='room.terminated.server'",[stale.id]);
+    assert.equal(serverAudit.length,1);
+    const serverData=typeof serverAudit[0].new_data==='string'?JSON.parse(serverAudit[0].new_data):serverAudit[0].new_data;
+    assert.equal(serverData.terminationReason,'STALE_HOST_CONFIRMED_ABSENT');
+    assert.equal(serverData.cameraState,'unknown');
+    console.log('PASS close context: bounded metadata, no raw identifiers, old-client compatibility, no lifecycle authority, canonical server audit');
     const returning=await makeRoom();
     let staleChecks=0;
     LiveKitRoomAdmin.prototype.hostPresence=async()=>{staleChecks++;return "ABSENT";};

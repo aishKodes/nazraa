@@ -51,6 +51,7 @@ import {
 import type { MediaProvider } from "@/lib/services/media-provider";
 import { mediaProviderFor } from "@/lib/services/media-provider";
 import { LiveKitRoomAdmin } from "@/lib/services/livekit-room-admin";
+import { roomCloseAuditData, type RoomCloseContext } from "@/lib/services/room-termination-diagnostics";
 import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
 
 function code(prefix: string) {
@@ -1924,21 +1925,25 @@ export async function recordRoomCloseAttempt(
     backendRoomState: string;
     hostParticipantPresent: boolean;
     participantCount: number;
+    context?: RoomCloseContext;
   },
 ) {
   // Diagnostics must never delay/deny a user leaving a board. The route schema
   // bounds every value; this lookup only associates an existing room/ledger.
   await withTransaction(async (connection) => {
-    const [rooms] = await connection.query<(RowDataPacket & { id: string; accounting_id: string | null })[]>(
-      `SELECT room.id,
+    const [rooms] = await connection.query<(RowDataPacket & { id: string; room_type: string; heartbeat_age: number | null; accounting_id: string | null })[]>(
+      `SELECT room.id, room.room_type,
+              GREATEST(0, TIMESTAMPDIFF(SECOND, member.last_seen_at, CURRENT_TIMESTAMP(3))) heartbeat_age,
               accounting.id accounting_id
        FROM live_rooms room
+       LEFT JOIN live_room_members member ON member.room_id = room.id AND member.application_user_id = ?
        LEFT JOIN live_session_accounting accounting
          ON accounting.room_id = room.id AND accounting.status = 'ACTIVE'
        WHERE room.room_code = ? LIMIT 1`,
-      [input.roomCode],
+      [identity.userId, input.roomCode],
     );
     const room = rooms[0];
+    const diagnosticId = randomUUID();
     await connection.execute(
       `INSERT INTO room_close_attempts
         (id, room_id, live_session_accounting_id, application_user_id,
@@ -1947,7 +1952,7 @@ export async function recordRoomCloseAttempt(
          participant_count)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        randomUUID(),
+        diagnosticId,
         room?.id ?? null,
         input.liveSessionId ?? room?.accounting_id ?? null,
         identity.userId,
@@ -1960,6 +1965,17 @@ export async function recordRoomCloseAttempt(
         input.hostParticipantPresent,
         Math.max(0, Math.min(100_000, input.participantCount)),
       ],
+    );
+    await connection.execute(
+      `INSERT INTO audit_logs (id,actor_role,action,module,target_type,target_id,new_data,reason)
+       VALUES (?,?,'room.close_context','LIVE_ROOM','live_room',?,?,'Bounded room-close diagnostic; not an authorization or reward signal.')`,
+      [diagnosticId, identity.role, room?.id ?? null, JSON.stringify(roomCloseAuditData({
+        roomId: room?.id ?? null, sessionId: input.liveSessionId ?? room?.accounting_id ?? null,
+        liveType: room?.room_type ?? 'unknown', reason: input.closeReason,
+        source: input.triggerSource, phase: input.connectionPhase, publishing: input.publishing,
+        heartbeatAgeSeconds: room?.heartbeat_age == null ? null : Number(room.heartbeat_age),
+        context: input.context,
+      }))],
     );
   });
 }
@@ -4616,13 +4632,14 @@ export async function finalizeLiveSession(
         alreadyFinalized: true,
       };
     }
+    const terminationDiagnosticId = randomUUID();
     await connection.execute(
       `INSERT INTO room_close_attempts
        (id, room_id, live_session_accounting_id, application_user_id, close_reason,
         trigger_source, connection_phase, publishing, backend_room_state,
         host_participant_present, participant_count)
        VALUES (?, ?, ?, ?, ?, 'SERVER_FINALIZER', 'backend', ?, 'ACTIVE', FALSE, 0)`,
-      [randomUUID(), session.room_id, session.accounting_id, identity.userId,
+      [terminationDiagnosticId, session.room_id, session.accounting_id, identity.userId,
         options.reason, Boolean(session.media_publishing)],
     );
     const reconnectGrace = Math.max(
@@ -4638,6 +4655,16 @@ export async function finalizeLiveSession(
       session.ended_at,
     ]);
     const heartbeatGap = Number(heartbeatRows[0]?.seconds ?? 0);
+    await connection.execute(
+      `INSERT INTO audit_logs (id,actor_role,action,module,target_type,target_id,new_data,reason)
+       VALUES (?,'SYSTEM','room.terminated.server','LIVE_ROOM','live_room',?,?,'Canonical server finalization; unavailable client context remains unknown.')`,
+      [terminationDiagnosticId, session.room_id, JSON.stringify(roomCloseAuditData({
+        roomId: session.room_id, sessionId: session.accounting_id,
+        liveType: session.room_type, reason: options.reason,
+        source: 'SERVER_FINALIZER', phase: 'backend',
+        publishing: Boolean(session.media_publishing), heartbeatAgeSeconds: heartbeatGap,
+      }))],
+    );
     // Closing explicitly may flush the very last short publishing interval,
     // but an outage must never be represented as paid time merely because the
     // room end happened during the reconnect grace.
