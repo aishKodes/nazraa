@@ -35,7 +35,7 @@ export const latestPublicRelease: PublicRelease = {
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
   apkSizeBytes: 259_196_682,
-  sha256: "112ad5345ae51c81dbea62647de336810661a2c8b062f0a2ab537e36174183a7",
+  sha256: "210f876cb28313266aa314c190adff3eb566881f1f2cc9c3c55f4b5c2b9510bf",
   releaseDate: "2026-10-25",
   releaseNotes: [
     "Improved reliability when Hosts recover from temporary connection or camera interruptions.",

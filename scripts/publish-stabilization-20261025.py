@@ -15,7 +15,7 @@ assert len(commit)==40 and all(c in '0123456789abcdef' for c in commit)
 source=root/'lib/release/latest-release.ts'
 assert hashlib.sha256(source.read_bytes()).hexdigest()=='e874fcb2ff88beacbd8e047bf208b1b4fcbe79250e970c1810c4e68ceb4a2b32','PUBLIC_METADATA_CONFLICT'
 gates=json.loads(Path('/opt/nazraa/logs/stabilization-2.5.06-release-gates.json').read_text())
-sha='112ad5345ae51c81dbea62647de336810661a2c8b062f0a2ab537e36174183a7'
+sha='210f876cb28313266aa314c190adff3eb566881f1f2cc9c3c55f4b5c2b9510bf'
 assert gates['apkSha256']==sha and gates['build']==7418
 assert all(gates[k] is True for k in ['face','party','agency','upgrade','signing'])
 assert time.time()-gates['verifiedAt']<7200
