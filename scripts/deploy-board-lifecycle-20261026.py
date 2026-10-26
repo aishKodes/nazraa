@@ -24,11 +24,20 @@ files = [
  'lib/services/livekit-token-service.ts', 'lib/services/media-cost-telemetry.ts',
 ]
 migration = 'db/migrations/0110_live_reward_blocks.sql'
-old, new = {}, {}
+old, new, patches = {}, {}, {}
 for name in files:
  p = root/name
  expected = subprocess.check_output(['git','show',f'{base}:{name}'])
  actual = p.read_bytes()
+ if name == 'app/dashboard/settings/page.tsx':
+  # The deployed page has older beauty-copy wording. Preserve it; apply only
+  # this task's two reward-description hunks after a strict content guard.
+  assert hashlib.sha256(actual).hexdigest() == '43e11f6653d55bfdff6e1071c362863343f6548dabb8f091483cd6119cd97c90', 'CONTROL_PAGE_CONFLICT'
+  patch = subprocess.check_output(['git','diff',base,commit,'--',name])
+  subprocess.run(['git','apply','--check','-'],input=patch,check=True)
+  old[p] = actual
+  patches[p] = patch
+  continue
  assert hashlib.sha256(actual).digest() == hashlib.sha256(expected).digest(), f'SOURCE_CONFLICT {name}'
  old[p] = actual
  new[p] = subprocess.check_output(['git','show',f'{commit}:{name}'])
@@ -64,6 +73,7 @@ const fs=require('fs'),m=require('mysql2/promise');(async()=>{
 compose=['docker','compose','-f','/opt/nazraa/compose.yaml']
 try:
  for p,data in new.items(): p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+ for patch in patches.values(): subprocess.run(['git','apply','-'],input=patch,check=True)
  subprocess.run([*compose,'build','api'],check=True)
  subprocess.run(['docker','cp',str(root/migration),'nazraa-api-1:/tmp/nazraa-board-schema.sql'],check=True)
  subprocess.run(['docker','exec','-i','nazraa-api-1','node'],input=schema_script.encode(),check=True)
