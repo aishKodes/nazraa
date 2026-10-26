@@ -171,14 +171,14 @@ export async function repairMissingLiveRewardEntitlements(input: {
       `INSERT IGNORE INTO live_reward_entitlements
         (id, live_hour_reward_decision_id, live_session_accounting_id,
          application_user_id, agency_account_id, completed_hour, amount,
-         claim_status, earned_at, claimed_at, ledger_transaction_id)
+         claim_status, earned_at, claimed_at, ledger_transaction_id, reward_period_seconds)
        SELECT UUID(), decision_row.id, decision_row.live_session_accounting_id,
               decision_row.host_application_user_id, room.agency_account_id,
               decision_row.completed_hour, decision_row.reward_diamonds,
               IF(decision_row.ledger_transaction_id IS NULL, 'UNCLAIMED', 'CLAIMED'),
               decision_row.decided_at,
               IF(decision_row.ledger_transaction_id IS NULL, NULL, decision_row.decided_at),
-              decision_row.ledger_transaction_id
+              decision_row.ledger_transaction_id, accounting.reward_period_seconds
        FROM live_hour_reward_decisions decision_row
        INNER JOIN live_session_accounting accounting
          ON accounting.id = decision_row.live_session_accounting_id

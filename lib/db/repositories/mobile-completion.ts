@@ -979,8 +979,10 @@ type ClaimableLiveRewardRow = RowDataPacket & {
 };
 
 async function lockedDiamondWallet(connection: PoolConnection, userId: string) {
-  await ensureWallet(connection, userId, "DIAMOND");
-  const [walletRows] = await connection.query<
+  // Existing-wallet claims take the exclusive point lock directly. Running
+  // INSERT IGNORE first gave concurrent empty claims shared duplicate-key
+  // locks, then each attempted the same exclusive-lock upgrade.
+  const selectWallet = () => connection.query<
     (RowDataPacket & {
       id: string;
       available_balance: number;
@@ -991,6 +993,11 @@ async function lockedDiamondWallet(connection: PoolConnection, userId: string) {
        AND asset_type = 'DIAMOND' LIMIT 1 FOR UPDATE`,
     [userId],
   );
+  let [walletRows] = await selectWallet();
+  if (!walletRows[0]) {
+    await ensureWallet(connection, userId, "DIAMOND");
+    [walletRows] = await selectWallet();
+  }
   const wallet = walletRows[0];
   if (!wallet) throw new Error("Your Diamond wallet is unavailable.");
   return wallet;
@@ -1089,7 +1096,10 @@ export async function claimLiveReward(
   identity: MobileIdentity,
   rewardId: string,
 ) {
-  return withTransaction(async (connection) => {
+  // Entitlement ownership/status and the unique ledger key make replay after
+  // a MySQL deadlock safe. Empty concurrent claims can otherwise deadlock
+  // while upgrading INSERT IGNORE's wallet lock to the balance write lock.
+  return withIdempotentTransaction(async (connection) => {
     const [rows] = await connection.query<ClaimableLiveRewardRow[]>(
       `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status, reward_period_seconds
        FROM live_reward_entitlements
@@ -1108,7 +1118,7 @@ export async function claimLiveReward(
 
 /** Claim every currently unclaimed Live reward in one database transaction. */
 export async function claimAllLiveRewards(identity: MobileIdentity) {
-  return withTransaction(async (connection) => {
+  return withIdempotentTransaction(async (connection) => {
     const [rows] = await connection.query<ClaimableLiveRewardRow[]>(
       `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status, reward_period_seconds
        FROM live_reward_entitlements

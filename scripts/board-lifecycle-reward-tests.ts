@@ -9,8 +9,10 @@ import {authorizeLiveKitRoom} from '@/lib/services/livekit-room-authority';
 import {LiveKitTokenService} from '@/lib/services/livekit-token-service';
 import {businessDateFor} from '@/lib/services/live-business-policy';
 import {reconcileCheckpointedLiveRewards,claimLiveReward,claimAllLiveRewards} from '@/lib/db/repositories/mobile-completion';
+import {repairMissingLiveRewardEntitlements} from '@/lib/db/repositories/live-accounting-diagnostics';
+import type {Scope} from '@/types/platform';
 
-export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:string)=>Promise<MobileIdentity>,agencyId:string){
+export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:string)=>Promise<MobileIdentity>,agencyId:string,master:Scope){
   await root.execute(`UPDATE system_settings SET setting_value=JSON_SET(setting_value,'$.hourlyRewardDiamonds',3500,'$.rewardBlockSeconds',1800,'$.timezone','Asia/Kolkata') WHERE setting_key='mobile.live_rules'`);
   async function host(name:string){const h=await user(name);await root.execute('UPDATE application_users SET agency_account_id=? WHERE id=?',[agencyId,h.userId]);await root.execute('UPDATE host_profiles SET agency_account_id=? WHERE application_user_id=?',[agencyId,h.userId]);return {...h,agencyAccountId:agencyId};}
   async function room(h:MobileIdentity,period=1800,type='FACE'){
@@ -34,6 +36,7 @@ export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:stri
   const [before]=await root.query<mysql.RowDataPacket[]>('SELECT COUNT(*) n FROM ledger_transactions WHERE destination_id=?',[h.userId]);assert.equal(Number(before[0].n),0,'earned rewards never auto-credit');
   await Promise.all(Array.from({length:8},()=>claimLiveReward(h,String(e[0].id))));
   await Promise.all(Array.from({length:8},()=>claimAllLiveRewards(h)));
+  await Promise.all(Array.from({length:32},()=>claimAllLiveRewards(h)));
   const [credits]=await root.query<mysql.RowDataPacket[]>("SELECT COUNT(*) n,SUM(amount) amount FROM ledger_transactions WHERE destination_id=? AND transaction_type='HOST_HOURLY_DIAMONDS'",[h.userId]);
   assert.deepEqual([Number(credits[0].n),Number(credits[0].amount)],[2,3500]);
   console.log('PASS 29:59 / 30:00 / 59:59 / 60:00: 0 / 1750 / 1750 / 3500 claimable Diamonds; eight concurrent settlements/claims; exactly two ledger credits, no auto-credit');
@@ -48,6 +51,19 @@ export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:stri
   await root.execute("INSERT INTO live_daily_reward_awards(id,application_user_id,business_date,live_session_accounting_id,completed_hour,amount) VALUES (?,?,?,?,1,3500)",[randomUUID(),legacy.userId,businessDateFor('Asia/Kolkata'),old.accounting]);
   const next=await room(legacy);await at(next.accounting,3600);assert.equal((await earned(legacy)).length,0,'historical full reward exhausts new budget');
   console.log('PASS historical 3500 daily award is retained and prevents additional 1750 awards');
+
+  const bd=await host('Bangladesh male block eligibility'),br=await room(bd);
+  await root.execute("UPDATE application_users SET gender='MALE',country_code='BD' WHERE id=?",[bd.userId]);
+  await root.execute("INSERT INTO live_daily_reward_awards(id,application_user_id,business_date,live_session_accounting_id,completed_hour,amount) VALUES (?,?,?,?,1,3500)",[randomUUID(),bd.userId,businessDateFor('Asia/Kolkata',new Date(Date.now()-86400000)),br.accounting]);
+  await at(br.accounting,3600);assert.equal((await earned(bd)).reduce((s,x)=>s+Number(x.amount),0),3500);
+  console.log('PASS Bangladesh male Host receives two claimable blocks; previous-day full award does not suppress the current business day');
+
+  const repairHost=await host('Repair half-hour snapshot'),repairRoom=await room(repairHost);await at(repairRoom.accounting,1800);
+  await root.execute('DELETE FROM live_reward_entitlements WHERE application_user_id=?',[repairHost.userId]);
+  await repairMissingLiveRewardEntitlements({scope:master,days:1,reason:'Isolated missing half-hour entitlement recovery fixture'});
+  const repaired=await earned(repairHost);assert.equal(repaired.length,1);assert.equal(Number(repaired[0].amount),1750);assert.equal(Number(repaired[0].reward_period_seconds),1800);
+  await repairMissingLiveRewardEntitlements({scope:master,days:1,reason:'Repeat isolated half-hour entitlement recovery fixture'});assert.equal((await earned(repairHost)).length,1);
+  console.log('PASS missing entitlement repair preserves the 1800-second snapshot, amount and idempotency without wallet credit');
 
   // A completed first block survives expired recovery; only its incomplete tail resets.
   const interrupted=await host('Expired second-block Host'),ir=await room(interrupted);await at(ir.accounting,2520);
@@ -88,5 +104,13 @@ export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:stri
   await root.execute('UPDATE live_room_members SET muted_by_staff=FALSE WHERE room_id=?',[tr.id]);
   await authorizeLiveKitRoom({...tokens,sessionId:sessionB},{roomCode:tr.code,canPublish:true});
   await assert.rejects(authorizeLiveKitRoom(caller,{roomCode:tr.code,canPublish:true,previousGrantId:staff.publisherGrantId}),e=>(e as {accessCode:string}).accessCode==='LIVE_SESSION_REPLACED');
+  const guest=await host('Muted accepted audio Guest');
+  await root.execute("INSERT INTO live_room_members(room_id,application_user_id,room_role,media_role,muted) VALUES (?,?,'SPEAKER','AUDIO_GUEST',TRUE)",[tr.id,guest.userId]);
+  const mutedGuest=await authorizeLiveKitRoom(guest,{roomCode:tr.code,canPublish:true});assert.equal(mutedGuest.publishMode,'audio_only');assert.equal(mutedGuest.microphoneMuted,true);
+  await root.execute('UPDATE live_room_members SET muted_by_staff=TRUE WHERE room_id=? AND application_user_id=?',[tr.id,guest.userId]);
+  assert.equal((await authorizeLiveKitRoom(guest,{roomCode:tr.code,canPublish:true})).publishMode,'none');
+  await root.execute("UPDATE live_room_members SET media_role='PASSIVE_VIEWER',muted_by_staff=FALSE WHERE room_id=? AND application_user_id=?",[tr.id,guest.userId]);
+  await assert.rejects(authorizeLiveKitRoom(guest,{roomCode:tr.code,canPublish:true}));
   console.log('PASS muted Host recovery; staff mute keeps video only; per-room departure=240 token; real second-session replacement denied to obsolete caller');
+  console.log('PASS accepted Guest self-mute retains audio-only capability; staff mute revokes publishing; passive viewer cannot publish');
 }
