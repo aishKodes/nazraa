@@ -1003,8 +1003,9 @@ export async function createRoom(identity: MobileIdentity, input: { autoResumeVe
       [roomId, input.roomCode, identity.userId, userRows[0]?.effective_agency_account_id ?? null, roomType, input.title, input.category, input.language, input.privacy.toUpperCase(), passwordHash, input.password?.length ?? null, roomType === "PARTY" ? input.seatCount : 0, input.themeIndex, input.themeEnabled, photoAssetId, roomType === "FACE" ? faceBackgroundAssetId : null, input.countryCode ?? null, "ACTIVE"],
     );
     await connection.execute(
-      "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, business_date, reward_rule_id) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?)",
-      [randomUUID(), roomId, identity.userId, roomType, businessDateFor(liveRules.timezone), rewardRuleRows[0].id],
+      "INSERT INTO live_session_accounting (id, room_id, host_application_user_id, room_type, started_at, business_date, reward_rule_id,reward_period_seconds) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?, ?)",
+      [randomUUID(), roomId, identity.userId, roomType, businessDateFor(liveRules.timezone), rewardRuleRows[0].id,
+        roomType==='PARTY'?3600:liveRules.rewardBlockSeconds??3600],
     );
     await connection.execute("UPDATE live_session_accounting SET presentation_snapshot = ? WHERE room_id = ? AND presentation_snapshot IS NULL", [JSON.stringify({ title: input.title, themeIndex: input.themeIndex, themeEnabled: input.themeEnabled, seatCount: input.seatCount }), roomId]);
     if (roomType === "PARTY") {

@@ -441,6 +441,10 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if(process.env.NAZRAA_QA_ONLY_BOARD==='1'){
+      await (await import('./board-lifecycle-reward-tests')).verifyBoardLifecycle(root,user,qaAgency.accountId);
+      return;
+    }
     if (process.env.NAZRAA_QA_ONLY_STABILIZATION === '1') {
       await (await import('./production-stabilization-tests')).verifyProductionStabilization(
         root,user,owner,qaAgency.accountId,String(qaAgency.publicId),

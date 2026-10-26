@@ -1226,6 +1226,7 @@ export async function POST(
             runtimeDiagnostics: z
               .object({
                 applicationInterrupted: z.boolean().optional(),
+                applicationInstanceId: z.string().regex(/^[a-f0-9]{32}$/).optional(),
                 connectionPhase: z.enum([
                   "idle",
                   "connecting",
@@ -1808,11 +1809,13 @@ export async function POST(
           .object({
             roomId: z.string().trim().min(1).max(80),
             publish: z.boolean(),
+            previousGrantId: z.string().uuid().optional(),
           })
           .parse(body);
         const authorization = await authorizeLiveKitRoom(identity, {
           roomCode: parsed.roomId,
           canPublish: parsed.publish,
+          previousGrantId: parsed.previousGrantId,
         });
         if (authorization.roomType==='PARTY') await syncPartyMicrophone(parsed.roomId,identity.publicId);
         const credentials = await new LiveKitTokenService().issueRoomToken({
@@ -1821,6 +1824,7 @@ export async function POST(
           participantName: identity.fullName,
           publishMode: authorization.publishMode,
           ttlSeconds: authorization.ttlSeconds,
+          nazraaLiveRoom: true,
         });
         return NextResponse.json({
           ...credentials,
@@ -1856,6 +1860,7 @@ export async function POST(
           participantName: identity.fullName,
           publishMode: "none",
           ttlSeconds: authorization.ttlSeconds,
+          nazraaLiveRoom: true,
         });
         return NextResponse.json({
           ...credentials,

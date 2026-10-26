@@ -76,7 +76,8 @@ export async function hostOperationalActivity(scope: Scope, requestedIds: string
       GROUP BY g.receiver_application_user_id,mode`,permitted),
   ]);
   // Match mobileLiveHistory's existing canonical Face Valid Day threshold.
-  const threshold=Math.max(60,Number(rules[0][0]?.minimum_eligible_seconds??3600));
+  const configuredMinimum=Number(rules[0][0]?.minimum_eligible_seconds??3600);
+  const threshold=Math.max(60,configuredMinimum===1800?3600:configuredMinimum);
   // Reuse the SAME attendance ledger and existing 50-minute / 20-hour / 24-day
   // company summary that the Host's Party Board history uses. Do not infer
   // board attendance from owning a Party room or receiving gifts.

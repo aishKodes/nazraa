@@ -15,6 +15,7 @@ export type LiveMediaUsageType =
 
 export type RoomRuntimeDiagnostics = {
   applicationInterrupted?: boolean;
+  applicationInstanceId?: string;
   connectionPhase: string;
   reconnectCount: number;
   publishing: boolean;

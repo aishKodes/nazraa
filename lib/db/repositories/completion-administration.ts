@@ -97,6 +97,14 @@ export async function saveLiveBusinessRules(input: {
       "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.live_rules' LIMIT 1 FOR UPDATE",
     );
     const previousRules = faceLiveRulesFromSetting(settingRows[0]?.setting_value);
+    // Saving hours/amount must not silently revert the activated block policy.
+    const rewardBlockSeconds = previousRules.rewardBlockSeconds ?? 3600;
+    const configured = {
+      ...next,
+      rewardBlockSeconds,
+      rewardFrequency: rewardBlockSeconds === 1800 ? 'DAILY_TWO_HALF_HOUR_BLOCKS' : next.rewardFrequency,
+      maximumRewardsPerBusinessDay: rewardBlockSeconds === 1800 ? 2 : 1,
+    };
     const [previousHostRules] = await connection.query<RowDataPacket[]>(
       "SELECT room_type, coins_per_hour, minimum_eligible_seconds FROM host_reward_rules WHERE enabled = TRUE AND room_type IN ('LIVE','FACE') FOR UPDATE",
     );
@@ -104,15 +112,15 @@ export async function saveLiveBusinessRules(input: {
       `INSERT INTO system_settings (setting_key, setting_value, updated_by)
        VALUES ('mobile.live_rules', ?, ?)
        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
-      [JSON.stringify(next), input.scope.account.id],
+      [JSON.stringify(configured), input.scope.account.id],
     );
     for (const roomType of ["LIVE", "FACE"] as const) {
       await connection.execute("UPDATE host_reward_rules SET enabled = FALSE WHERE room_type = ? AND enabled = TRUE", [roomType]);
       await connection.execute(
         `INSERT INTO host_reward_rules
           (id, room_type, coins_per_hour, minimum_eligible_seconds, enabled, effective_from, updated_by)
-         VALUES (?, ?, ?, 3600, TRUE, CURRENT_TIMESTAMP(3), ?)`,
-        [randomUUID(), roomType, input.rewardEnabled ? input.hourlyRewardDiamonds : 0, input.scope.account.id],
+         VALUES (?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP(3), ?)`,
+        [randomUUID(), roomType, input.rewardEnabled ? input.hourlyRewardDiamonds : 0, rewardBlockSeconds, input.scope.account.id],
       );
     }
     await audit(connection, input.scope, {
@@ -121,7 +129,7 @@ export async function saveLiveBusinessRules(input: {
       targetId: "face-live",
       reason: input.reason,
       previous: { liveRules: previousRules, hostRules: previousHostRules },
-      next,
+      next: configured,
     });
   });
 }

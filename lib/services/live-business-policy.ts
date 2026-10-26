@@ -19,6 +19,7 @@ export type FaceLiveRules = {
   femaleHourlyRewardDiamonds: number;
   maleHourlyRewardDiamonds: number;
   agencyAuthorizationRequired: boolean;
+  rewardBlockSeconds?: 1800 | 3600;
 };
 
 export type FaceLiveSchedule = {
@@ -119,6 +120,7 @@ export function faceLiveRulesFromSetting(value: unknown): FaceLiveRules {
     femaleHourlyRewardDiamonds: hourlyRewardDiamonds,
     maleHourlyRewardDiamonds: hourlyRewardDiamonds,
     agencyAuthorizationRequired: setting.agencyAuthorizationRequired !== false,
+    rewardBlockSeconds: setting.rewardBlockSeconds === 1800 ? 1800 : 3600,
   };
 }
 

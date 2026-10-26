@@ -56,12 +56,12 @@ export async function mobileLiveHistory(
       ORDER BY effective_from DESC
       LIMIT 1`,
   );
-  // Valid Day uses the same configured qualifying-duration rule as Host Live
-  // rewards. One business date is counted at most once even if it contains
-  // several durable publishing sessions.
+  // Half-hour reward blocks do not shorten the existing one-hour Valid Day.
+  // One business date is counted at most once across publishing sessions.
   const validDayThreshold = Math.max(
     60,
-    Number(thresholdRows[0]?.minimum_eligible_seconds ?? 3600),
+    Number(thresholdRows[0]?.minimum_eligible_seconds ?? 3600) === 1800
+      ? 3600 : Number(thresholdRows[0]?.minimum_eligible_seconds ?? 3600),
   );
   const before = beforeDate(input.before);
 

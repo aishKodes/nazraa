@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "crypto";
 import type { RowDataPacket } from "mysql2/promise";
-import type { MobileIdentity } from "@/lib/auth/mobile-session";
+import { MobileAccessDeniedError, type MobileIdentity } from "@/lib/auth/mobile-session";
 import { withTransaction } from "@/lib/db/transaction";
 import { LiveAccessPolicyService } from "@/lib/services/live-access-policy";
 import { faceLiveSuspensionError } from "@/lib/services/face-live-suspension-error";
@@ -60,7 +60,7 @@ type MediaRole =
  */
 export async function authorizeLiveKitRoom(
   identity: MobileIdentity,
-  input: { roomCode: string; canPublish: boolean; ttlSeconds?: number },
+  input: { roomCode: string; canPublish: boolean; ttlSeconds?: number; previousGrantId?: string },
 ) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<
@@ -84,21 +84,36 @@ export async function authorizeLiveKitRoom(
       [identity.userId, input.roomCode],
     );
     const room = rows[0];
-    if (!room)
+    if (!room) {
+      const [state]=await connection.query<RowDataPacket[]>('SELECT id,status FROM live_rooms WHERE room_code=? LIMIT 1',[input.roomCode]);
+      if(!state[0] || !['ACTIVE','LOCKED'].includes(state[0].status))throw new MobileAccessDeniedError('ROOM_ENDED','This room has ended.');
+      const [blocks]=await connection.query<RowDataPacket[]>('SELECT 1 FROM live_room_blocks WHERE room_id=? AND application_user_id=? AND active=TRUE LIMIT 1',[state[0].id,identity.userId]);
+      if(blocks.length)throw new MobileAccessDeniedError('ROOM_PERMANENT_BANNED','You cannot rejoin this room.');
       throw new Error("Join this active room before requesting media access.");
+    }
 
     const isHost =
       room.media_role === "HOST" || room.media_role === "PARTY_OWNER";
     const isAudioPublisher =
       room.media_role === "AUDIO_GUEST" || room.media_role === "RTC_SPEAKER";
     const mayPublish = isHost || (isAudioPublisher && (room.room_type!=='PARTY' || room.seat_index!=null));
-    const publishingBlocked = room.room_type==='PARTY' ? Boolean(room.muted_by_staff) : Boolean(room.muted);
-    if (input.canPublish && (!mayPublish || (room.room_type!=='PARTY' && publishingBlocked))) {
+    const publishingBlocked = Boolean(room.muted_by_staff);
+    // Self-mute is intent, not loss of the Host/accepted Guest capability.
+    // Treating it as authorization used to strand valid muted Hosts on retry.
+    if (input.canPublish && !mayPublish) {
       throw new Error(
         room.room_type === "PARTY"
           ? "An active speaker role is required before microphone access."
           : "The host must accept your Audio Request before microphone access.",
       );
+    }
+
+    if(isHost && input.previousGrantId && identity.sessionId){
+      const [current]=await connection.query<RowDataPacket[]>(`SELECT mobile_session_id FROM livekit_media_access_grants
+        WHERE room_id=? AND application_user_id=? AND revoked_at IS NULL AND media_role IN ('HOST','PARTY_OWNER')
+        ORDER BY issued_at DESC LIMIT 1 FOR UPDATE`,[room.room_id,identity.userId]);
+      if(current[0]?.mobile_session_id && current[0].mobile_session_id!==identity.sessionId)
+        throw new MobileAccessDeniedError('LIVE_SESSION_REPLACED','This Live session is active on another signed-in device.');
     }
     if (input.canPublish) {
       if (room.room_type !== "PARTY") {
@@ -131,7 +146,9 @@ export async function authorizeLiveKitRoom(
       if (!access.allowed) throw new Error(access.reason);
     }
 
-    const publishMode: LiveKitPublishMode = !input.canPublish || (room.room_type==='PARTY' && publishingBlocked)
+    const publishMode: LiveKitPublishMode = input.canPublish && isHost && room.room_type!=='PARTY' && publishingBlocked
+      ? 'video_only'
+      : !input.canPublish || publishingBlocked
       ? "none"
       : room.room_type === "PARTY" || isAudioPublisher
         ? "audio_only"
@@ -168,7 +185,7 @@ export async function authorizeLiveKitRoom(
       roomType: room.room_type,
       mediaRole: room.media_role,
       publishMode,
-      microphoneMuted: room.room_type==='PARTY' && Boolean(room.muted),
+      microphoneMuted: Boolean(room.muted) || publishingBlocked,
       ttlSeconds,
     } as const;
   });

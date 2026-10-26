@@ -195,7 +195,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </Card>
 
     <Card className="settings-card">
-      <div className="card-title"><div><h2>Face Live rules</h2><p>Server-authoritative opening hours and the once-daily reward after the first eligible 60 minutes. Party Audio keeps its independent rules.</p></div></div>
+      <div className="card-title"><div><h2>Face Live rules</h2><p>Server-authoritative opening hours and claimable daily Live rewards. Party Audio keeps its independent rules.</p></div></div>
       <form action={submitLiveBusinessRules} className="form-grid">
         <label>Business timezone<input name="timezone" required defaultValue={completion.liveRules.timezone} placeholder="Asia/Kolkata" /></label>
         <label>Live start time<input name="startTime" type="time" required defaultValue={completion.liveRules.startTime} /></label>
@@ -203,7 +203,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <label>Closing notice (minutes)<input name="closingNoticeMinutes" type="number" min="1" max="120" required defaultValue={completion.liveRules.closingNoticeMinutes} /></label>
         <label>Hourly reward<select name="rewardEnabled" defaultValue={String(completion.liveRules.rewardEnabled)}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
         <label>Eligible Host daily first-hour Diamonds<input name="hourlyRewardDiamonds" type="number" min="0" required defaultValue={completion.liveRules.hourlyRewardDiamonds} /><span>Applies equally to every eligible Host, including male and female Hosts.</span></label>
-        <label>Eligible block<input value="Continuous 60 minutes" readOnly aria-readonly="true" /><span>The backend evaluates Host status, Agency authorization, restrictions, session validity, and idempotency. Gender is recorded for audit only.</span></label>
+        <label>Eligible block<input value={completion.liveRules.rewardBlockSeconds === 1800 ? "Two continuous 30-minute blocks" : "Continuous 60 minutes"} readOnly aria-readonly="true" /><span>The backend evaluates Host status, Agency authorization, restrictions, session validity, and idempotency. Gender is recorded for audit only.</span></label>
         <label className="span-two">Change reason<input name="reason" required minLength={5} maxLength={500} placeholder="Why are the Live business rules changing?" /></label>
         <label>Confirm<button className="primary-button" type="submit">Save Live rules</button></label>
       </form>

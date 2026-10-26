@@ -44,7 +44,7 @@ export async function getLiveRewardDiagnostics(days = 30) {
             SUM(
               accounting.accounting_accuracy = 'CONFIRMED'
               AND accounting.room_type IN ('FACE', 'LIVE')
-              AND accounting.eligible_seconds_committed >= 3600
+              AND accounting.eligible_seconds_committed >= accounting.reward_period_seconds
               AND NOT EXISTS (
                 SELECT 1 FROM live_hour_reward_decisions decision_row
                 WHERE decision_row.live_session_accounting_id = accounting.id

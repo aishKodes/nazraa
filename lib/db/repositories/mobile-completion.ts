@@ -560,6 +560,8 @@ async function ensureWallet(
 }
 
 type SettledLiveHours = {
+  rewardDiamondsPerBlock: number;
+  rewardPeriodSeconds: number;
   rewardDiamondsPerHour: number;
   rewardEligible: boolean;
   eligibilityReason: string;
@@ -662,11 +664,12 @@ async function settleCompletedLiveHours(
       actively_restricted: number;
       face_live_moderation_cutoff: number;
       host_member_active: number;
+      reward_period_seconds: number;
     })[]
   >(
     `SELECT accounting.host_application_user_id, accounting.room_type,
             accounting.status accounting_status, accounting.reward_coins,
-            accounting.reward_ledger_id, room.status room_status,
+            accounting.reward_ledger_id, accounting.reward_period_seconds, room.status room_status,
             room.host_application_user_id room_host_id,
             room.agency_account_id room_agency_account_id,
             host_user.gender, host_user.account_status, host_user.is_host,
@@ -716,12 +719,22 @@ async function settleCompletedLiveHours(
     new Date(),
     rules.timezone,
   );
+  const rewardPeriodSeconds=Number(row.reward_period_seconds??3600);
+  const blocksPerDay=rewardPeriodSeconds===1800?2:1;
+  const rewardPerUnit=Math.floor(rules.hourlyRewardDiamonds/blocksPerDay);
+  // Reuse the existing Host/day mutex; this never consumes an Auto Resume.
+  await connection.execute(`INSERT INTO live_auto_resume_days(host_application_user_id,business_date)
+    VALUES (?,?) ON DUPLICATE KEY UPDATE host_application_user_id=VALUES(host_application_user_id)`,[row.host_application_user_id,dailyRewardBusinessDate]);
+  await connection.query('SELECT successful_resumes FROM live_auto_resume_days WHERE host_application_user_id=? AND business_date=? FOR UPDATE',[row.host_application_user_id,dailyRewardBusinessDate]);
   const [existingDailyAwards] = await connection.query<RowDataPacket[]>(
-    `SELECT id FROM live_daily_reward_awards
-     WHERE application_user_id = ? AND business_date = ? LIMIT 1`,
+    `SELECT id,amount FROM live_daily_reward_awards
+     WHERE application_user_id = ? AND business_date = ? FOR UPDATE`,
     [row.host_application_user_id, dailyRewardBusinessDate],
   );
-  let dailyRewardEarned = existingDailyAwards.length > 0;
+  let dailyAwarded=existingDailyAwards.reduce((sum,r)=>sum+Number(r.amount),0);
+  let dailySlots=existingDailyAwards.length;
+  let dailyRewardEarned=rewardPeriodSeconds===1800
+    ? dailyAwarded>=rules.hourlyRewardDiamonds : dailySlots>0;
   const eligibility = liveHourlyRewardEligibility(rules, {
     gender: row.gender,
     accountActive: row.account_status === "ACTIVE",
@@ -739,7 +752,7 @@ async function settleCompletedLiveHours(
     roomType: row.room_type,
   });
 
-  const boundedHours = Math.max(0, Math.min(168, Math.floor(completedHours)));
+  const boundedHours = Math.max(0, Math.min(rewardPeriodSeconds===1800?2:168, Math.floor(completedHours)));
   const existingTotal = Number(row.reward_coins ?? 0);
   const legacyPaidHours =
     eligibility.diamondsPerHour > 0
@@ -776,8 +789,8 @@ async function settleCompletedLiveHours(
           `INSERT IGNORE INTO live_reward_entitlements
             (id, live_hour_reward_decision_id, live_session_accounting_id,
              application_user_id, agency_account_id, completed_hour, amount,
-             claim_status, earned_at, claimed_at, ledger_transaction_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             claim_status, earned_at, claimed_at, ledger_transaction_id,reward_period_seconds)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             randomUUID(),
             existingDecision.id,
@@ -790,6 +803,7 @@ async function settleCompletedLiveHours(
             existingDecision.decided_at,
             alreadyPaid ? existingDecision.decided_at : null,
             existingDecision.ledger_transaction_id,
+            rewardPeriodSeconds,
           ],
         );
       }
@@ -797,14 +811,17 @@ async function settleCompletedLiveHours(
     }
 
     const legacyPaid = hour <= legacyPaidHours;
-    let rewardDiamonds = eligibility.eligible ? eligibility.diamondsPerHour : 0;
+    let rewardDiamonds = eligibility.eligible ? rewardPerUnit : 0;
     let decisionReason = eligibility.reason;
+    if (rewardDiamonds>0 && !legacyPaid && (dailyRewardEarned || dailySlots>=blocksPerDay || dailyAwarded+rewardDiamonds>rules.hourlyRewardDiamonds)) {
+      rewardDiamonds=0;decisionReason='DAILY_REWARD_ALREADY_EARNED';
+    }
     if (rewardDiamonds > 0 && !legacyPaid) {
       const [dailyAward] = await connection.execute<ResultSetHeader>(
         `INSERT IGNORE INTO live_daily_reward_awards
           (id, application_user_id, business_date, live_session_accounting_id,
-           completed_hour, amount, source)
-         VALUES (?, ?, ?, ?, ?, ?, 'HOST_HOURLY_DIAMONDS')`,
+           completed_hour, amount, source,daily_block_index)
+         VALUES (?, ?, ?, ?, ?, ?, 'HOST_HOURLY_DIAMONDS',?)`,
         [
           randomUUID(),
           row.host_application_user_id,
@@ -812,13 +829,15 @@ async function settleCompletedLiveHours(
           accountingId,
           hour,
           rewardDiamonds,
+          dailySlots+1,
         ],
       );
       if (dailyAward.affectedRows === 0) {
         rewardDiamonds = 0;
         decisionReason = "DAILY_REWARD_ALREADY_EARNED";
       } else {
-        dailyRewardEarned = true;
+        dailyAwarded+=rewardDiamonds;dailySlots++;
+        dailyRewardEarned=dailySlots>=blocksPerDay || dailyAwarded>=rules.hourlyRewardDiamonds;
       }
     } else if (rewardDiamonds > 0 && legacyPaid) {
       dailyRewardEarned = true;
@@ -870,8 +889,8 @@ async function settleCompletedLiveHours(
       `INSERT INTO live_reward_entitlements
         (id, live_hour_reward_decision_id, live_session_accounting_id,
          application_user_id, agency_account_id, completed_hour, amount,
-         claim_status, earned_at, claimed_at, ledger_transaction_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?)`,
+         claim_status, earned_at, claimed_at, ledger_transaction_id,reward_period_seconds)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, ?, ?)`,
       [
         randomUUID(),
         decisionId,
@@ -883,6 +902,7 @@ async function settleCompletedLiveHours(
         legacyPaid ? "CLAIMED" : "UNCLAIMED",
         legacyPaid ? new Date() : null,
         ledgerId,
+        rewardPeriodSeconds,
       ],
     );
     if (!legacyPaid) {
@@ -908,6 +928,8 @@ async function settleCompletedLiveHours(
   }
   return {
     rewardDiamondsPerHour: eligibility.diamondsPerHour,
+    rewardDiamondsPerBlock:rewardPerUnit,
+    rewardPeriodSeconds,
     rewardEligible: eligibility.eligible && !dailyRewardEarned,
     eligibilityReason: dailyRewardEarned
       ? "DAILY_REWARD_ALREADY_EARNED"
@@ -926,13 +948,16 @@ async function settleCompletedLiveHours(
 export async function reconcileCheckpointedLiveRewards(connection: PoolConnection, accountingId: string) {
   const [rows]=await connection.query<(RowDataPacket & {seconds:number; minimum_seconds:number})[]>(
     `SELECT accounting.eligible_duration_seconds + accounting.media_segment_seconds seconds,
+       accounting.reward_period_seconds period_seconds,
        rule.minimum_eligible_seconds minimum_seconds
      FROM live_session_accounting accounting
      INNER JOIN host_reward_rules rule ON rule.id=accounting.reward_rule_id
      WHERE accounting.id=? AND accounting.status='ACTIVE' LIMIT 1 FOR UPDATE`,[accountingId]);
   const row=rows[0];
-  if(!row || Number(row.seconds)<Math.max(3600,Number(row.minimum_seconds))) return;
-  await settleCompletedLiveHours(connection,accountingId,Math.floor(Number(row.seconds)/3600));
+  if(!row) return;
+  const period=Number(row.period_seconds??3600);
+  if(Number(row.seconds)<(period===1800?1800:Math.max(3600,Number(row.minimum_seconds))))return;
+  await settleCompletedLiveHours(connection,accountingId,Math.floor(Number(row.seconds)/period));
   await connection.execute(`UPDATE live_session_accounting SET reward_units_generated=(
     SELECT COUNT(*) FROM live_reward_entitlements WHERE live_session_accounting_id=?) WHERE id=?`,[accountingId,accountingId]);
 }
@@ -950,6 +975,7 @@ type ClaimableLiveRewardRow = RowDataPacket & {
   completed_hour: number;
   amount: number;
   claim_status: "UNCLAIMED" | "CLAIMED";
+  reward_period_seconds: number;
 };
 
 async function lockedDiamondWallet(connection: PoolConnection, userId: string) {
@@ -1002,17 +1028,20 @@ async function creditLockedLiveRewards(
          metadata)
        VALUES (?, ?, ?, 'DIAMOND', 'HOST_HOURLY_DIAMONDS', 'SYSTEM',
          'APPLICATION_USER', ?, ?, 'COMPLETED', ?,
-         JSON_OBJECT('liveSessionId', ?, 'completedHour', ?, 'rewardId', ?))`,
+         JSON_OBJECT('liveSessionId', ?, 'completedHour', ?, 'rewardId', ?, 'rewardPeriodSeconds', ?))`,
       [
         ledgerId,
         code("HSTCLAIM"),
         `HOST-HOUR-CLAIM:${reward.id}`,
         identity.userId,
         Number(reward.amount),
-        `Claimed completed continuous Live hour ${Number(reward.completed_hour)}`,
+        Number(reward.reward_period_seconds) === 1800
+          ? `Claimed completed 30-minute Live block ${Number(reward.completed_hour)}`
+          : `Claimed completed continuous Live hour ${Number(reward.completed_hour)}`,
         reward.live_session_accounting_id,
         Number(reward.completed_hour),
         reward.id,
+        Number(reward.reward_period_seconds ?? 3600),
       ],
     );
     await connection.execute(
@@ -1062,7 +1091,7 @@ export async function claimLiveReward(
 ) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<ClaimableLiveRewardRow[]>(
-      `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status
+      `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status, reward_period_seconds
        FROM live_reward_entitlements
        WHERE id = ? AND application_user_id = ? LIMIT 1 FOR UPDATE`,
       [rewardId, identity.userId],
@@ -1081,7 +1110,7 @@ export async function claimLiveReward(
 export async function claimAllLiveRewards(identity: MobileIdentity) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<ClaimableLiveRewardRow[]>(
-      `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status
+      `SELECT id, live_session_accounting_id, completed_hour, amount, claim_status, reward_period_seconds
        FROM live_reward_entitlements
        WHERE application_user_id = ? AND claim_status = 'UNCLAIMED'
        ORDER BY earned_at, id FOR UPDATE`,
@@ -2198,6 +2227,7 @@ export async function refreshRoomPresence(
               accounting.media_segment_seconds reward_media_segment_seconds,
               accounting.valid_media_seconds reward_valid_media_seconds,
               accounting.eligible_duration_seconds reward_eligible_seconds,
+              accounting.reward_period_seconds reward_period_seconds,
               accounting.eligible_seconds_committed reward_committed_seconds,
               accounting.current_publish_started_at reward_current_publish_started_at,
               accounting.last_heartbeat_at reward_last_heartbeat_at,
@@ -2345,6 +2375,7 @@ export async function refreshRoomPresence(
       const checkpointed = await checkpointHostLive(connection, {
         accountingId:String(rows[0].reward_accounting_id), publishing:mediaPublishing,
         source:'HEARTBEAT', applicationInterrupted:runtimeDiagnostics?.applicationInterrupted,
+        applicationInstanceId:runtimeDiagnostics?.applicationInstanceId,
       });
       if (checkpointed) for (const [field,key] of Object.entries({
         reward_media_segment_seconds:'media_segment_seconds', reward_valid_media_seconds:'valid_media_seconds',
@@ -2417,7 +2448,8 @@ export async function refreshRoomPresence(
         rewardEligibleSeconds +
         rewardSegmentSeconds +
         visibleUncommittedSeconds;
-      const minimumEligibleSeconds = Math.max(
+      const rewardPeriodSeconds=Number(rows[0].reward_period_seconds??3600);
+      const minimumEligibleSeconds = rewardPeriodSeconds===1800 ? 1800 : Math.max(
         3600,
         Number(rows[0].reward_minimum_eligible_seconds ?? 3600),
       );
@@ -2429,7 +2461,7 @@ export async function refreshRoomPresence(
         rewardEligibleSeconds + rewardSegmentSeconds;
       const completedRewardHours =
         durableEligibleLiveSeconds >= minimumEligibleSeconds
-          ? Math.floor(durableEligibleLiveSeconds / 3600)
+          ? Math.floor(durableEligibleLiveSeconds / rewardPeriodSeconds)
           : 0;
       settledLiveHours = await settleCompletedLiveHours(
         connection,
@@ -2869,6 +2901,8 @@ export async function refreshRoomPresence(
           ? {
               rewardDiamondsPerHour:
                 settledLiveHours?.rewardDiamondsPerHour ?? 0,
+              rewardDiamondsPerBlock:settledLiveHours?.rewardDiamondsPerBlock??0,
+              rewardPeriodSeconds:settledLiveHours?.rewardPeriodSeconds??3600,
               rewardEligible: settledLiveHours?.rewardEligible ?? false,
               dailyRewardEarned: settledLiveHours?.dailyRewardEarned ?? false,
               dailyRewardBusinessDate:
@@ -2907,12 +2941,12 @@ export async function refreshRoomPresence(
                 ? 0
                 : Math.max(
                     0,
-                    3600 -
+                    Number(rows[0].reward_period_seconds??3600) -
                       (Number(
                         rows[0].reward_eligible_live_seconds ??
                           rewardEligibleSeconds + rewardSegmentSeconds,
                       ) %
-                        3600),
+                        Number(rows[0].reward_period_seconds??3600)),
                   ),
               newlyClaimableDiamonds:
                 settledLiveHours?.newlyClaimableDiamonds ?? 0,
@@ -4584,6 +4618,7 @@ export async function finalizeLiveSession(
         accounting_id: string;
         room_id: string;
         room_type: "LIVE" | "PARTY" | "FACE";
+        reward_period_seconds: number;
         started_at: Date;
         ended_at: Date;
         status: string;
@@ -4606,7 +4641,7 @@ export async function finalizeLiveSession(
       `SELECT accounting.id accounting_id, room.id room_id, accounting.room_type, accounting.started_at,
               accounting.status, accounting.host_application_user_id, accounting.reward_rule_id,
               accounting.valid_duration_seconds, accounting.eligible_duration_seconds, accounting.reward_coins,
-              accounting.reward_ledger_id,
+              accounting.reward_ledger_id, accounting.reward_period_seconds,
               accounting.media_publishing, accounting.last_media_heartbeat_at,
               accounting.last_media_evidence_at, accounting.eligible_seconds_committed,
               accounting.media_segment_seconds, accounting.valid_media_seconds,
@@ -4701,17 +4736,17 @@ export async function finalizeLiveSession(
     );
     const rule = ruleRows[0];
     if (!rule) throw new Error("The host reward rule is unavailable.");
+    const period=Number(session.reward_period_seconds??3600);
     const totalEligibleSeconds =
-      bankedEligibleSeconds + Math.floor(finalSegmentSeconds / 3600) * 3600;
+      bankedEligibleSeconds + Math.floor(finalSegmentSeconds / period) * period;
     const completedHours =
       totalEligibleSeconds >=
-      Math.max(3600, Number(rule.minimum_eligible_seconds))
-        ? Math.floor(totalEligibleSeconds / 3600)
+      (period===1800?1800:Math.max(3600, Number(rule.minimum_eligible_seconds)))
+        ? Math.floor(totalEligibleSeconds / period)
         : 0;
-    // Only a whole, continuous first hour qualifies. An unfinished hour is
-    // discarded when Live ends; further completed hours remain valid history
-    // but cannot create a second reward in the same business day.
-    const eligibleSeconds = completedHours * 3600;
+    // Retain completed units using the session's policy snapshot. Only the
+    // incomplete tail is discarded; settlement enforces the Host/day budget.
+    const eligibleSeconds = completedHours * period;
     const settled =
       session.room_type === "PARTY"
         ? null
@@ -4810,7 +4845,8 @@ export async function finalizeLiveSession(
       eligibleSeconds,
       rewardCoins,
       rewardDiamonds: rewardCoins,
-      completedHours,
+      completedHours: Math.floor(eligibleSeconds / 3600),
+      completedRewardBlocks: completedHours,
     };
   });
 }
@@ -5098,7 +5134,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT reward.id, reward.live_session_accounting_id session_id,
-              reward.completed_hour, reward.amount, reward.currency,
+              reward.completed_hour, reward.amount, reward.currency,reward.reward_period_seconds,
               reward.source, reward.earned_at, reward.claim_status,
               reward.claimed_at, agency.public_id agency_public_id,
               agency.full_name agency_name
@@ -5197,6 +5233,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
       id: String(row.id),
       sessionId: String(row.session_id),
       completedHour: Number(row.completed_hour),
+      rewardPeriodSeconds:Number(row.reward_period_seconds??3600),
       amount: Number(row.amount),
       currency: String(row.currency),
       source: String(row.source),
@@ -5260,7 +5297,7 @@ export async function mobileDailyRewardsSnapshot(identity: MobileIdentity) {
     ),
     db().query<RowDataPacket[]>(
       `SELECT reward.id, reward.live_session_accounting_id session_id,
-              reward.completed_hour, reward.amount, reward.currency,
+              reward.completed_hour, reward.amount, reward.currency,reward.reward_period_seconds,
               reward.source, reward.earned_at, reward.claim_status,
               reward.claimed_at, agency.public_id agency_public_id,
               agency.full_name agency_name
@@ -5302,6 +5339,7 @@ export async function mobileDailyRewardsSnapshot(identity: MobileIdentity) {
       id: String(row.id),
       sessionId: String(row.session_id),
       completedHour: Number(row.completed_hour),
+      rewardPeriodSeconds:Number(row.reward_period_seconds??3600),
       amount: Number(row.amount),
       currency: String(row.currency),
       source: String(row.source),

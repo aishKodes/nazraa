@@ -2,7 +2,9 @@ import "server-only";
 
 import { SignJWT } from "jose";
 
-export type LiveKitPublishMode = "none" | "audio_only" | "video_audio";
+export type LiveKitPublishMode = "none" | "audio_only" | "video_audio" | "video_only";
+
+export const NAZRAA_LIVEKIT_DEPARTURE_SECONDS = 240;
 
 /**
  * Minimal server-side LiveKit token issuer. `jose` is already a production
@@ -26,6 +28,7 @@ export class LiveKitTokenService {
     participantName: string;
     publishMode: LiveKitPublishMode;
     ttlSeconds?: number;
+    nazraaLiveRoom?: boolean;
   }) {
     if (!this.isConfigured) {
       throw new Error("Live media is being prepared. Please retry shortly.");
@@ -35,11 +38,13 @@ export class LiveKitTokenService {
     const canPublish = input.publishMode !== "none";
     const canPublishSources = input.publishMode === "video_audio"
       ? ["camera", "microphone"]
+      : input.publishMode === 'video_only' ? ['camera']
       : input.publishMode === "audio_only"
         ? ["microphone"]
         : [];
     const token = await new SignJWT({
       name: input.participantName.slice(0, 128),
+      ...(input.nazraaLiveRoom ? {roomConfig:{departureTimeout:NAZRAA_LIVEKIT_DEPARTURE_SECONDS}} : {}),
       video: {
         room: input.roomId,
         roomJoin: true,

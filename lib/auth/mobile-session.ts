@@ -48,7 +48,7 @@ export type MobileIdentity = {
 };
 
 export class MobileAccessDeniedError extends Error {
-  constructor(public readonly accessCode: "ACCOUNT_BANNED" | "ACCOUNT_RESTRICTED" | "DEVICE_BLOCKED" | "DEVICE_ID_REQUIRED" | "FACE_LIVE_TEMPORARILY_SUSPENDED" | "SEAT_LOCKED" | "SEAT_TAKEN" | "ROOM_ENDED" | "ROOM_PERMANENT_BANNED" | "KICKED_FROM_ROOM", message: string, public readonly restriction?: { expiresAt: string; remainingSeconds: number }) {
+  constructor(public readonly accessCode: "ACCOUNT_BANNED" | "ACCOUNT_RESTRICTED" | "DEVICE_BLOCKED" | "DEVICE_ID_REQUIRED" | "FACE_LIVE_TEMPORARILY_SUSPENDED" | "SEAT_LOCKED" | "SEAT_TAKEN" | "ROOM_ENDED" | "ROOM_PERMANENT_BANNED" | "KICKED_FROM_ROOM" | "LIVE_SESSION_REPLACED", message: string, public readonly restriction?: { expiresAt: string; remainingSeconds: number }) {
     super(message);
     this.name = "MobileAccessDeniedError";
   }

@@ -13,6 +13,7 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   applicationInterrupted?: boolean; occurredAt?: Date;
   mobileSessionId?: string;
   publisherGrantId?: string;
+  applicationInstanceId?: string;
 }) {
   const [rows] = await connection.query<RowDataPacket[]>(
     `SELECT *, CURRENT_TIMESTAMP(3) server_now FROM live_session_accounting
@@ -29,6 +30,9 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   const now = new Date(row.server_now), evidenceCursor=row.last_media_evidence_at??row.last_media_heartbeat_at;
   const previous = evidenceCursor ? new Date(evidenceCursor) : null;
   const wasPublishing = Boolean(row.media_publishing);
+  const instanceChanged=Boolean(input.applicationInstanceId && row.application_instance_id && input.applicationInstanceId!==row.application_instance_id);
+  const applicationInterrupted=input.applicationInterrupted===true || instanceChanged;
+  const legacySignals=!row.application_instance_id && !input.applicationInstanceId;
   // A delayed old transport event must not suspend the restored publisher.
   if (input.occurredAt && previous && input.occurredAt < previous) return row;
   const effectiveNow = input.occurredAt ? new Date(Math.min(+now, +input.occurredAt)) : now;
@@ -57,7 +61,7 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
        grace_expires_at,saved_continuous_seconds,reward_cycle_version,qualifying,source)
       VALUES (?,?,?,?,?,?,?,?,?,?)`, [interruptionId,row.id,row.host_application_user_id,
       row.room_type==='PARTY'?'PARTY':'FACE',at,new Date(+at+AUTO_RESUME_SECONDS*1000),segment,cycle,
-      missedCheckpoint || (legacyInterrupted && gap>30_000) || input.applicationInterrupted===true,input.source]);
+      applicationInterrupted || (legacySignals && input.source==='HEARTBEAT' && input.publishing && (missedCheckpoint || (legacyInterrupted && gap>30_000))),input.source]);
   }
   if (interruptionId) {
     const [interruptions] = await connection.query<RowDataPacket[]>(
@@ -65,7 +69,9 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
     const interruption = interruptions[0];
     if (interruption?.resume_status === 'PENDING') {
       const at = new Date(interruption.disconnected_at);
-      const qualifying = Boolean(interruption.qualifying) || input.applicationInterrupted===true || +effectiveNow-+at>30_000;
+      // Elapsed transport downtime is not an application interruption. A
+      // surviving foreground process can reconnect without consuming quota.
+      const qualifying = Boolean(interruption.qualifying) || applicationInterrupted;
       if (qualifying && !interruption.qualifying) await connection.execute(
         'UPDATE live_session_interruptions SET qualifying=TRUE WHERE id=?',[interruptionId]);
       if (input.publishing) {
@@ -81,7 +87,8 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
         if (decision==='EXPIRED'||decision==='QUOTA_EXHAUSTED') {
           // Preserve completed decisions/claimable units and actual history;
           // discard ONLY unfinished continuous progress for the new cycle.
-          completed += Math.floor(segment/3600)*3600; segment=0; cycle++;
+          const period=Number(row.reward_period_seconds??3600);
+          completed += Math.floor(segment/period)*period; segment=0; cycle++;
         }
         await connection.execute(`UPDATE live_session_interruptions SET resume_status=?,resumed_at=?,resume_business_date=?
           WHERE id=? AND resume_status='PENDING'`,[decision,now,day,interruptionId]);
@@ -96,9 +103,10 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
     last_heartbeat_at=CASE WHEN ?='HEARTBEAT' THEN ? ELSE last_heartbeat_at END,
     last_media_evidence_at=CASE WHEN ? THEN ? ELSE last_media_evidence_at END,
     media_segment_seconds=?, valid_media_seconds=?, eligible_duration_seconds=?, eligible_seconds_committed=?,
-    reconnect_state=?, accounting_accuracy='CONFIRMED',auto_resume_interruption_id=?,reward_cycle_version=?
+    reconnect_state=?, accounting_accuracy='CONFIRMED',auto_resume_interruption_id=?,reward_cycle_version=?,
+    application_instance_id=COALESCE(?,application_instance_id)
     WHERE id=? AND status='ACTIVE'`,[input.publishing,input.publishing,now,input.source,now,input.source,now,
-      input.publishing,checkpoint.cursor,segment,valid,completed,committed,state,interruptionId,cycle,row.id]);
+      input.publishing,checkpoint.cursor,segment,valid,completed,committed,state,interruptionId,cycle,input.applicationInstanceId??null,row.id]);
   return {...row, media_publishing:input.publishing,media_segment_seconds:segment,valid_media_seconds:valid,
     eligible_duration_seconds:completed,eligible_seconds_committed:committed,reconnect_state:state,
     auto_resume_interruption_id:interruptionId,reward_cycle_version:cycle};
