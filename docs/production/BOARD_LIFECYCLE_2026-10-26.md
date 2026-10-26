@@ -38,7 +38,7 @@ App presence repository was inspected: only explicit backend `terminal:true` ret
 
 Installed LiveKit Flutter **2.5.3+nal1**, Flutter WebRTC **1.2.0**, Android WebRTC **137.7151.04**. The isolated SDK branch uses 2.13.1 and contains the same `Future.timeout`/unowned late-WebSocket pattern. No blind upgrade.
 
-The current SignalClient assigns `_ws` only after awaiting `connector.timeout(...)`. Timeout does not cancel the underlying connection; a later socket has shared callbacks but no `_ws` reference, so cleanup cannot close it. The official upstream report describes the same mechanism: https://github.com/livekit/client-sdk-flutter/issues/1219 . A separate open teardown/reconnect issue is https://github.com/livekit/client-sdk-flutter/issues/1245 . These reports are corroboration, not proof that every historical Nazraa incident had that cause. A deterministic local regression will exercise the actual vendored implementation.
+The baseline SignalClient assigned `_ws` only after awaiting `connector.timeout(...)`. Timeout does not cancel the underlying connection; a later socket had shared callbacks but no `_ws` reference, so cleanup could not close it. The official upstream report describes the same mechanism: https://github.com/livekit/client-sdk-flutter/issues/1219 . A separate teardown/reconnect report is https://github.com/livekit/client-sdk-flutter/issues/1245 . These reports corroborate the deterministic local reproduction; they do not prove that every historical Nazraa incident had that cause.
 
 ## Approved reward interpretation
 
@@ -76,7 +76,7 @@ Production rollback-only canonical-engine probe: 1799 → 0; 1800 → 1750; 3599
 
 Concurrent empty/repeated claims exposed a shared duplicate-key wallet-lock upgrade deadlock. Existing wallets now take their exclusive point lock directly, and DB-idempotent claims retry rolled-back deadlocks. Eight concurrent settlements/claims plus 32 empty repeats produce exactly two credits / 3500 Diamonds. Missing-entitlement repair preserves the original period snapshot as well as amount.
 
-Session history remains unbounded up to the existing seven-day safety bound; the two-unit limit is per reward day, not a lifetime session cap. Same-session midnight fixtures verify two blocks on each of two days. A new process within 10s uses one Auto Resume, without crediting that gap. Completed blocks survive expired recovery; only the incomplete remainder resets.
+Session history continues up to the existing seven-day safety bound; the two-unit limit is per reward day, not a lifetime session cap. Same-session midnight fixtures verify two blocks on each of two days. A new process within 10s uses one Auto Resume, without crediting that gap. Completed blocks survive expired recovery; only the incomplete remainder resets.
 
 Accounting precision remains the existing server evidence policy: current clients checkpoint approximately every 20s, with a bounded 30s evidence window. It is not frame-level accounting. Unknown/offline gaps beyond the supported interval are excluded; detection/transport boundaries can carry that bounded uncertainty. No device wall-clock elapsed value determines rewards.
 
@@ -87,13 +87,21 @@ Accounting precision remains the existing server evidence policy: current client
 - Exact signed APK 2.5.07+7419: 20/20 Face starts and 20/20 Party starts. Server observer independently confirmed expected tracks for every cycle; Face advertised 1280×720 (rotated 720p equivalent). All new observed rooms: departure 240, empty 300.
 - UIAutomator observed ready p50/p95: Face 10.669/12.937s, Party 7.078/8.275s. These include test-driver observation overhead and are not clean tap-to-frame benchmarks.
 - Party real Android default-network removal: 10/30/60s, all automatically recovered in the same board. Corresponding recovery observations including test-driver overhead: 13.13/13.89/15.06s.
-- A 65-minute exact-APK Face soak started 26 October 14:58:25 UTC. Network, background/call, camera, microphone and Beauty-panel checks are running. Final sustained-session gate and public publication are pending. The current public download is still 2.5.06; 2.5.07 assets are a draft.
+- Exact-APK Face soak: **3905 seconds / 65:05**, passed. Start 26 October 14:58:25 UTC; explicit close returned Home. Final visible clock **61:08**, followed by normal close processing; final durable committed publishing time **3686 seconds / 61:26**. Offline/background/recovery intervals were excluded. The Live clock continued after the daily reward cap. All 64 samples retained the same board; PSS range 220,627–242,758 KB, with no sustained growth.
+- Face outages: actual Android default network removed for **10.07 / 30.21 / 60.11s**. Automatic recovery observed in **3.57 / 8.26 / 7.78s** after restoration (test-driver overhead included). Camera rotation, mic mute/unmute, 30s background/resume, 15s incoming-call simulation and Beauty-panel checks passed.
+- Controlled SFU-only deletion: guard verified the QA Host was the sole participant. **5.054s** later, a new RTC room SID had republished camera/mic, while Nazraa application session, earned time and Auto Resume quota were unchanged. New transport still departure 240 / empty 300. No backend finalizer was called for this test.
+- Real production QA session: **two UNCLAIMED 1750-Diamond entitlements**, total **3500**, zero reward wallet credits, zero duplicate/cap violations. Normal explicit close finalized its ledger. Completed financial/audit records were retained.
+- Final deployed-code production probe also passed fast-process restoration (zero restart-gap credit), same-session daily rollover, all four reward thresholds and repeat settlement. All probe records were rolled back.
+- **Published 2.5.07+7419** on GitHub and `https://nazralive.in/download`. The public APK was downloaded, hash-matched byte-for-byte, installed without uninstalling, and smoke-tested: existing login retained, Face camera/mic 720p publication, Live clock after the reward cap, Party signed audio evidence and normal closes. Public AAB independently streamed/hash-verified. Zero active QA application rooms and zero QA RTC participants remained.
+- Remote latest: **2.5.07+7419**. Existing minimum **2.1.0** and other app configuration preserved. Host Rules copy version **1.1** accurately describes claimable half-hours; prior version retained, other sections and UGC acceptance requirements unchanged.
 
 Rollback: verified existing private OCI predeploy backup, source archives and pre-deploy API images are retained. Only API was recreated; MySQL, Redis, worker, realtime and LiveKit were not restarted. Production-only Control copy was preserved after a source guard detected the difference. Deployment manifests under `/opt/nazraa/tools/` record the exact selected source commits; no hard reset of the production checkout occurred.
 
-Candidate mobile commit: `1f2677345c3583dc601fe65d3cc7204e2c1d1c11`. Package and permanent release certificate unchanged.
+Released mobile commit: `1f2677345c3583dc601fe65d3cc7204e2c1d1c11`. Selected deployed backend source: `ca9ce48add8d759aedcc68b5ac728dc8fbd41328`. Package and permanent release certificate unchanged. Exact public APK: 259,196,678 bytes; AAB: 204,592,304 bytes.
 
 APK SHA-256: `d6ccaed54c20d04e30aab9cd7231aff511d7414f288c1ac9e72e6e23541d5cfb`.
 AAB SHA-256: `49b73bc7afc43449c2a77a2ae248689f7dadcf433483c6e3cffd901ab2f0a551`.
 
 No physical phone was available. Emulator Wi-Fi/mobile-interface and call simulations do not certify real carrier/device behavior.
+
+Production evidence files: `/opt/nazraa/logs/board-2.5.07-release-gates.json`, `board-final-production-probe-20261026.json`, `board-controlled-rtc-reset-20261026.log`, `board-public-smoke-cleanup-20261026.json`. Deployment/rollback manifests remain under `/opt/nazraa/tools/`. Private local QA logs are stored beside the release artifacts in the mobile workspace's ignored `dist/board-lifecycle-2.5.07/qa/` directory.
