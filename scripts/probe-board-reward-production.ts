@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import mysql,{type PoolConnection,type RowDataPacket} from 'mysql2/promise';
 import {reconcileCheckpointedLiveRewards} from '@/lib/db/repositories/mobile-completion';
+import {checkpointHostLive} from '@/lib/services/live-auto-resume';
 async function main(){
   const c=await mysql.createConnection({host:process.env.DB_HOST,user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME});
   try{
@@ -27,9 +28,19 @@ async function main(){
       observations.push({seconds,claimableDiamonds:sum,count:rows.length});
     }
     const [ledger]=await c.query<RowDataPacket[]>('SELECT COUNT(*) n FROM ledger_transactions WHERE destination_id=?',[host]);assert.equal(Number(ledger[0].n),0);
+    await c.execute('UPDATE live_session_accounting SET media_publishing=TRUE,application_instance_id=?,last_media_evidence_at=CURRENT_TIMESTAMP(3)-INTERVAL 10 SECOND WHERE id=?',['a'.repeat(32),accounting]);
+    await checkpointHostLive(c as PoolConnection,{accountingId:accounting,publishing:true,source:'HEARTBEAT',applicationInstanceId:'b'.repeat(32)});
+    const [restored]=await c.query<RowDataPacket[]>('SELECT media_segment_seconds FROM live_session_accounting WHERE id=?',[accounting]);assert.equal(Number(restored[0].media_segment_seconds),3600);
+    const [quota]=await c.query<RowDataPacket[]>('SELECT successful_resumes FROM live_auto_resume_days WHERE host_application_user_id=?',[host]);assert.equal(Number(quota[0].successful_resumes),1);
+    await c.execute('UPDATE live_daily_reward_awards SET business_date=DATE_SUB(business_date,INTERVAL 1 DAY) WHERE application_user_id=?',[host]);
+    for(const seconds of [5400,7200]){
+      await c.execute('UPDATE live_session_accounting SET media_segment_seconds=? WHERE id=?',[seconds,accounting]);
+      await reconcileCheckpointedLiveRewards(c as PoolConnection,accounting);
+    }
+    const [days]=await c.query<RowDataPacket[]>('SELECT COUNT(*) n,SUM(amount) amount FROM live_daily_reward_awards WHERE application_user_id=? GROUP BY business_date',[host]);assert.equal(days.length,2);assert.ok(days.every(x=>Number(x.n)===2&&Number(x.amount)===3500));
     await c.rollback();
     const [remaining]=await c.query<RowDataPacket[]>('SELECT COUNT(*) n FROM application_users WHERE id=?',[host]);assert.equal(Number(remaining[0].n),0);
-    console.log(JSON.stringify({canonicalProductionRewardProbe:'PASS',observations,walletCredits:0,rollbackVerified:true}));
+    console.log(JSON.stringify({canonicalProductionRewardProbe:'PASS',observations,fastApplicationResume:true,restartGapCreditedSeconds:0,sameSessionDayRollover:true,walletCredits:0,rollbackVerified:true}));
   }finally{await c.rollback();await c.end();}
 }
 main().catch(e=>{console.error('PRODUCTION_REWARD_PROBE_FAILED',e.code||e.name);process.exitCode=1;});

@@ -40,7 +40,9 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   let segment = Number(row.media_segment_seconds), completed = Number(row.eligible_duration_seconds);
   let valid = Number(row.valid_media_seconds), committed = Number(row.eligible_seconds_committed);
   let cycle = Number(row.reward_cycle_version), interruptionId = row.auto_resume_interruption_id as string|null;
-  const checkpoint = publishingCheckpoint({wasPublishing, publishingNow:input.publishing,
+  // A changed process proves an application interruption even if it returned
+  // before the provider's leave timeout. Its unobserved gap is not publishing.
+  const checkpoint = publishingCheckpoint({wasPublishing:wasPublishing&&!instanceChanged, publishingNow:input.publishing,
     previousEvidence:previous, serverTime:effectiveNow, evidenceWindowSeconds:30});
   // A destroy/false event can arrive only after the provider's disconnect
   // timeout. It proves that publishing stopped, not that media continued up
@@ -53,7 +55,7 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   // not receipt time or an imagined offline interval, is the interruption.
   const missedCheckpoint = wasPublishing && previous != null && gap > 30_000;
   const legacyInterrupted = !wasPublishing && input.publishing && segment>0 && previous!=null;
-  if (!interruptionId && (missedCheckpoint || legacyInterrupted || (wasPublishing && !input.publishing))) {
+  if (!interruptionId && (missedCheckpoint || legacyInterrupted || (instanceChanged && segment>0) || (wasPublishing && !input.publishing))) {
     const at = previous ?? effectiveNow;
     interruptionId = randomUUID();
     await connection.execute(`INSERT INTO live_session_interruptions
@@ -98,14 +100,14 @@ export async function checkpointHostLive(connection: PoolConnection, input: {
   }
   const state=input.publishing?'PUBLISHING':interruptionId?'GRACE':'STARTING';
   await connection.execute(`UPDATE live_session_accounting SET media_publishing=?,
-    current_publish_started_at=CASE WHEN ? THEN COALESCE(current_publish_started_at,?) ELSE NULL END,
+    current_publish_started_at=CASE WHEN ? THEN COALESCE(IF(?,NULL,current_publish_started_at),?) ELSE NULL END,
     last_media_heartbeat_at=CASE WHEN ?='HEARTBEAT' THEN ? ELSE last_media_heartbeat_at END,
     last_heartbeat_at=CASE WHEN ?='HEARTBEAT' THEN ? ELSE last_heartbeat_at END,
     last_media_evidence_at=CASE WHEN ? THEN ? ELSE last_media_evidence_at END,
     media_segment_seconds=?, valid_media_seconds=?, eligible_duration_seconds=?, eligible_seconds_committed=?,
     reconnect_state=?, accounting_accuracy='CONFIRMED',auto_resume_interruption_id=?,reward_cycle_version=?,
     application_instance_id=COALESCE(?,application_instance_id)
-    WHERE id=? AND status='ACTIVE'`,[input.publishing,input.publishing,now,input.source,now,input.source,now,
+    WHERE id=? AND status='ACTIVE'`,[input.publishing,input.publishing,instanceChanged,now,input.source,now,input.source,now,
       input.publishing,checkpoint.cursor,segment,valid,completed,committed,state,interruptionId,cycle,input.applicationInstanceId??null,row.id]);
   return {...row, media_publishing:input.publishing,media_segment_seconds:segment,valid_media_seconds:valid,
     eligible_duration_seconds:completed,eligible_seconds_committed:committed,reconnect_state:state,

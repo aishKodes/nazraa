@@ -752,7 +752,9 @@ async function settleCompletedLiveHours(
     roomType: row.room_type,
   });
 
-  const boundedHours = Math.max(0, Math.min(rewardPeriodSeconds===1800?2:168, Math.floor(completedHours)));
+  // This is a per-session history bound, not a lifetime two-block cap. A Live
+  // spanning midnight can earn the next day's units under the same ledger.
+  const boundedHours = Math.max(0, Math.min(rewardPeriodSeconds===1800?336:168, Math.floor(completedHours)));
   const existingTotal = Number(row.reward_coins ?? 0);
   const legacyPaidHours =
     eligibility.diamondsPerHour > 0

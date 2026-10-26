@@ -8,7 +8,7 @@ import {checkpointHostLive} from '@/lib/services/live-auto-resume';
 import {authorizeLiveKitRoom} from '@/lib/services/livekit-room-authority';
 import {LiveKitTokenService} from '@/lib/services/livekit-token-service';
 import {businessDateFor} from '@/lib/services/live-business-policy';
-import {reconcileCheckpointedLiveRewards,claimLiveReward,claimAllLiveRewards} from '@/lib/db/repositories/mobile-completion';
+import {reconcileCheckpointedLiveRewards,claimLiveReward,claimAllLiveRewards,finalizeLiveSession} from '@/lib/db/repositories/mobile-completion';
 import {repairMissingLiveRewardEntitlements} from '@/lib/db/repositories/live-accounting-diagnostics';
 import type {Scope} from '@/types/platform';
 
@@ -41,11 +41,29 @@ export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:stri
   assert.deepEqual([Number(credits[0].n),Number(credits[0].amount)],[2,3500]);
   console.log('PASS 29:59 / 30:00 / 59:59 / 60:00: 0 / 1750 / 1750 / 3500 claimable Diamonds; eight concurrent settlements/claims; exactly two ledger credits, no auto-credit');
 
+  for(const seconds of [1799,3599]){
+    const closing=await host(`Threshold-close ${seconds}`),cr=await room(closing);await at(cr.accounting,seconds);
+    // Deterministic server-clock last interval, not a client elapsed value.
+    await root.execute('UPDATE live_session_accounting SET last_media_evidence_at=CURRENT_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id=?',[cr.accounting]);
+    await finalizeLiveSession(closing,cr.code);
+    const rewards=await earned(closing);assert.equal(rewards.length,seconds===1799?1:2);assert.equal(rewards.reduce((s,x)=>s+Number(x.amount),0),seconds===1799?1750:3500);
+    await finalizeLiveSession(closing,cr.code);assert.equal((await earned(closing)).length,rewards.length);
+  }
+  console.log('PASS immediate explicit close across either block threshold flushes the confirmed server interval and creates each claimable unit once');
+
   const concurrent=await host('Two-device daily cap'),a=await room(concurrent),b=await room(concurrent);
   await Promise.all([at(a.accounting,3600),at(b.accounting,3600)]);
   const daily=await earned(concurrent);assert.equal(daily.length,2);assert.equal(daily.reduce((s,x)=>s+Number(x.amount),0),3500);
   const [slots]=await root.query<mysql.RowDataPacket[]>('SELECT daily_block_index FROM live_daily_reward_awards WHERE application_user_id=? ORDER BY daily_block_index',[concurrent.userId]);assert.deepEqual(slots.map(x=>Number(x.daily_block_index)),[1,2]);
   console.log('PASS two-session/two-device contention: one daily budget, two unique slots, 3500 maximum');
+
+  const midnight=await host('Same-session business-day rollover'),mr=await room(midnight);await at(mr.accounting,3600);
+  await root.execute('UPDATE live_daily_reward_awards SET business_date=? WHERE application_user_id=?',[businessDateFor('Asia/Kolkata',new Date(Date.now()-86400000)),midnight.userId]);
+  await at(mr.accounting,5400);assert.equal((await earned(midnight)).length,3);
+  await at(mr.accounting,7200);assert.equal((await earned(midnight)).length,4);
+  const [perDay]=await root.query<mysql.RowDataPacket[]>('SELECT SUM(amount) amount,COUNT(*) n FROM live_daily_reward_awards WHERE application_user_id=? GROUP BY business_date',[midnight.userId]);
+  assert.equal(perDay.length,2);assert.ok(perDay.every(x=>Number(x.amount)===3500&&Number(x.n)===2));
+  console.log('PASS same Live session continues across business-day rollover; exactly two blocks/3500 per day, not a two-block lifetime session cap');
 
   const legacy=await host('Historical full daily award'),old=await room(legacy,3600);
   await root.execute("INSERT INTO live_daily_reward_awards(id,application_user_id,business_date,live_session_accounting_id,completed_hour,amount) VALUES (?,?,?,?,1,3500)",[randomUUID(),legacy.userId,businessDateFor('Asia/Kolkata'),old.accounting]);
@@ -90,6 +108,14 @@ export async function verifyBoardLifecycle(root:mysql.Connection,user:(name:stri
   const [restart]=await root.query<mysql.RowDataPacket[]>('SELECT a.media_segment_seconds,d.successful_resumes FROM live_session_accounting a JOIN live_auto_resume_days d ON d.host_application_user_id=a.host_application_user_id WHERE a.id=?',[transportRoom.accounting]);
   assert.equal(Number(restart[0].media_segment_seconds),1380);assert.equal(Number(restart[0].successful_resumes),1);
   console.log('PASS 60s foreground transport repair uses zero Auto Resumes; 179s application restart preserves progress and consumes exactly one; offline time excluded');
+
+  const quick=await host('Fast process restoration'),qr=await room(quick);await at(qr.accounting,900);
+  await root.execute('UPDATE live_session_accounting SET application_instance_id=?,current_publish_started_at=CURRENT_TIMESTAMP(3)-INTERVAL 15 MINUTE,last_media_evidence_at=CURRENT_TIMESTAMP(3)-INTERVAL 10 SECOND WHERE id=?',['d'.repeat(32),qr.accounting]);
+  await tx(c=>checkpointHostLive(c,{accountingId:qr.accounting,publishing:true,source:'HEARTBEAT',applicationInstanceId:'e'.repeat(32)}));
+  const [fast]=await root.query<mysql.RowDataPacket[]>('SELECT a.media_segment_seconds,TIMESTAMPDIFF(SECOND,a.current_publish_started_at,CURRENT_TIMESTAMP(3)) current_segment_age,COALESCE(d.successful_resumes,0) successful_resumes FROM live_session_accounting a LEFT JOIN live_auto_resume_days d ON d.host_application_user_id=a.host_application_user_id WHERE a.id=?',[qr.accounting]);
+  assert.equal(Number(fast[0]?.media_segment_seconds),900);assert.equal(Number(fast[0]?.successful_resumes),1);
+  assert.ok(Number(fast[0].current_segment_age)<5);
+  console.log('PASS new process within 10s is one Auto Resume even before a negative provider event; unobserved restart gap excluded');
 
   const tokens=await host('Muted Host token recovery'),tr=await room(tokens),sessionA=randomUUID(),sessionB=randomUUID();
   for(const id of [sessionA,sessionB])await root.execute("INSERT INTO mobile_sessions(id,application_user_id,token_hash,expires_at) VALUES (?,?,?,CURRENT_TIMESTAMP(3)+INTERVAL 1 DAY)",[id,tokens.userId,id.replaceAll('-','').padEnd(64,'a')]);
