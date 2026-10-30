@@ -12,6 +12,9 @@ export const configurableGameIds = [
 export type ConfigurableGameId = typeof configurableGameIds[number];
 
 export type GameRuntimeConfig = {
+  economyVersion?: number;
+  /** Frozen alongside the paytable when a round is opened. */
+  settlementDeductionRate?: number;
   enabled: boolean;
   maintenance: boolean;
   /** Reporting target only. Outcomes are never selected from a user's bets. */
@@ -238,6 +241,8 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
           : undefined;
     return [id, {
       ...fallback,
+      economyVersion: integer(stored.economyVersion, 0, 0, Number.MAX_SAFE_INTEGER),
+      settlementDeductionRate: decimal(stored.settlementDeductionRate ?? root.winnings_deduction_rate ?? root.winningsDeductionRate, .01, 0, .25),
       enabled: typeof stored.enabled === "boolean" ? stored.enabled : fallback.enabled,
       maintenance: typeof stored.maintenance === "boolean" ? stored.maintenance : fallback.maintenance,
       targetWinRate: decimal(
@@ -324,4 +329,29 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       : defaultMobileGamesConfig.winnings_deduction_rate,
     games,
   };
+}
+
+/** MariaDB JSON aliases can arrive as text, whereas MySQL sends JSON objects.
+ * Preserve the pre-existing runtime behavior for unversioned games. Only a
+ * deliberately published, previewed version enables stored controls on that
+ * wire format; publishing one game must not activate unrelated old settings. */
+export function effectiveMobileGamesConfig(value: unknown): MobileGamesConfig {
+  const legacy=mobileGamesConfig(value);
+  if(typeof value!=='string')return legacy;
+  let parsed:unknown;try{parsed=JSON.parse(value);}catch{return legacy;}
+  const stored=mobileGamesConfig(parsed);
+  for(const id of configurableGameIds)if((stored.games[id].economyVersion??0)>0)legacy.games[id]=stored.games[id];
+  return legacy;
+}
+
+export function snapshotGameConfig(game:ConfigurableGameId,value:unknown,fallback:GameRuntimeConfig):GameRuntimeConfig {
+  if(value==null)return fallback;
+  let parsed:Record<string,unknown>;
+  try{parsed=typeof value==='string'?JSON.parse(value):value as Record<string,unknown>;}catch{throw new Error('The round configuration is unavailable.');}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('The round configuration is unavailable.');
+  // Migration snapshots carry the original stored value. With MariaDB's
+  // text wire format that value was ignored by the old engine, so freeze the
+  // old effective defaults rather than retrospectively activating it.
+  if(parsed.runtimeSnapshotVersion!==1&&typeof value==='string')return mobileGamesConfig({}).games[game];
+  return mobileGamesConfig({games:{[game]:parsed}}).games[game];
 }

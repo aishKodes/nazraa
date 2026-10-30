@@ -22,6 +22,7 @@ const common = {
   hosts: { href: "/dashboard/hosts", label: "Hosts", icon: Activity },
   agencies: { href: "/dashboard/agencies", label: "Agencies", icon: Building2 },
   hierarchy: { href: "/dashboard/hierarchy", label: "Hierarchy", icon: Network },
+  countries: { href: "/dashboard/countries", label: "Country Management", icon: Network },
   monitoring: { href: "/dashboard/monitoring", label: "Monitoring", icon: Radio },
   moderation: { href: "/dashboard/moderation", label: "Moderation", icon: ShieldAlert },
   wallet: { href: "/dashboard/wallet", label: "Wallet & coins", icon: WalletCards },
@@ -68,7 +69,7 @@ const navigationPermissions: Partial<Record<Route, Permission>> = {
 };
 
 const navigationGroups = [
-  { label: "Core", items: [common.overview, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
+  { label: "Core", items: [common.overview, common.countries, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
   { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.coinTransfers, common.withdrawals, common.hostPayouts] },
   { label: "Safety", items: [common.monitoring, common.moderation, common.rooms, common.face, common.risk, common.support, common.audit] },
   { label: "Platform", items: [common.reports, common.agencyReport, common.hierarchyReport, common.liveRewards, common.gameManagement, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
@@ -79,6 +80,7 @@ export function AppShell({ account, children }: { account: SessionAccount; child
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
   const visibleItems = navigationByRole[account.role]
+    .concat(['MASTER','COUNTRY_MANAGER'].includes(account.role)?[common.countries]:[])
     .concat(['MASTER','AGENCY'].includes(account.role) ? [common.hostPayouts] : [])
     .filter(item => !navigationPermissions[item.href] || can(account.role, navigationPermissions[item.href]!))
     .map(item => account.role === "AGENCY" && item.href === "/dashboard/live-rewards"

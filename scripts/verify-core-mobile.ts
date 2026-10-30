@@ -441,6 +441,10 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if(process.env.NAZRAA_QA_ONLY_COUNTRY_ECONOMY==='1'){
+      await (await import('./country-game-economy-tests')).verifyCountryGameEconomy(root,user,master);
+      return;
+    }
     if(process.env.NAZRAA_QA_ONLY_BOARD==='1'){
       await (await import('./board-lifecycle-reward-tests')).verifyBoardLifecycle(root,user,qaAgency.accountId,master);
       return;
@@ -3503,8 +3507,10 @@ async function main() {
       await root.execute("INSERT INTO system_settings (setting_key,setting_value,updated_by) VALUES ('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)",[JSON.stringify({...chairSettings,games:{...chairSettings.games,teen_patti:{...chairSettings.games?.teen_patti,enabled:false}}}),master.account.id]);
       const paused=await product.maintainSharedGameRounds();
       assert(paused.realtime.some(state=>state.game==='teen_patti_pro'),'pausing new TeenPatti never stops existing Pro maintenance');
-      assert(!paused.realtime.some(state=>state.game==='teen_patti'),'paused new game opens no new rounds');
-      await assert.rejects(product.gameSharedRoundState(owner,'teen_patti'));
+      const retained=await product.gameSharedRoundState(owner,'teen_patti');
+      assert(paused.realtime.some(state=>state.game==='teen_patti'),'future-round pause preserves the already opened table until its end');
+      await root.execute('UPDATE game_shared_rounds SET result_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id=?',[retained.round.id]);
+      await assert.rejects(product.gameSharedRoundState(owner,'teen_patti'),/disabled/);
     } finally {
       if(originalChairSettings===undefined) await root.execute("DELETE FROM system_settings WHERE setting_key='mobile.games'");
       else await root.execute("UPDATE system_settings SET setting_value=? WHERE setting_key='mobile.games'",[typeof originalChairSettings==='string'?originalChairSettings:JSON.stringify(originalChairSettings)]);
@@ -3821,8 +3827,8 @@ async function main() {
         definition.game,
       );
       await root.execute(
-        "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
-        ["9000000000000000000", existing.round.id, definition.game],
+        "UPDATE game_shared_rounds SET round_number = ?,result_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id = ? AND game_name = ?",
+        ["9000000000", existing.round.id, definition.game],
       );
       for (let roundIndex = 0; roundIndex < 30; roundIndex += 1) {
         const settled = await completeSharedRound(
@@ -3837,9 +3843,9 @@ async function main() {
         // round_number is unsigned; this reserved high QA range is unique per
         // game and makes the next state call create a fresh current round.
         await root.execute(
-          "UPDATE game_shared_rounds SET round_number = ? WHERE id = ? AND game_name = ?",
+          "UPDATE game_shared_rounds SET round_number = ?,result_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id = ? AND game_name = ?",
           [
-            `9000000000000000${String(roundIndex + 1).padStart(3, "0")}`,
+            String(9000000001+roundIndex),
             settled.round.id,
             definition.game,
           ],

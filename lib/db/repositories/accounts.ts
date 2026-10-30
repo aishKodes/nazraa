@@ -103,6 +103,15 @@ export const scopeFor = cache(async (account: Scope["account"]): Promise<Scope> 
     scopeRootId = parents[0]?.parent_account_id ?? account.id;
   }
   const [rows] = await withDatabaseReadRetry(() => db().query<(RowDataPacket & { id: string })[]>(scopedAccountsSql, [scopeRootId]));
+  if (account.role === 'COUNTRY_MANAGER') {
+    const [countries] = await db().query<RowDataPacket[]>('SELECT country_code FROM platform_accounts WHERE id=? AND removed_at IS NULL', [account.id]);
+    const countryCode = String(countries[0]?.country_code ?? '').trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(countryCode)) return {account, accountIds: [], isGlobal: false, countryCode: null};
+    const ids = rows.map(row => row.id);
+    const [allowed] = ids.length ? await db().query<RowDataPacket[]>(
+      `SELECT id FROM platform_accounts WHERE id IN (${ids.map(() => '?').join(',')}) AND country_code=? AND removed_at IS NULL`, [...ids, countryCode]) : [[]];
+    return {account, accountIds: allowed.map(row => String(row.id)), isGlobal: false, countryCode};
+  }
   return { account, accountIds: rows.map((row) => row.id), isGlobal: false };
 });
 

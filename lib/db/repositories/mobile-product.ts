@@ -28,7 +28,7 @@ import {
 import { syncZegoRoomMixer } from "@/lib/services/zego-stream-mixing-service";
 import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
-import { mobileGamesConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
+import { mobileGamesConfig,effectiveMobileGamesConfig,snapshotGameConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import {TEEN_PATTI_ID,dealChairRound,chairPreview,teenPattiChairs} from '@/lib/games/teen-patti';
 import {isPrincessQuotedRules,princessFixedQuoteRules,princessFixedQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
@@ -1341,7 +1341,7 @@ async function gameSettings(connection: PoolConnection) {
   const [rows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
     "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
   );
-  return mobileGamesConfig(rows[0]?.setting_value);
+  return effectiveMobileGamesConfig(rows[0]?.setting_value);
 }
 
 /**
@@ -1846,7 +1846,17 @@ type SharedRoundRow = RowDataPacket & {
   betting_starts_at: Date; betting_ends_at: Date; drawing_ends_at: Date; result_ends_at: Date;
   result_committed_at: Date | null; result_version: number;
   outcome_json: unknown;
+  config_json?: unknown; config_version?: number;
 };
+
+function roundGameConfig(round:SharedRoundRow,fallback:GameRuntimeConfig):GameRuntimeConfig {
+  return snapshotGameConfig(round.game_name,round.config_json,fallback);
+}
+async function activeSharedRound(connection:PoolConnection,game:SharedRoundGame,now:Date){
+  const [rows]=await connection.query<SharedRoundRow[]>(
+    'SELECT * FROM game_shared_rounds WHERE game_name=? AND betting_starts_at<=? AND result_ends_at>? ORDER BY betting_starts_at DESC LIMIT 1',[game,now,now]);
+  return rows[0]??null;
+}
 
 function sharedGame(value: string): SharedRoundGame {
   if (!sharedRoundGameSet.has(value)) throw new Error("This game does not use shared rounds.");
@@ -2027,13 +2037,25 @@ function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, numbe
 }
 
 async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig, now = new Date()) {
+  // Availability, paytable and cadence edits affect future rounds only. An
+  // already opened table keeps its original timing and immutable snapshot.
+  const active=await activeSharedRound(connection,game,now);
+  if(active)return active;
   if (!config.enabled) throw new Error("This game is currently disabled.");
   if (config.maintenance) throw new Error("This game is temporarily under maintenance.");
   const timing = { betting: config.bettingSeconds, drawing: config.drawingSeconds, result: config.resultSeconds };
   const totalSeconds = timing.betting + timing.drawing + timing.result;
   if (totalSeconds < 1) throw new Error("This shared game has an invalid round duration.");
-  const roundNumber = Math.floor(now.getTime() / (totalSeconds * 1000));
-  const startsAt = new Date(roundNumber * totalSeconds * 1000);
+  const epochNumber = Math.floor(now.getTime() / (totalSeconds * 1000));
+  const [latest]=await connection.query<SharedRoundRow[]>(
+    'SELECT * FROM game_shared_rounds WHERE game_name=? ORDER BY betting_starts_at DESC,round_number DESC LIMIT 1',[game]);
+  // A timing edit may place the epoch's nominal start inside the preceding
+  // table. Start at that table's end and keep a monotonically unique round
+  // number instead of reusing an ended round or overlapping betting windows.
+  const previous=latest[0];
+  const roundNumber=previous?Math.max(epochNumber,Number(previous.round_number)+1):epochNumber;
+  if(!Number.isSafeInteger(roundNumber))throw new Error('The game round sequence is unavailable.');
+  const startsAt = new Date(Math.max(epochNumber * totalSeconds * 1000,previous?new Date(previous.result_ends_at).getTime():0));
   const bettingEndsAt = new Date(startsAt.getTime() + timing.betting * 1000);
   const drawingEndsAt = new Date(bettingEndsAt.getTime() + timing.drawing * 1000);
   const resultEndsAt = new Date(drawingEndsAt.getTime() + timing.result * 1000);
@@ -2048,9 +2070,9 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
   if (existingRows[0]) return existingRows[0];
   const [insertResult] = await connection.execute<ResultSetHeader>(
     `INSERT IGNORE INTO game_shared_rounds
-      (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_committed_at, result_ends_at, result_version, outcome_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config))],
+      (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_committed_at, result_ends_at, result_version, outcome_json,config_version,config_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?,?,?)`,
+    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config)),config.economyVersion??0,JSON.stringify({...config,runtimeSnapshotVersion:1})],
   );
   const [rows] = await connection.query<SharedRoundRow[]>(
     // A locking read sees a concurrently inserted winner even when this
@@ -2121,7 +2143,6 @@ async function settleMaturedSharedRounds(
   settings: MobileGamesConfig,
   businessTimezone: string,
 ) {
-  const gameConfig = settings.games[game];
   const [pairs] = await connection.query<(RowDataPacket & { round_id: string; application_user_id: string })[]>(
     `SELECT bet.round_id, bet.application_user_id
      FROM game_shared_bets bet
@@ -2157,6 +2178,7 @@ async function settleMaturedSharedRounds(
     const [roundRows] = await connection.query<SharedRoundRow[]>("SELECT * FROM game_shared_rounds WHERE id = ? LIMIT 1 FOR UPDATE", [pair.round_id]);
     const round = roundRows[0];
     if (!round) continue;
+    const gameConfig=roundGameConfig(round,settings.games[game]);
     const finalizedOutcome = await finalizeSharedRoundOutcome(connection, round, settings);
     const [betRows] = await connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
       "SELECT target_id, SUM(amount) amount FROM game_shared_bets WHERE round_id = ? AND application_user_id = ? GROUP BY target_id",
@@ -2171,8 +2193,7 @@ async function settleMaturedSharedRounds(
       ),
       gameConfig,
     );
-    const rules = gameEconomyRules(settings);
-    const deductionRate = game===LION_VS_TIGER_ID ? 0 : game===TEEN_PATTI_ID ? 0.03 : rules.winningsDeductionRate;
+    const deductionRate = game===LION_VS_TIGER_ID ? 0 : game===TEEN_PATTI_ID ? 0.03 : gameConfig.settlementDeductionRate??gameEconomyRules(settings).winningsDeductionRate;
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
     const deduction = game===TEEN_PATTI_ID
@@ -2212,6 +2233,7 @@ async function settleMaturedSharedRounds(
     const fullOutcome = {
       ...finalizedOutcome, ...result.outcome, sharedRoundId: round.id, roundNumber: Number(round.round_number),
       grossPayout, winningsDeduction: deduction, winningsDeductionRate: deductionRate, netPayout: payout,
+      configVersion:Number(round.config_version??0),
     };
     const settledAt = new Date();
     await connection.execute(
@@ -2275,9 +2297,8 @@ export async function maintainSharedGameRounds() {
       const now = new Date();
       // Pausing the new game must not abort maintenance of Pro or strand
       // already accepted bets. Settle existing wagers, but open no new table.
-      const pausedChairs = (game === TEEN_PATTI_ID || game === LION_VS_TIGER_ID) &&
-        (!settings.games[game].enabled || settings.games[game].maintenance);
-      const round = pausedChairs ? null : await ensureSharedRound(connection, game, settings.games[game], now);
+      const paused = !settings.games[game].enabled || settings.games[game].maintenance;
+      const round = paused ? await activeSharedRound(connection,game,now) : await ensureSharedRound(connection, game, settings.games[game], now);
       return {
         settled: settlement.settledCount,
         settledRoundIds: settlement.settledRoundIds,
@@ -2309,6 +2330,7 @@ async function sharedRoundStatePayload(
   now = new Date(),
 ) {
   const game = round.game_name;
+  config=roundGameConfig(round,config);
   const targets = game===LION_VS_TIGER_ID ? [...lionTigerAreas] : game===TEEN_PATTI_ID ? [...teenPattiChairs] : game === teenPattiGame
     ? ["0", "1", "2", "crown"]
     : game === "luck77"
@@ -2459,8 +2481,8 @@ export async function gameSharedRoundState(identity: MobileIdentity, gameValue: 
   return withTransaction(async (connection) => {
     const settings = await gameSettings(connection);
     const now = new Date();
-    const config = settings.games[game];
-    const round = await ensureSharedRound(connection, game, config, now);
+    const round = await ensureSharedRound(connection, game, settings.games[game], now);
+    const config=roundGameConfig(round,settings.games[game]);
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
 }
@@ -2476,8 +2498,8 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     const { timezone } = await loadFaceLiveRules(connection);
     await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
     const now = new Date();
-    const config = settings.games[game];
-    const round = await ensureSharedRound(connection, game, config, now);
+    const round = await ensureSharedRound(connection, game, settings.games[game], now);
+    const config=roundGameConfig(round,settings.games[game]);
     const [existingRows] = await connection.query<(RowDataPacket & { round_id: string; bets_json: unknown })[]>(
       "SELECT round_id, bets_json FROM game_shared_bet_requests WHERE application_user_id = ? AND request_id = ? LIMIT 1 FOR UPDATE",
       [identity.userId, input.requestId],
@@ -2624,7 +2646,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
     const [gameSettingRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
       "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1",
     );
-    const mobileGames = mobileGamesConfig(gameSettingRows[0]?.setting_value);
+    const mobileGames = effectiveMobileGamesConfig(gameSettingRows[0]?.setting_value);
     const { timezone } = await loadFaceLiveRules(connection);
     const rules = gameEconomyRules(mobileGames);
     const runtimeConfig = mobileGames.games[input.game as ConfigurableGameId];
@@ -2650,6 +2672,7 @@ export async function settleGameRound(identity: MobileIdentity, input: ServerGam
     result.payout = grossPayout - winningsDeduction;
     result.outcome = {
       ...result.outcome,
+      configVersion:runtimeConfig?.economyVersion??0,
       grossPayout,
       commissionablePayout: commissionablePayout ?? grossPayout,
       winningsDeduction,

@@ -14,7 +14,7 @@ export async function verifyPrincessQuotes(root:Connection,owner:MobileIdentity,
  const original=await product.gameSharedRoundState(owner,'teen_patti');
  const [historic]=await root.query<RowDataPacket[]>('SELECT outcome_json FROM game_shared_rounds WHERE id=?',[original.round.id]);
  // Free only the test clock slot. No hand, wager, settlement or payout changes.
- await root.execute('UPDATE game_shared_rounds SET round_number=round_number-1000000 WHERE id=?',[original.round.id]);
+ await root.execute('UPDATE game_shared_rounds SET round_number=round_number-1000000,result_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id=?',[original.round.id]);
  try{
   await assert.rejects(savePrincessPricing({scope:{...master,account:{...master.account,role:'ADMIN'}},mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:30,reason:'QA forbidden price change'}),/Forbidden/);
   await assert.rejects(savePrincessPricing({scope:master,mode:'PUBLIC_QUOTE_V3',targetRtp:.97,maximumMultiplier:30,reason:'QA fixed return cannot be changed'}),/valid Princess/);

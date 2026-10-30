@@ -31,6 +31,8 @@ export type Scope = {
   account: SessionAccount;
   accountIds: string[];
   isGlobal: boolean;
+  /** Defense in depth for Country Manager branches, including legacy bad links. */
+  countryCode?: string | null;
 };
 
 export type PageResult<T> = {

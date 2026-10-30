@@ -206,7 +206,7 @@ export async function createPlatformAccount(input: {
 }) {
   if (!rolesCreatableBy(input.scope.account.role).includes(input.role)) throw new Error("Your role cannot create that account type.");
   if (input.password.length < 8) throw new Error("Password must contain at least 8 characters.");
-  if (!isPanelCountry(input.countryCode)) throw new Error("Select India or a neighboring country from the country list.");
+  if (!isPanelCountry(input.countryCode)) throw new Error("Select a supported country from the country list.");
   const parent = await resolveParent(input.scope, input.role, input.requestedParentId);
   if (parent.country_code && parent.role !== "MASTER" && parent.country_code !== input.countryCode) {
     throw new Error("The account country must match its parent branch.");

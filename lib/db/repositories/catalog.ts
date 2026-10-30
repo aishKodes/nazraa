@@ -8,7 +8,8 @@ import { scopeWhere } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
 import type { PreparedPublicEffect, PreparedPublicImage, PreparedPublicSound } from "@/lib/security/public-images";
 import { can } from "@/lib/auth/permissions";
-import { mobileGamesConfig, type ConfigurableGameId } from "@/lib/games/game-config";
+import { effectiveMobileGamesConfig, type ConfigurableGameId } from "@/lib/games/game-config";
+import {recordGameConfigVersion,requireGameEconomy} from './game-economy';
 
 export type MallCatalogType = "VIRTUAL_GIFT" | "ENTRY_FRAME" | "ENTRY_EFFECT" | "AVATAR_FRAME" | "PROFILE_EFFECT" | "CHAT_FRAME" | "MEDAL" | "BADGE";
 
@@ -344,14 +345,10 @@ export async function savePrincessPricing(input:{scope:Scope;mode:'HIDDEN_FIXED_
     throw new Error('Choose valid Princess pricing and a change reason.');
   await withTransaction(async connection=>{
     const [rows]=await connection.query<(RowDataPacket&{setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
-    const current=mobileGamesConfig(rows[0]?.setting_value);
+    const current=effectiveMobileGamesConfig(rows[0]?.setting_value);
     const previous=current.games.teen_patti;
     current.games.teen_patti={...current.games.teen_patti,princessPreviewQuotes:input.mode==='PUBLIC_QUOTE_V3',targetRtp:input.targetRtp,maximumPayoutMultiplier:3};
-    await connection.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,
-      [JSON.stringify(current),input.scope.account.id]);
-    await connection.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
-      VALUES(?,?,'MASTER','settings.princess_pricing','settings','system_setting','mobile.games:teen_patti',?,?,?)`,
-      [randomUUID(),input.scope.account.id,JSON.stringify(previous),JSON.stringify(current.games.teen_patti),input.reason]);
+    await recordGameConfigVersion(connection,input.scope,'teen_patti',current,previous,input.reason);
   });
 }
 
@@ -379,6 +376,7 @@ export async function saveGameSettings(input: {
   poolMinimumForSpecial?: number;
   reason: string;
 }) {
+  requireGameEconomy(input.scope);
   if (input.game === 'lion_vs_tiger' && (
     input.bettingSeconds !== 15 || input.drawingSeconds !== 5 || input.resultSeconds !== 4 ||
     input.maximumBet !== Number.MAX_SAFE_INTEGER || input.minimumBet !== 1 ||
@@ -420,8 +418,11 @@ export async function saveGameSettings(input: {
       const [rows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
         "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.games' LIMIT 1 FOR UPDATE",
       );
-      const current = mobileGamesConfig(rows[0]?.setting_value);
+      const current = effectiveMobileGamesConfig(rows[0]?.setting_value);
       const previous = current.games[input.game];
+      if(input.minimumBet!==previous.minimumBet||input.maximumBet!==previous.maximumBet||input.maximumPayoutMultiplier!==previous.maximumPayoutMultiplier || (input.outcomeWeights&&JSON.stringify(input.outcomeWeights)!==JSON.stringify(previous.outcomeWeights)) ||
+        (['saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const).some(key=>input[key]!==undefined&&input[key]!==previous[key]))
+        throw new Error('Use Game Management → Game Economy / RTP to preview and confirm paytable or probability changes.');
       current.games[input.game] = {
         ...previous,
         enabled: input.enabled,
@@ -444,15 +445,7 @@ export async function saveGameSettings(input: {
         poolContributionBps: input.poolContributionBps ?? previous.poolContributionBps,
         poolMinimumForSpecial: input.poolMinimumForSpecial ?? previous.poolMinimumForSpecial,
       };
-      await connection.execute(
-        `INSERT INTO system_settings (setting_key, setting_value, updated_by) VALUES ('mobile.games', ?, ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value), updated_by = VALUES(updated_by)`,
-        [JSON.stringify({
-          targetWinRate: current.target_win_rate,
-          winningsDeductionRate: current.winnings_deduction_rate,
-          games: current.games,
-        }), input.scope.account.id],
-      );
+      await recordGameConfigVersion(connection,input.scope,input.game,current,previous,input.reason);
     },
   });
 }

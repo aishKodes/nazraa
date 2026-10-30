@@ -29,6 +29,7 @@ import { configurableGameIds, mobileGamesConfig } from "@/lib/games/game-config"
 import { getLiveRewardDiagnostics } from "@/lib/db/repositories/live-accounting-diagnostics";
 import { getFaceLiveStartOutcomeDiagnostics } from "@/lib/observability/face-live-start-outcomes";
 import {payoutRuleFromConfig} from '@/lib/db/repositories/host-payout-rule';
+import {currentGameEconomy} from '@/lib/db/repositories/game-economy';
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +56,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     privacyUrl?: string; termsUrl?: string; communityGuidelinesUrl?: string; childSafetyUrl?: string;
     accountDeletionUrl?: string; supportUrl?: string; refundsUrl?: string; copyrightUrl?: string;
   } | undefined;
-  const gameSettings = mobileGamesConfig(settings.find((item) => item.key === "mobile.games")?.value);
+  const gameSettings = isMaster?(await currentGameEconomy(scope)).settings:mobileGamesConfig(settings.find((item) => item.key === "mobile.games")?.value);
   const roomFeatures = settings.find((item) => item.key === "mobile.room_features")?.value as {
     interactions?: { key: string; label: string; emoji: string; enabled?: boolean; visualUrl?: string }[];
     pkModes?: string[];
@@ -281,7 +282,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </form>
     </Card>}
     <Card className="settings-card">
-      <div className="card-title"><div><h2>Game controls</h2><p>Server-owned availability, limits, timers, outcome weights, social history, and verified special-result controls. Saving never chooses a manual winner.</p></div></div>
+      <div className="card-title"><div><h2>Game controls</h2><p>Server-owned availability, timers and history. Use <Link href="/dashboard/game-management/economy">Game Economy / RTP</Link> to preview and confirm bet limits, paytable or probability changes. Existing rounds retain their snapshots.</p></div></div>
       <div className="stack-form full-width">
         {configurableGameIds.map((gameId) => {
           const game = gameSettings.games[gameId];
