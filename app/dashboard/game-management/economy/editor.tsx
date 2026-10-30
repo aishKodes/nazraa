@@ -11,7 +11,7 @@ export function EconomyEditor({game,config}:{game:ConfigurableGameId;config:Game
     <input name="game" type="hidden" value={game}/>
     <label>Availability<select name="availability" defaultValue={!c.enabled?'DISABLED':c.maintenance?'MAINTENANCE':'ACTIVE'}><option>ACTIVE</option><option>MAINTENANCE</option><option>DISABLED</option></select></label>
     <label>Minimum bet (Coins)<input name="minimumBet" type="number" min="1" required readOnly={fixed} defaultValue={c.minimumBet}/></label>
-    <label>Maximum per request (Coins)<input name="maximumBet" type="number" min="1" required readOnly={game==='lion_vs_tiger'} defaultValue={c.maximumBet}/></label>
+    <label>Maximum per round (Coins)<input name="maximumBet" type="number" min="1" required readOnly={game==='lion_vs_tiger'} defaultValue={c.maximumBet}/></label>
     <label>Maximum return × total wager<input name="maximumPayoutMultiplier" type="number" min="1" max="1000" step="0.01" readOnly={fixed} required defaultValue={c.maximumPayoutMultiplier}/></label>
     <label>Paytable scale (parts per million)<input name="payoutScalePpm" type="number" min="1" max="5000000" required readOnly={fixed} defaultValue={c.payoutScalePpm}/><small>1,000,000 = unchanged. This scales existing returns; it never selects a winner.</small></label>
     {game==='teen_patti_pro'&&<label>Crown paytable scale (parts per million)<input name="sideBetPayoutScalePpm" type="number" min="1" max="5000000" required defaultValue={c.sideBetPayoutScalePpm??1000000}/><small>The normal-lane RTP model excludes Crown.</small></label>}

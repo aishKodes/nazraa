@@ -107,8 +107,10 @@ is intentionally retained rather than activating unrelated dormant values at
 deployment. A deliberately previewed/published game version is parsed on both
 formats. Only that game's stored object is replaced. Migration snapshots
 preserve the prior effective format; explicit new snapshots carry a marker.
-Tests cover both representations. Actual production wire type must be checked
-through its server runtime before claiming a live MariaDB result.
+Tests cover both representations. Production read-only verification confirmed
+MariaDB **11.8.9-MariaDB-ubu2404-log** and parsed-object JSON in its running
+Node runtime. Thus the text-format compatibility guard does not change the
+current production settings interpretation.
 
 ## Verification evidence
 
@@ -122,6 +124,9 @@ through its server runtime before claiming a live MariaDB result.
   changed min bet and scale affect the next round only; immutable outcome,
   dashboard totals match settled net returns; duplicate request/settlement one
   debit/credit; stale preview denied; Princess 3× preserved.
+- Existing cumulative round-limit enforcement preserved and retested: two individually valid 30,000-Coin
+  commands against a 50,000 round limit; second denied before debit, first
+  retry acknowledged once. Wallet remains 970,000 from a 1,000,000 fixture.
 - Direct built HTTP: anonymous 401; Master allowed; Nigeria manager own-country
   200/Morocco 403; all other roles country API denied; economy non-Master 403;
   direct page redirects enforce the same boundaries.

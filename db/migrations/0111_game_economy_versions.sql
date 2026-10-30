@@ -31,7 +31,16 @@ UPDATE game_shared_rounds r JOIN system_settings s ON s.setting_key='mobile.game
 SET r.config_json=JSON_SET(
   COALESCE(JSON_EXTRACT(s.setting_value,CONCAT('$.games.',r.game_name)),JSON_OBJECT()),
   '$.settlementDeductionRate',COALESCE(JSON_EXTRACT(s.setting_value,'$.winnings_deduction_rate'),JSON_EXTRACT(s.setting_value,'$.winningsDeductionRate'),0.01))
-WHERE r.config_json IS NULL AND (r.result_ends_at>UTC_TIMESTAMP(3) OR EXISTS (
-  SELECT 1 FROM game_shared_bets b LEFT JOIN game_shared_settlements p
-    ON p.round_id=b.round_id AND p.application_user_id=b.application_user_id
-  WHERE b.round_id=r.id AND p.id IS NULL));
+WHERE r.config_json IS NULL
+  AND r.game_name IN ('teen_patti','teen_patti_pro','luck77','greedy_lion','greedy_king','bounty_football','lion_vs_tiger')
+  AND r.betting_starts_at>=UTC_TIMESTAMP(3)-INTERVAL 1 DAY AND r.result_ends_at>UTC_TIMESTAMP(3);
+
+UPDATE game_shared_rounds r
+JOIN (SELECT DISTINCT b.round_id FROM game_shared_bets b
+  LEFT JOIN game_shared_settlements p ON p.round_id=b.round_id AND p.application_user_id=b.application_user_id
+  WHERE p.id IS NULL) pending ON pending.round_id=r.id
+JOIN system_settings s ON s.setting_key='mobile.games'
+SET r.config_json=JSON_SET(
+  COALESCE(JSON_EXTRACT(s.setting_value,CONCAT('$.games.',r.game_name)),JSON_OBJECT()),
+  '$.settlementDeductionRate',COALESCE(JSON_EXTRACT(s.setting_value,'$.winnings_deduction_rate'),JSON_EXTRACT(s.setting_value,'$.winningsDeductionRate'),0.01))
+WHERE r.config_json IS NULL;

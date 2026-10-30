@@ -24,7 +24,7 @@ export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,d
   if(next.denominations.some(n=>n>next.maximumBet))throw new Error('Maximum bet must include the current chip denominations.');
   if(game!=='lion_vs_tiger' && (next.maximumBet!==current.maximumBet||next.maximumPayoutMultiplier!==current.maximumPayoutMultiplier||next.payoutScalePpm!==current.payoutScalePpm) &&
     next.maximumBet*next.maximumPayoutMultiplier>1_250_000_000)
-    throw new Error('Choose limits whose maximum per-request return fits the existing 1,250,000,000-Coin settlement limit.');
+    throw new Error('Choose limits whose maximum round return fits the existing 1,250,000,000-Coin settlement limit.');
   return mobileGamesConfig({games:{[game]:next}}).games[game];
 }
 

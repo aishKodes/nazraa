@@ -17,10 +17,13 @@ export async function recordGameConfigVersion(c:PoolConnection,scope:Scope,game:
   // Cover the deployment window in which an older API instance could still
   // have opened a table without the additive snapshot columns populated.
   // Only pending/current metadata is frozen; no outcome or settled row moves.
+  const frozen=JSON.stringify({...previous,runtimeSnapshotVersion:1});
   await c.execute(`UPDATE game_shared_rounds r SET r.config_json=?,r.config_version=?
-    WHERE r.game_name=? AND r.config_json IS NULL AND (r.result_ends_at>UTC_TIMESTAMP(3) OR EXISTS (
-      SELECT 1 FROM game_shared_bets b LEFT JOIN game_shared_settlements s ON s.round_id=b.round_id AND s.application_user_id=b.application_user_id
-      WHERE b.round_id=r.id AND s.id IS NULL))`,[JSON.stringify({...previous,runtimeSnapshotVersion:1}),previous.economyVersion??0,game]);
+    WHERE r.game_name=? AND r.config_json IS NULL AND r.betting_starts_at>=UTC_TIMESTAMP(3)-INTERVAL 1 DAY AND r.result_ends_at>UTC_TIMESTAMP(3)`,[frozen,previous.economyVersion??0,game]);
+  await c.execute(`UPDATE game_shared_rounds r JOIN (
+      SELECT DISTINCT b.round_id FROM game_shared_bets b LEFT JOIN game_shared_settlements s ON s.round_id=b.round_id AND s.application_user_id=b.application_user_id
+      WHERE b.game_name=? AND s.id IS NULL) pending ON pending.round_id=r.id
+    SET r.config_json=?,r.config_version=? WHERE r.config_json IS NULL`,[game,frozen,previous.economyVersion??0]);
   await c.execute(`INSERT INTO game_config_versions(game_name,version,previous_config,config_json,actor_account_id,reason,effective_at) VALUES(?,?,?,?,?,?,UTC_TIMESTAMP(3))`,
     [game,next.economyVersion,JSON.stringify(previous),JSON.stringify(next),scope.account.id,reason.trim()]);
   const [stored]=await c.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");

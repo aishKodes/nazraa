@@ -94,5 +94,14 @@ export async function verifyCountryGameEconomy(root:mysql.Connection,user:(name:
   await assert.rejects(()=>previewGameEconomy(master,'teen_patti',{enabled:true,maintenance:false,minimumBet:100,maximumBet:princess.maximumBet,maximumPayoutMultiplier:2.9,payoutScalePpm:1_000_000}),/3.00/);
   const model=economyModel('teen_patti',princess);assert.ok(Math.abs(model.average!-.97)<1e-10);
   const sim=await simulateEconomy('luck77',cfg,100_000);assert.ok(Math.abs(sim.simulatedRtp-sim.theoreticalRtp)<.03);
+  await publishGameEconomy(master,'luck77',{...draft,maximumBet:50_000},v2,'Isolated cumulative round limit regression');
+  await root.execute('UPDATE game_shared_rounds SET result_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id=?',[next.round.id]);
+  const limited=await user('Cumulative limit player');await root.execute("UPDATE wallet_balances SET available_balance=1000000 WHERE owner_id=? AND asset_type='COIN'",[limited.userId]);
+  const limitRound=await gameSharedRoundState(limited,'luck77');
+  await root.execute('UPDATE game_shared_rounds SET betting_ends_at=UTC_TIMESTAMP(3)+INTERVAL 20 SECOND,drawing_ends_at=UTC_TIMESTAMP(3)+INTERVAL 21 SECOND,result_ends_at=UTC_TIMESTAMP(3)+INTERVAL 26 SECOND WHERE id=?',[limitRound.round.id]);
+  const firstId=randomUUID();await placeSharedGameBets(limited,{game:'luck77',roundId:limitRound.round.id,requestId:firstId,bets:{plum:30_000}});
+  await assert.rejects(()=>placeSharedGameBets(limited,{game:'luck77',roundId:limitRound.round.id,requestId:randomUUID(),bets:{plum:30_000}}),/round limit/);
+  const retry=await placeSharedGameBets(limited,{game:'luck77',roundId:limitRound.round.id,requestId:firstId,bets:{plum:30_000}});assert.equal(retry.walletBalance,970000);
+  console.log('PASS cumulative per-round bet limit: second individually valid command rejected before debit; original retry still acknowledges exactly one debit');
   console.log(`PASS game RBAC all roles; preview/version conflict; v${v1} round settles once at old scale after v${v2} edit; next round uses new scale/limits; immutable outcome/config; dashboard matches actual net payout; protected Princess 3x; wallet-free 100k simulation`);
 }
