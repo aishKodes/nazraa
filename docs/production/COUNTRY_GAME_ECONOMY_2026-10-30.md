@@ -140,13 +140,54 @@ current production settings interpretation.
 Local screenshots in `docs/qa/20261030/` are explicitly QA, not production proof.
 Logs reside in `/tmp/nazraa-country-economy-*.log` on the development machine.
 
+Production browser verification used the existing authenticated Master session:
+all six country codes appeared once; Nigeria's selected panel showed only its
+records; Game Economy displayed actual settled activity; unchanged-value
+preview showed current/proposed configuration and required reason/confirmation.
+A wallet-free 100,000-sample simulation completed in production. No
+configuration publication or Country Manager reassignment was performed as QA.
+The inherited sticky table-header overlap was corrected only in these new
+country/economy/preview tables and visually rechecked.
+
+Production screenshots remain local in
+`/Users/aishwaryam/nazraa-release-evidence/20261030/` (country-management,
+game-economy, preview and simulation JPEGs). Real production financial data is
+not included in the Git screenshot fixtures.
+
 ## Deployment and rollback
 
-Pending guarded deployment: source-only patch, existing encrypted OCI
-pre-deploy backup, additive migration, API-only image replacement. No LiveKit,
-Redis, worker, realtime, DNS, mobile version, currency or reward-rule change.
-Preserve the dirty production checkout and merge only scoped hunks. Keep the
-old image and source archive. Keep additive metadata on rollback; never drop
+**Deployed on 30 October 2026:** runtime source commit
+`2a4d040fee528588afc82956924ec153dbe72c38` on the existing VPS. Guarded,
+source-only scoped patches preserved the dirty production checkout. The
+existing encrypted OCI pre-deploy backup passed offsite checksum verification.
+Migration `0111_game_economy_versions.sql` is recorded exactly once. API-only
+image replacement passed health checks and public `/api/v1/config` returned
+200. Both new APIs returned 401 anonymously. Stored system settings were
+hashed before/after both deployment steps and were unchanged; zero game
+economy versions were published. A read-only check found complete snapshots
+on 21 recent rounds across all seven shared games, with zero missing snapshots.
+
+LiveKit, Redis, worker, realtime, DNS, mobile version, currency and reward rules
+were not changed. Mobile remains **2.5.07+7419**; `/download` remains available.
+No APK rebuild or version bump was needed.
+
+The guarded deployment manifest is
+`/opt/nazraa/tools/country-economy-deployed-20261030.json`; the prior deployment
+manifest is retained beside it. Scoped source archives remain under
+`/opt/nazraa/backups/country-economy-20261030-source-*.tar.gz`; the initial
+rollback image tag is `nazraa-api:before-country-economy-20261030` and the
+layout-only predecessor is also separately tagged. Keep additive metadata on rollback; never drop
 financial or historical data. After any new economy version is published,
 do not start an older unsnapshotted settlement binary against those wagers;
 use a forward repair or explicitly compatible rollback.
+
+## Remaining operator decisions and model limits
+
+SA, AE, NP, NG, DZ and MA are supported and currently have no assigned
+production Country Manager. Master can assign the intended existing account;
+the deployment did not invent identities or move an occupied branch.
+One existing user record carries the legacy non-ISO code `DL`; it is surfaced
+as recorded rather than silently assigning that person to another country.
+No blocker remains for this Control deployment. Complex-game model limits
+and absent target/exposure features are disclosed above, not presented as
+implemented economic controls.
