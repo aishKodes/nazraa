@@ -18,6 +18,12 @@ os.chdir(root)
 commit = sys.argv[1]
 assert len(commit) == 40 and all(c in '0123456789abcdef' for c in commit)
 base = 'dddb0f85b85a367177a04921facc75fe244c82b8'
+record = Path('/opt/nazraa/tools/country-economy-deployed-20261030.json')
+if '--from-deployed' in sys.argv:
+ previous_deployment = json.loads(record.read_text())
+ assert previous_deployment['settingsUnchanged'] is True
+ base = previous_deployment['commit']
+ assert len(base) == 40 and all(c in '0123456789abcdef' for c in base)
 paths = [
  'app/api/countries/route.ts', 'app/api/games/economy/route.ts',
  'app/dashboard/countries/page.tsx', 'app/dashboard/game-management/page.tsx',
@@ -49,7 +55,8 @@ with tarfile.open(backup, 'w:gz') as archive:
    archive.add(root/name, arcname=name)
 backup.chmod(0o600)
 image = subprocess.check_output(['docker','inspect','-f','{{.Image}}','nazraa-api-1'], text=True).strip()
-subprocess.run(['docker','tag',image,'nazraa-api:before-country-economy-20261030'],check=True)
+rollback_tag = 'nazraa-api:before-country-economy-20261030' if '--from-deployed' not in sys.argv else f'nazraa-api:before-country-economy-{base[:12]}'
+subprocess.run(['docker','tag',image,rollback_tag],check=True)
 compose = ['docker','compose','-f','/opt/nazraa/compose.yaml']
 snapshot_script = b'''const m=require('mysql2/promise'),h=require('crypto');(async()=>{const c=await m.createConnection({host:process.env.DB_HOST,user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME});const [s]=await c.query('SELECT setting_key,setting_value FROM system_settings ORDER BY setting_key');console.log(h.createHash('sha256').update(JSON.stringify(s)).digest('hex'));await c.end()})().catch(()=>process.exit(1));'''
 def settings_hash():
@@ -70,7 +77,10 @@ try:
   raise RuntimeError('API_HEALTH_FAILED')
  assert before == settings_hash(), 'SETTINGS_CHANGED_DURING_DEPLOY'
  subprocess.run(['curl','--fail','--silent','--show-error','--max-time','20','--output','/dev/null','https://nazralive.in/api/v1/config'],check=True)
- Path('/opt/nazraa/tools/country-economy-deployed-20261030.json').write_text(json.dumps({'commit':commit,'sourceBackup':str(backup),'rollbackImage':image,'settingsUnchanged':True,'scopedFiles':paths,'sourceHashes':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in paths},'at':time.time()},indent=2))
+ if record.exists():
+  previous=json.loads(record.read_text())
+  record.with_name(f'country-economy-deployed-20261030-{previous["commit"][:12]}.json').write_text(record.read_text())
+ record.write_text(json.dumps({'commit':commit,'sourceBackup':str(backup),'rollbackImage':image,'settingsUnchanged':True,'scopedFiles':paths,'sourceHashes':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in paths},'at':time.time()},indent=2))
  print('COUNTRY_ECONOMY_API_DEPLOY_PASS; CONFIG_ECONOMY_MEDIA_REWARDS_UNCHANGED; API_ONLY_RESTART',flush=True)
 except BaseException:
  for name, data in originals.items():
