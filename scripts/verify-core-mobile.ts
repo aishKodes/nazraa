@@ -441,6 +441,20 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
+    if(process.env.NAZRAA_QA_ONLY_OWNER_UPDATE==='1'){
+      const preview=await (await import('./owner-party-pk-staging-tests')).verifyOwnerPartyPkStaging(root,user,master);
+      if(process.env.NAZRAA_QA_KEEP==='1'){
+        const fixtures=[];
+        for(const identity of [preview.partySender,preview.partyHost,preview.faceHost,preview.faceSender,preview.rewardHost]){
+          const token=randomBytes(32).toString('hex');
+          await root.execute("INSERT INTO mobile_sessions(id,application_user_id,token_hash,expires_at) VALUES(?,?,?,CURRENT_TIMESTAMP(3)+INTERVAL 1 DAY)",[randomUUID(),identity.userId,createHash('sha256').update(token).digest('hex')]);
+          fixtures.push({...identity,token});
+        }
+        await writeFile('/tmp/nazraa-owner-staging-fixtures.json',JSON.stringify({database,partyRoomCode:preview.partyRoomCode,faceRoomCode:preview.faceRoomCode,fixtures}),{mode:0o600});
+        keep=true;console.log('Isolated owner staging fixtures retained locally (no production users).');
+      }
+      return;
+    }
     if(process.env.NAZRAA_QA_ONLY_COUNTRY_ECONOMY==='1'){
       await (await import('./country-game-economy-tests')).verifyCountryGameEconomy(root,user,master);
       return;
@@ -2208,8 +2222,8 @@ async function main() {
       [randomUUID(), historyRoomId, owner.userId],
     );
     const ownerLiveHistory = await liveHistory.mobileLiveHistory(owner);
-    assert.equal(ownerLiveHistory.summary.videoSeconds, 70);
-    assert.equal(ownerLiveHistory.summary.validDays, 1);
+    assert.equal(ownerLiveHistory.summary.videoSeconds, 0, "September remains historical; current-month summary starts fresh");
+    assert.equal(ownerLiveHistory.summary.validDays, 0);
     assert.equal(ownerLiveHistory.summary.sendingCoins, giftValue + gift.cost);
     assert.equal(
       ownerLiveHistory.summary.receivedCoins,
@@ -2224,6 +2238,7 @@ async function main() {
         validDay: true,
         sendingCoins: 0,
         receivedCoins: 0,
+        receivedDiamonds: 0,
       },
       "a valid Live day is derived from the server reward threshold only",
     );
@@ -4831,15 +4846,15 @@ async function main() {
     const resetResult = await monthlyReset.runMonthlyHostEarningsReset(
       new Date("2030-11-01T00:00:00.000Z"),
     );
-    assert.equal(resetResult.status, "completed");
-    assert.ok(resetResult.expiredAmount > 0);
+    assert.equal(resetResult.status, "rankings_period_only");
+    assert.equal(resetResult.expiredAmount, 0);
     assert.equal(
       (
         await monthlyReset.runMonthlyHostEarningsReset(
           new Date("2030-11-01T06:00:00.000Z"),
         )
       ).status,
-      "already_completed",
+      "rankings_period_only",
     );
     const [resetWallet] = await root.query<RowDataPacket[]>(
       "SELECT available_balance, reserved_balance FROM wallet_balances WHERE owner_id = ? AND asset_type = 'DIAMOND'",
@@ -4850,7 +4865,7 @@ async function main() {
         Number(resetWallet[0].available_balance),
         Number(resetWallet[0].reserved_balance),
       ],
-      [0, 0],
+      [Number(releasedWallet[0].available_balance), Number(releasedWallet[0].reserved_balance)],
     );
     delete process.env.NAZRAA_TEST_CREATOR_CASH_WITHDRAWALS;
     await global.nazraaPool!.execute(

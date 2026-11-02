@@ -1,3 +1,4 @@
+import {claimRandomPkReward} from "@/lib/db/repositories/mobile-rewards";
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
 import { roomCloseContextSchema } from "@/lib/services/room-termination-diagnostics";
@@ -847,6 +848,10 @@ export async function POST(
         return NextResponse.json(await claimDailyReward(identity), {
           status: 201,
         });
+      }
+      if(resource === 'random-pk-reward-claim'){
+        const parsed=z.object({rewardId:z.string().uuid()}).parse(body);
+        return NextResponse.json(await claimRandomPkReward(identity,parsed.rewardId));
       }
       if (resource === "live-reward-claim") {
         const parsed = z.object({ rewardId: z.string().uuid() }).parse(body);

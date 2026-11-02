@@ -1,4 +1,5 @@
 import "server-only";
+import {giftSettlementPolicy} from "@/lib/policy/gift-settlement-policy";
 import {closePartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile } from "./room-profile";
 import { publicApiOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
@@ -61,7 +62,7 @@ export function giftDiamondValue(coinValue: number, giftCoinUnits = 100, receive
   if (!Number.isSafeInteger(coinValue) || coinValue < 0 || !Number.isSafeInteger(giftCoinUnits) || giftCoinUnits < 1 || !Number.isSafeInteger(receiverDiamondUnits) || receiverDiamondUnits < 0 || receiverDiamondUnits > giftCoinUnits) {
     throw new Error("Gift earnings configuration is invalid.");
   }
-  return Math.floor((coinValue * receiverDiamondUnits) / giftCoinUnits);
+  return Number(BigInt(coinValue) * BigInt(receiverDiamondUnits) / BigInt(giftCoinUnits));
 }
 
 type LevelDefinition = {
@@ -1046,7 +1047,10 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
   const intent = JSON.stringify({ roomCode: input.roomCode, giftId: input.giftId,
     recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity });
   return withIdempotentTransaction(async (connection) => {
-    await connection.execute("INSERT IGNORE INTO gift_intent_receipts (idempotency_key, request_json) VALUES (?, ?)", [key, intent]);
+    // Acquire an exclusive lock on an existing intent immediately. INSERT
+    // IGNORE takes shared duplicate-key locks, which deadlock when concurrent
+    // retries all try to upgrade those locks in the following SELECT.
+    await connection.execute("INSERT INTO gift_intent_receipts (idempotency_key, request_json) VALUES (?, ?) ON DUPLICATE KEY UPDATE idempotency_key=VALUES(idempotency_key)", [key, intent]);
     const [receipts] = await connection.query<(RowDataPacket & { request_json: unknown; receipt_json: unknown })[]>(
       "SELECT request_json, receipt_json FROM gift_intent_receipts WHERE idempotency_key = ? FOR UPDATE", [key]);
     const savedIntent = asObject(receipts[0].request_json);
@@ -1057,37 +1061,46 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
       const [balances] = await connection.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN'", [identity.userId]);
       return { ...receipt, remainingCoins: Number(balances[0]?.available_balance ?? 0), message: "Gift already sent", event: null, events: [], replayed: true };
     }
+    const [feeRows] = await connection.query<RowDataPacket[]>("SELECT setting_value,CURRENT_TIMESTAMP(3) server_now FROM system_settings WHERE setting_key='mobile.gift_economy'");
+    const feeConfig = asObject(feeRows[0]?.setting_value);
+    const feeAt = feeRows[0]?.server_now ? new Date(feeRows[0].server_now) : new Date();
     let recipients = [input.recipientPublicId];
     if (input.recipientMode === "ALL") {
       const [rooms] = await connection.query<RowDataPacket[]>(
         `SELECT room.id, room.room_type FROM live_rooms room
          JOIN live_room_members sender ON sender.room_id = room.id AND sender.application_user_id = ? AND sender.left_at IS NULL
          WHERE room.room_code = ? AND room.status IN ('ACTIVE','LOCKED') FOR UPDATE`, [identity.userId, input.roomCode]);
-      if (!rooms[0] || !["FACE", "LIVE"].includes(rooms[0].room_type)) throw new Error("ALL gifting is available in Face Live.");
+      if (!rooms[0] || !["FACE", "LIVE", "PARTY"].includes(rooms[0].room_type)) throw new Error("Join this room before sending a gift.");
       const [targets] = await connection.query<RowDataPacket[]>(
         `SELECT user.public_id FROM live_room_members member JOIN application_users user ON user.id = member.application_user_id
          WHERE member.room_id = ? AND member.left_at IS NULL AND user.account_status = 'ACTIVE'
-         AND (member.room_role = 'OWNER' OR (member.media_role = 'AUDIO_GUEST' AND member.seat_session_id IS NOT NULL))
+         AND ((?='PARTY' AND member.seat_index IS NOT NULL AND member.media_role IN ('PARTY_OWNER','RTC_SPEAKER'))
+           OR (?<>'PARTY' AND (member.room_role='OWNER' OR (member.media_role='AUDIO_GUEST' AND member.seat_session_id IS NOT NULL))))
          AND (${giftRecipientPresenceSql})
-         ORDER BY member.room_role = 'OWNER' DESC, user.id FOR UPDATE`, [rooms[0].id]);
+         ORDER BY member.room_role = 'OWNER' DESC, user.id FOR UPDATE`, [rooms[0].id,rooms[0].room_type,rooms[0].room_type]);
       recipients = targets.map((target) => String(target.public_id));
-      if (!recipients.length || recipients.length > 4) throw new Error("The room's gift recipients changed. Please try again.");
+      if (!recipients.length || recipients.length > (rooms[0].room_type === "PARTY" ? 20 : 4)) throw new Error("The room's gift recipients changed. Please try again.");
     }
     const results = [];
     for (const recipientPublicId of recipients) {
       results.push(await sendGiftToRecipient(connection, identity, { ...input, recipientPublicId,
-        clientGiftId: input.recipientMode === "ALL" ? `${intentId}:ALL:${recipientPublicId}` : intentId }));
+        clientGiftId: input.recipientMode === "ALL" ? `${intentId}:ALL:${recipientPublicId}` : intentId }, {config:feeConfig,at:feeAt,batchId:key}));
     }
+    const batchCoins=results.reduce((sum,item)=>sum+(item.event?.value??0),0);
+    if(!Number.isSafeInteger(batchCoins))throw new Error("This gift price is outside the supported wallet range.");
     const result = { ...results[0], remainingCoins: results.at(-1)!.remainingCoins,
       events: results.flatMap((item) => item.event ? [item.event] : []),
-      totalCoins: results.reduce((sum, item) => sum + (item.event?.value ?? 0), 0),
+      totalCoins: batchCoins,
+      batchId:key,recipientCount:results.length,
+      totalNetDiamonds:results.reduce((sum,item)=>sum+(item.event?.diamondValue??0),0),
+      totalPlatformFee:results.reduce((sum,item)=>sum+(item.event?.platformFee??0),0),
       message: input.recipientMode === "ALL" ? `Sent to ${recipients.length} recipients` : results[0].message, replayed: false };
     await connection.execute("UPDATE gift_intent_receipts SET receipt_json = ? WHERE idempotency_key = ?", [JSON.stringify(result), key]);
     return result;
   });
 }
 
-async function sendGiftToRecipient(connection: PoolConnection, identity: MobileIdentity, input: GiftInput) {
+async function sendGiftToRecipient(connection: PoolConnection, identity: MobileIdentity, input: GiftInput, fee: {config:Record<string,unknown>;at:Date;batchId:string}) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
     const liveRules = await loadFaceLiveRules(connection);
@@ -1166,13 +1179,16 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
     if (blocks[0]) throw new Error("Gifts are unavailable because one of you has blocked the other account.");
     const total = Number(gift.coin_price) * input.quantity;
     if (!Number.isSafeInteger(total) || total < 1) throw new Error("This gift price is outside the supported wallet range.");
-    const [economyRows] = await connection.query<(RowDataPacket & { setting_value: unknown })[]>(
-      "SELECT setting_value FROM system_settings WHERE setting_key = 'mobile.gift_economy' LIMIT 1",
-    );
-    const giftEconomy = asObject(economyRows[0]?.setting_value);
-    const giftCoinUnits = Number(giftEconomy.giftCoinUnits ?? 100);
-    const receiverDiamondUnits = Number(giftEconomy.receiverDiamondUnits ?? 97);
-    const diamondValue = giftDiamondValue(total, giftCoinUnits, receiverDiamondUnits);
+    const settlement = giftSettlementPolicy(total,fee.config,fee.at);
+    const {giftCoinUnits,receiverDiamondUnits,netDiamonds:diamondValue,platformFee,platformFeeBps,policyVersion}=settlement;
+    const eventId=randomUUID();
+    const [pkContexts]=await connection.query<RowDataPacket[]>(`SELECT
+      EXISTS(SELECT 1 FROM live_pk_sessions WHERE status='ACTIVE' AND (source_room_id=? OR target_room_id=?)) face_pk,
+      EXISTS(SELECT 1 FROM audio_pk_room_links l JOIN audio_pk_sessions p ON p.id=l.session_id WHERE l.room_id=? AND p.status='ACTIVE') party_pk`,[room.id,room.id,room.id]);
+    const giftContext=room.room_type==='PARTY'?(pkContexts[0]?.party_pk?'PARTY_PK':'PARTY'):(pkContexts[0]?.face_pk?'FACE_PK':'FACE');
+    const audit=JSON.stringify({giftTransactionId:eventId,batchId:fee.batchId,roomCode:input.roomCode,roomId:room.id,liveSessionId:room.live_session_id,
+      giftContext,giftId:input.giftId,recipientPublicId:input.recipientPublicId,quantity:input.quantity,
+      coinValue:total,diamondValue,grossCoins:total,netDiamonds:diamondValue,platformFee,platformFeeBps,policyVersion,giftCoinUnits,receiverDiamondUnits});
     await ensureWallet(connection, identity.userId, "COIN"); await ensureWallet(connection, recipient.id, "DIAMOND");
     const [senderRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' FOR UPDATE", [identity.userId]);
     const [receiverRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [recipient.id]);
@@ -1180,16 +1196,18 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [total, senderRows[0].id]);
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [diamondValue, receiverRows[0].id]);
     const transferCode = code("GFT");
-    await connection.execute(
-      `INSERT INTO ledger_transactions (id, transaction_code, idempotency_key, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason, metadata)
-       VALUES (?, ?, ?, 'COIN', 'GIFT_SPEND', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?, JSON_OBJECT('roomCode', ?, 'giftId', ?, 'recipientPublicId', ?, 'quantity', ?, 'coinValue', ?, 'diamondValue', ?, 'giftCoinUnits', ?, 'receiverDiamondUnits', ?))`,
-      [randomUUID(), `${transferCode}-S`, idempotencyKey, identity.userId, recipient.id, total, `${gift.name} ×${input.quantity}`, input.roomCode, input.giftId, input.recipientPublicId, input.quantity, total, diamondValue, giftCoinUnits, receiverDiamondUnits],
-    );
-    await connection.execute(
-      `INSERT INTO ledger_transactions (id, transaction_code, asset_type, transaction_type, source_type, source_id, destination_type, destination_id, amount, status, reason)
-       VALUES (?, ?, 'DIAMOND', 'GIFT_RECEIVE', 'APPLICATION_USER', ?, 'APPLICATION_USER', ?, ?, 'COMPLETED', ?)`,
-      [randomUUID(), `${transferCode}-R`, identity.userId, recipient.id, diamondValue, `${gift.name} ×${input.quantity}`],
-    );
+    await connection.execute(`INSERT INTO ledger_transactions
+      (id,transaction_code,idempotency_key,asset_type,transaction_type,source_type,source_id,destination_type,destination_id,amount,status,reason,metadata)
+      VALUES (?,?,?,'COIN','GIFT_SPEND','APPLICATION_USER',?,'APPLICATION_USER',?,?,'COMPLETED',?,?)`,
+      [randomUUID(),`${transferCode}-S`,idempotencyKey,identity.userId,recipient.id,total,`${gift.name} ×${input.quantity}`,audit]);
+    if(diamondValue>0) await connection.execute(`INSERT INTO ledger_transactions
+      (id,transaction_code,asset_type,transaction_type,source_type,source_id,destination_type,destination_id,amount,status,reason,metadata)
+      VALUES (?,?,'DIAMOND','GIFT_RECEIVE','APPLICATION_USER',?,'APPLICATION_USER',?,?,'COMPLETED',?,?)`,
+      [randomUUID(),`${transferCode}-R`,identity.userId,recipient.id,diamondValue,`${gift.name} ×${input.quantity}`,audit]);
+    if(platformFee>0) await connection.execute(`INSERT INTO ledger_transactions
+      (id,transaction_code,idempotency_key,asset_type,transaction_type,source_type,source_id,destination_type,amount,status,reason,metadata)
+      VALUES (?,?,?,'COIN','GIFT_PLATFORM_FEE','GIFT',?,'SYSTEM',?,'COMPLETED','Gift platform deduction (accounting only)',?)`,
+      [randomUUID(),`${transferCode}-F`,`${idempotencyKey}:FEE`,eventId,platformFee,audit]);
     await connection.execute(
       `UPDATE application_users user
        SET consumption_points = user.consumption_points + ?,
@@ -1215,12 +1233,11 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       [diamondValue, diamondValue, recipient.id],
     );
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
-    const eventId = randomUUID();
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id,gift_batch_id,platform_fee,platform_fee_bps,fee_policy_version,gift_context)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id,fee.batchId,platformFee,platformFeeBps,policyVersion,giftContext],
     );
     const audioPk=room.room_type==='PARTY'?await recordAudioPkGift(connection,{roomId:room.id,giftEventId:eventId,senderUserId:identity.userId,diamonds:diamondValue}):null;
     const rocket = await recordRocketGift(connection, {
@@ -1240,7 +1257,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       audioPk,
       rocket,
       event: {
-        id: eventId, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
+        id: eventId, batchId:fee.batchId, giftContext, platformFee, platformFeeBps, policyVersion, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
         gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },

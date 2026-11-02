@@ -1,4 +1,6 @@
 import "server-only";
+import {rankingPeriod} from "@/lib/policy/ranking-period";
+import {ownerPartyPkUpdateActive} from "@/lib/policy/owner-party-pk-update";
 import { checkpointHostLive } from "@/lib/services/live-auto-resume";
 import { beautyTuning, beautyPublicMapping } from "@/lib/services/beauty-policy";
 import {beginPartyBoardSeat,closePartyBoardSegments,reconcilePartyBoardOwner,expireAbsentPartyBoardSegments} from './party-board-history';
@@ -1235,6 +1237,7 @@ export async function avatarForPublicId(publicId: string) {
 }
 
 export async function claimDailyReward(identity: MobileIdentity) {
+  if(await ownerPartyPkUpdateActive())throw new Error("Daily check-in Coin tasks are no longer available.");
   return withTransaction(async (connection) => {
     const [clockRows] = await connection.query<
       (RowDataPacket & { today: string })[]
@@ -2067,7 +2070,11 @@ export async function refreshPkBattleState(
             source_user.public_id source_host_public_id,
             source_user.full_name source_host_name,
             target_user.public_id target_host_public_id,
-            target_user.full_name target_host_name
+            target_user.full_name target_host_name,
+              COALESCE((SELECT CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',source_user.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(updated_at)*1000)) FROM application_user_avatars WHERE application_user_id=source_user.id),source_user.avatar_url) source_host_avatar_url,
+              COALESCE((SELECT CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',target_user.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(updated_at)*1000)) FROM application_user_avatars WHERE application_user_id=target_user.id),target_user.avatar_url) target_host_avatar_url,
+              (SELECT COUNT(*) FROM live_room_members viewers WHERE viewers.room_id=source.id AND viewers.left_at IS NULL AND viewers.application_user_id<>source.host_application_user_id AND viewers.last_seen_at>=CURRENT_TIMESTAMP(3)-INTERVAL 2 MINUTE) source_viewer_count,
+              (SELECT COUNT(*) FROM live_room_members viewers WHERE viewers.room_id=target.id AND viewers.left_at IS NULL AND viewers.application_user_id<>target.host_application_user_id AND viewers.last_seen_at>=CURRENT_TIMESTAMP(3)-INTERVAL 2 MINUTE) target_viewer_count
        FROM live_pk_sessions session
        INNER JOIN live_rooms source ON source.id = session.source_room_id
        INNER JOIN live_rooms target ON target.id = session.target_room_id
@@ -2145,10 +2152,12 @@ export async function refreshPkBattleState(
       sourceHost: {
         id: String(session.source_host_public_id),
         name: String(session.source_host_name),
+        avatarUrl:session.source_host_avatar_url??null,viewerCount:Number(session.source_viewer_count??0),
       },
       targetHost: {
         id: String(session.target_host_public_id),
         name: String(session.target_host_name),
+        avatarUrl:session.target_host_avatar_url??null,viewerCount:Number(session.target_viewer_count??0),
       },
       sourceStreamId: `${String(session.source_room_code)}_${String(session.source_host_public_id)}_main`,
       targetStreamId: `${String(session.target_room_code)}_${String(session.target_host_public_id)}_main`,
@@ -2564,7 +2573,11 @@ export async function refreshRoomPresence(
               ), 0) ELSE session.target_score END target_score,
               source.room_code source_room_code, target.room_code target_room_code,
               source_user.public_id source_host_public_id, source_user.full_name source_host_name,
-              target_user.public_id target_host_public_id, target_user.full_name target_host_name
+              target_user.public_id target_host_public_id, target_user.full_name target_host_name,
+              COALESCE((SELECT CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',source_user.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(updated_at)*1000)) FROM application_user_avatars WHERE application_user_id=source_user.id),source_user.avatar_url) source_host_avatar_url,
+              COALESCE((SELECT CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',target_user.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(updated_at)*1000)) FROM application_user_avatars WHERE application_user_id=target_user.id),target_user.avatar_url) target_host_avatar_url,
+              (SELECT COUNT(*) FROM live_room_members viewers WHERE viewers.room_id=source.id AND viewers.left_at IS NULL AND viewers.application_user_id<>source.host_application_user_id AND viewers.last_seen_at>=CURRENT_TIMESTAMP(3)-INTERVAL 2 MINUTE) source_viewer_count,
+              (SELECT COUNT(*) FROM live_room_members viewers WHERE viewers.room_id=target.id AND viewers.left_at IS NULL AND viewers.application_user_id<>target.host_application_user_id AND viewers.last_seen_at>=CURRENT_TIMESTAMP(3)-INTERVAL 2 MINUTE) target_viewer_count
        FROM live_pk_sessions session
        INNER JOIN live_rooms source ON source.id = session.source_room_id
        INNER JOIN live_rooms target ON target.id = session.target_room_id
@@ -2991,10 +3004,12 @@ export async function refreshRoomPresence(
             sourceHost: {
               id: String(pkSession.source_host_public_id),
               name: String(pkSession.source_host_name),
+              avatarUrl:pkSession.source_host_avatar_url??null,viewerCount:Number(pkSession.source_viewer_count??0),
             },
             targetHost: {
               id: String(pkSession.target_host_public_id),
               name: String(pkSession.target_host_name),
+              avatarUrl:pkSession.target_host_avatar_url??null,viewerCount:Number(pkSession.target_viewer_count??0),
             },
             sourceStreamId: `${String(pkSession.source_room_code)}_${String(pkSession.source_host_public_id)}_main`,
             targetStreamId: `${String(pkSession.target_room_code)}_${String(pkSession.target_host_public_id)}_main`,
@@ -5007,16 +5022,8 @@ export async function submitAutomaticFaceVerification(
   });
 }
 
-function periodStart(period: "daily" | "weekly" | "monthly") {
-  return period === "daily"
-    ? "CURRENT_DATE"
-    : period === "weekly"
-      ? "DATE_SUB(CURRENT_DATE, INTERVAL WEEKDAY(CURRENT_DATE) DAY)"
-      : "DATE_FORMAT(CURRENT_DATE, '%Y-%m-01')";
-}
-
-async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
-  const start = periodStart(period);
+export async function leaderboardFor(period: "daily" | "weekly" | "monthly", now=new Date()) {
+  const range=rankingPeriod(period,now);
   const [gifters, hosts, agencies] = await Promise.all([
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
@@ -5024,10 +5031,10 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
               user.vip_tier, user.is_host, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.source_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-       WHERE ledger.transaction_type = 'GIFT_SPEND' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
+       WHERE ledger.transaction_type = 'GIFT_SPEND' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ? AND ledger.created_at < ?
        GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at,
                 user.country_code, user.language_code, user.level_number, user.anchor_level_number, user.vip_tier, user.is_host
-       ORDER BY score DESC, user.public_id LIMIT 50`,
+       ORDER BY score DESC, user.public_id LIMIT 50`,[range.start,range.end]
     ),
     db().query<RowDataPacket[]>(
       `SELECT user.public_id, user.full_name, user.avatar_url, avatar.updated_at avatar_updated_at,
@@ -5035,19 +5042,19 @@ async function leaderboardFor(period: "daily" | "weekly" | "monthly") {
               user.vip_tier, user.is_host, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.destination_id
        LEFT JOIN application_user_avatars avatar ON avatar.application_user_id = user.id
-       WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
+       WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ? AND ledger.created_at < ?
        GROUP BY user.id, user.public_id, user.full_name, user.avatar_url, avatar.updated_at,
                 user.country_code, user.language_code, user.level_number, user.anchor_level_number, user.vip_tier, user.is_host
-       ORDER BY score DESC, user.public_id LIMIT 50`,
+       ORDER BY score DESC, user.public_id LIMIT 50`,[range.start,range.end]
     ),
     db().query<RowDataPacket[]>(
       `SELECT agency.public_id, agency.full_name, agency.country_code, creation.id logo_id, SUM(ledger.amount) score
        FROM ledger_transactions ledger INNER JOIN application_users user ON user.id = ledger.destination_id
        INNER JOIN platform_accounts agency ON agency.id = user.agency_account_id
        LEFT JOIN agency_creation_applications creation ON creation.approved_agency_account_id = agency.id AND creation.status = 'APPROVED'
-       WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ${start}
+       WHERE ledger.transaction_type = 'GIFT_RECEIVE' AND ledger.status = 'COMPLETED' AND ledger.created_at >= ? AND ledger.created_at < ?
        GROUP BY agency.id, agency.public_id, agency.full_name, agency.country_code, creation.id
-       ORDER BY score DESC, agency.public_id LIMIT 50`,
+       ORDER BY score DESC, agency.public_id LIMIT 50`,[range.start,range.end]
     ),
   ]);
   const users = (rows: RowDataPacket[], role: "user" | "host") =>
@@ -5198,6 +5205,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
   return {
     accessPolicy: LiveAccessPolicyService.for(identity),
     dailyRewards: {
+      checkInVisible:!pkStreak.manualClaim,
       rules: rewardRules[0].map((row) => ({
         dayNumber: Number(row.day_number),
         rewardCoins: Number(row.reward_coins),
@@ -5295,6 +5303,7 @@ export async function mobileCompletionSnapshot(identity: MobileIdentity) {
  * settlement, claimability, or wallet state.
  */
 export async function mobileDailyRewardsSnapshot(identity: MobileIdentity) {
+  const pkStreak=await pkStreakSnapshot(identity);
   const [rewardRules, claimRows, liveRewardRows, clockRows] = await Promise.all([
     db().query<RowDataPacket[]>(
       "SELECT day_number, reward_coins, label FROM daily_reward_rules WHERE enabled = TRUE ORDER BY day_number",
@@ -5329,7 +5338,9 @@ export async function mobileDailyRewardsSnapshot(identity: MobileIdentity) {
     : null;
   const today = String(clockRows[0][0]?.today ?? "").slice(0, 10);
   return {
+    pkStreak,
     dailyRewards: {
+      checkInVisible:!pkStreak.manualClaim,
       rules: rewardRules[0].map((row) => ({
         dayNumber: Number(row.day_number),
         rewardCoins: Number(row.reward_coins),

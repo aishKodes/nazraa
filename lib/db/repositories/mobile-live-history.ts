@@ -1,4 +1,5 @@
 import "server-only";
+import {rankingPeriod} from "@/lib/policy/ranking-period";
 
 import type { RowDataPacket } from "mysql2/promise";
 
@@ -44,9 +45,11 @@ function beforeDate(value: string | undefined) {
  */
 export async function mobileLiveHistory(
   identity: MobileIdentity,
-  input: { before?: string } = {},
+  input: { before?: string; now?:Date } = {},
 ) {
-  const rules = await loadFaceLiveRules();
+  const month=rankingPeriod("monthly",input.now??new Date());
+  const monthStart=month.businessMonth+"-01",monthEnd=rankingPeriod("monthly",month.end).businessMonth+"-01";
+  await loadFaceLiveRules();
   const [thresholdRows] = await db().query<
     (RowDataPacket & { minimum_eligible_seconds: number })[]
   >(
@@ -78,22 +81,22 @@ export async function mobileLiveHistory(
                FROM live_session_accounting
               WHERE host_application_user_id = ?
                 AND room_type IN ('FACE', 'LIVE')
-                AND status <> 'VOID'
+                AND status <> 'VOID' AND business_date>=? AND business_date<?
               GROUP BY business_date
            ) day_rows`,
-        [validDayThreshold, identity.userId],
+        [validDayThreshold, identity.userId,monthStart,monthEnd],
       ),
       db().query<(RowDataPacket & { coins: number | string | null })[]>(
         `SELECT COALESCE(SUM(coin_value), 0) coins
            FROM live_room_gift_events
-          WHERE sender_application_user_id = ?`,
-        [identity.userId],
+          WHERE sender_application_user_id = ? AND business_date>=? AND business_date<?`,
+        [identity.userId,monthStart,monthEnd],
       ),
       db().query<(RowDataPacket & { coins: number | string | null })[]>(
-        `SELECT COALESCE(SUM(coin_value), 0) coins
+        `SELECT COALESCE(SUM(coin_value), 0) coins,COALESCE(SUM(diamond_value),0) diamonds
            FROM live_room_gift_events
-          WHERE receiver_application_user_id = ?`,
-        [identity.userId],
+          WHERE receiver_application_user_id = ? AND business_date>=? AND business_date<?`,
+        [identity.userId,monthStart,monthEnd],
       ),
       db().query<DateRow[]>(
         `SELECT business_date
@@ -154,7 +157,7 @@ export async function mobileLiveHistory(
           [identity.userId, ...pageDates],
         ),
         db().query<CoinsRow[]>(
-          `SELECT business_date, SUM(coin_value) coins
+          `SELECT business_date, SUM(coin_value) coins,SUM(diamond_value) diamonds
              FROM live_room_gift_events
             WHERE receiver_application_user_id = ?
               AND business_date IN (${placeholders})
@@ -176,12 +179,13 @@ export async function mobileLiveHistory(
   );
 
   return {
-    timezone: rules.timezone,
+    timezone: "Asia/Kolkata",businessMonth:month.businessMonth,
     summary: {
       videoSeconds: asNonNegativeInteger(summaryLive[0][0]?.video_seconds),
       validDays: asNonNegativeInteger(summaryLive[0][0]?.valid_days),
       sendingCoins: asNonNegativeInteger(summarySent[0][0]?.coins),
       receivedCoins: asNonNegativeInteger(summaryReceived[0][0]?.coins),
+      receivedDiamonds:asNonNegativeInteger((summaryReceived[0][0] as RowDataPacket)?.diamonds),
     },
     days: pageDates.map((date) => {
       const eligibleVideoSeconds = videoByDate.get(date) ?? 0;
@@ -191,6 +195,7 @@ export async function mobileLiveHistory(
         validDay: eligibleVideoSeconds >= validDayThreshold,
         sendingCoins: sentByDate.get(date) ?? 0,
         receivedCoins: receivedByDate.get(date) ?? 0,
+        receivedDiamonds:asNonNegativeInteger((receivedRows[0].find(r=>isoDate(r.business_date)===date) as RowDataPacket)?.diamonds),
       };
     }),
     nextBefore:

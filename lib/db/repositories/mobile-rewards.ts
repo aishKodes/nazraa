@@ -1,4 +1,5 @@
 import "server-only";
+import {ownerPartyPkUpdateActive,randomPkSettlement} from "@/lib/policy/owner-party-pk-update";
 import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import { randomUUID } from "crypto";
@@ -426,6 +427,12 @@ export async function rocketSnapshot(identity: MobileIdentity, roomCode: string)
 }
 
 export async function pkStreakSnapshot(identity: MobileIdentity) {
+  const manualClaim=await ownerPartyPkUpdateActive();
+  const [randomRows]=manualClaim?await db().query<RowDataPacket[]>("SELECT random_current_wins,random_qualifying_wins_total FROM pk_host_streaks WHERE application_user_id=?",[identity.userId]):[[]];
+  // A page of recently claimed rewards must never hide an older unclaimed one.
+  const [claims]=manualClaim?await db().query<RowDataPacket[]>(`(SELECT id,reward_coins,status,created_at,claimed_at FROM pk_reward_claims WHERE application_user_id=? AND status='CLAIMABLE')
+    UNION ALL (SELECT id,reward_coins,status,created_at,claimed_at FROM pk_reward_claims WHERE application_user_id=? AND status='CLAIMED' ORDER BY created_at DESC LIMIT 30)
+    ORDER BY created_at DESC`,[identity.userId,identity.userId]):[[]];
   const [streaks, events] = await Promise.all([
     db().query<RowDataPacket[]>("SELECT current_streak, streak_cycle_id, qualifying_wins_total, bonuses_awarded FROM pk_host_streaks WHERE application_user_id = ? LIMIT 1", [identity.userId]),
     // PK history is independent of a streak event: manual cancellation and
@@ -453,10 +460,11 @@ export async function pkStreakSnapshot(identity: MobileIdentity) {
       [identity.userId, identity.userId, identity.userId],
     ),
   ]);
-  const currentStreak = Number(streaks[0][0]?.current_streak ?? 0);
-  const next = pkStreakMilestone(currentStreak);
+  const currentStreak = Number(manualClaim?randomRows[0]?.random_current_wins??0:streaks[0][0]?.current_streak ?? 0);
+  const next = manualClaim?{wins:3,totalCoins:5000,awardCoins:5000}:pkStreakMilestone(currentStreak);
   return {
-    currentStreak,
+    currentStreak,manualClaim,randomOnly:manualClaim,
+    claims:claims.map(r=>({id:String(r.id),amount:Number(r.reward_coins),status:String(r.status).toLowerCase(),createdAt:r.created_at,claimedAt:r.claimed_at})),
     // Retained for old APKs. New clients use the explicit next milestone so
     // the UI can show 2/3 followed by 5/7 without implying a 30k payout.
     requiredWins: next.wins,
@@ -465,7 +473,7 @@ export async function pkStreakSnapshot(identity: MobileIdentity) {
     nextMilestoneAwardCoins: next.awardCoins,
     minimumBattleCoins: 5000,
     bonusCoins: next.awardCoins,
-    qualifyingWinsTotal: Number(streaks[0][0]?.qualifying_wins_total ?? 0), bonusesAwarded: Number(streaks[0][0]?.bonuses_awarded ?? 0),
+    qualifyingWinsTotal: Number(manualClaim ? randomRows[0]?.random_qualifying_wins_total ?? 0 : streaks[0][0]?.qualifying_wins_total ?? 0), bonusesAwarded: Number(streaks[0][0]?.bonuses_awarded ?? 0),
     history: events[0].map((row) => {
       const sourceIsMe = String(row.source_host_id) === identity.userId;
       const opponentName = sourceIsMe ? row.target_name : row.source_name;
@@ -494,7 +502,7 @@ export async function pkStreakSnapshot(identity: MobileIdentity) {
 }
 
 async function applyPkHostResult(connection: PoolConnection, input: {
-  sessionId: string; hostUserId: string; result: PkResult; receivedCoins: number;
+  sessionId: string; hostUserId: string; result: PkResult; receivedCoins: number; mode?:string;
 }) {
   const [existing] = await connection.query<RowDataPacket[]>(
     "SELECT streak_after, bonus_coins, qualifying_win FROM pk_host_streak_events WHERE pk_session_id = ? AND application_user_id = ? LIMIT 1",
@@ -509,6 +517,7 @@ async function applyPkHostResult(connection: PoolConnection, input: {
       milestoneTotalCoins: 0,
     };
   }
+  if(await ownerPartyPkUpdateActive(connection))return applyRandomPkResult(connection,{...input,mode:input.mode??''});
   await connection.execute(
     "INSERT IGNORE INTO pk_host_streaks (application_user_id) VALUES (?)",
     [input.hostUserId],
@@ -585,6 +594,37 @@ async function applyPkHostResult(connection: PoolConnection, input: {
   };
 }
 
+async function applyRandomPkResult(c:PoolConnection,input:{sessionId:string;hostUserId:string;mode:string;result:PkResult;receivedCoins:number}){
+  await c.execute('INSERT IGNORE INTO pk_host_streaks(application_user_id) VALUES(?)',[input.hostUserId]);
+  const [rows]=await c.query<RowDataPacket[]>('SELECT random_current_wins,random_cycle_id FROM pk_host_streaks WHERE application_user_id=? FOR UPDATE',[input.hostUserId]);
+  // Recheck after the Host lock: two different finalization callers may race.
+  const [existing]=await c.query<RowDataPacket[]>('SELECT streak_after,qualifying_win FROM pk_host_streak_events WHERE pk_session_id=? AND application_user_id=? FOR UPDATE',[input.sessionId,input.hostUserId]);
+  if(existing.length)return {streak:Number(existing[0].streak_after),qualifying:Boolean(existing[0].qualifying_win),bonusCoins:0,milestoneWins:null,milestoneTotalCoins:0};
+  const next=randomPkSettlement(Number(rows[0].random_current_wins),input.mode,input.result,input.receivedCoins);
+  const cycle=rows[0].random_cycle_id??(next.qualifying?randomUUID():null);
+  if(next.completed)await c.execute(`INSERT INTO pk_reward_claims(id,application_user_id,cycle_id,completed_session_id,reward_coins) VALUES(?,?,?,?,5000)`,[randomUUID(),input.hostUserId,cycle,input.sessionId]);
+  await c.execute('UPDATE pk_host_streaks SET random_current_wins=?,random_cycle_id=?,random_qualifying_wins_total=random_qualifying_wins_total+? WHERE application_user_id=?',[next.wins,next.completed||next.wins===0?null:cycle,next.qualifying?1:0,input.hostUserId]);
+  await c.execute(`INSERT INTO pk_host_streak_events(id,pk_session_id,application_user_id,streak_cycle_id,result,received_coins,qualifying_win,streak_after,bonus_coins,reward_policy_version) VALUES(?,?,?,?,?,?,?,?,0,2)`,[randomUUID(),input.sessionId,input.hostUserId,cycle,input.result,input.receivedCoins,next.qualifying,next.completed?3:next.wins]);
+  return {streak:next.wins,qualifying:next.qualifying,bonusCoins:0,milestoneWins:next.completed?3:null,milestoneTotalCoins:next.completed?5000:0};
+}
+
+export async function claimRandomPkReward(identity:MobileIdentity,rewardId:string){
+  return withTransaction(async c=>{
+    if(!await ownerPartyPkUpdateActive(c))throw new Error('Random PK rewards are not available.');
+    const [claims]=await c.query<RowDataPacket[]>('SELECT id,reward_coins,status FROM pk_reward_claims WHERE id=? AND application_user_id=? FOR UPDATE',[rewardId,identity.userId]);
+    const claim=claims[0];if(!claim)throw new Error('This reward is unavailable.');
+    if(claim.status==='CLAIMED')return {success:true,creditedCoins:0,amount:Number(claim.reward_coins),status:'claimed',replayed:true};
+    if(claim.status!=='CLAIMABLE')throw new Error('This reward is unavailable.');
+    await ensureCoinWallet(c,identity.userId);
+    const [wallet]=await c.query<RowDataPacket[]>("SELECT id FROM wallet_balances WHERE owner_type='APPLICATION_USER' AND owner_id=? AND asset_type='COIN' FOR UPDATE",[identity.userId]);
+    const ledger=randomUUID(),amount=Number(claim.reward_coins);
+    await c.execute('UPDATE wallet_balances SET available_balance=available_balance+? WHERE id=?',[amount,wallet[0].id]);
+    await c.execute(`INSERT INTO ledger_transactions(id,transaction_code,idempotency_key,asset_type,transaction_type,source_type,destination_type,destination_id,amount,status,reason,metadata) VALUES(?,?,?,'COIN','PK_STREAK_REWARD','SYSTEM','APPLICATION_USER',?,?,'COMPLETED','Claimed three qualifying Random PK wins',?)`,[ledger,transactionCode('PKC'),`PK_RANDOM_CLAIM:${claim.id}`,identity.userId,amount,JSON.stringify({rewardId:claim.id,policyVersion:2})]);
+    await c.execute("UPDATE pk_reward_claims SET status='CLAIMED',claimed_at=CURRENT_TIMESTAMP(3),ledger_transaction_id=? WHERE id=?",[ledger,claim.id]);
+    return {success:true,creditedCoins:amount,amount,status:'claimed',replayed:false};
+  });
+}
+
 export async function finalizePkSession(identity: MobileIdentity, input: {
   sessionId: string;
   completed: boolean;
@@ -592,13 +632,15 @@ export async function finalizePkSession(identity: MobileIdentity, input: {
 }) {
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
-      id: string; status: string; source_room_id: string; target_room_id: string; source_room_code: string; target_room_code: string; source_host_id: string; target_host_id: string; starts_at: Date; source_score: number; target_score: number; winner_room_id: string | null;
+      id: string; status: string; mode:string; source_room_id: string; target_room_id: string; source_room_code: string; target_room_code: string; source_host_id: string; target_host_id: string; starts_at: Date; source_score: number; target_score: number; winner_room_id: string | null; completion_due:number; ends_at:Date;
     })[]>(
-      `SELECT session.id, session.status, session.source_room_id, session.target_room_id,
+      `SELECT session.id, session.status, session.mode, session.source_room_id, session.target_room_id,
               session.source_score, session.target_score, session.winner_room_id,
               source.room_code source_room_code, target.room_code target_room_code,
               source.host_application_user_id source_host_id, target.host_application_user_id target_host_id,
-              COALESCE(session.started_at, session.created_at) starts_at
+              COALESCE(session.started_at, session.created_at) starts_at,
+              TIMESTAMPADD(MINUTE,session.duration_minutes,COALESCE(session.started_at,session.created_at)) ends_at,
+              TIMESTAMPADD(MINUTE,session.duration_minutes,COALESCE(session.started_at,session.created_at))<=CURRENT_TIMESTAMP(3) completion_due
        FROM live_pk_sessions session INNER JOIN live_rooms source ON source.id = session.source_room_id
        INNER JOIN live_rooms target ON target.id = session.target_room_id
        WHERE session.id = ? AND (source.host_application_user_id = ? OR target.host_application_user_id = ?) LIMIT 1 FOR UPDATE`,
@@ -625,12 +667,14 @@ export async function finalizePkSession(identity: MobileIdentity, input: {
         targetRoomCode: session.target_room_code,
       };
     }
+    const ownerPolicyActive=await ownerPartyPkUpdateActive(connection);
+    if(ownerPolicyActive && !session.completion_due)throw new Error('This PK is still in progress.');
     const [scores] = await connection.query<(RowDataPacket & { room_id: string; score: number })[]>(
       `SELECT event.room_id, COALESCE(SUM(event.coin_value), 0) score
        FROM live_room_gift_events event
-       WHERE event.room_id IN (?, ?) AND event.created_at >= ?
+       WHERE event.room_id IN (?, ?) AND event.created_at >= ? AND (?=FALSE OR event.created_at<=?)
        GROUP BY event.room_id`,
-      [session.source_room_id, session.target_room_id, session.starts_at],
+      [session.source_room_id, session.target_room_id, session.starts_at,ownerPolicyActive,session.ends_at],
     );
     const sourceScore = Number(scores.find((row) => row.room_id === session.source_room_id)?.score ?? 0);
     const targetScore = Number(scores.find((row) => row.room_id === session.target_room_id)?.score ?? 0);
@@ -641,8 +685,8 @@ export async function finalizePkSession(identity: MobileIdentity, input: {
     );
     const sourceResult = winnerRoomId == null ? "DRAW" : winnerRoomId === session.source_room_id ? "WIN" : "LOSS";
     const targetResult = winnerRoomId == null ? "DRAW" : winnerRoomId === session.target_room_id ? "WIN" : "LOSS";
-    const sourceStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.source_host_id, result: sourceResult, receivedCoins: sourceScore });
-    const targetStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.target_host_id, result: targetResult, receivedCoins: targetScore });
+    const sourceStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.source_host_id, result: sourceResult, receivedCoins: sourceScore, mode:session.mode });
+    const targetStreak = await applyPkHostResult(connection, { sessionId: session.id, hostUserId: session.target_host_id, result: targetResult, receivedCoins: targetScore, mode:session.mode });
     const callerResult = identity.userId === session.source_host_id ? sourceResult : targetResult;
     const callerStreak = identity.userId === session.source_host_id ? sourceStreak : targetStreak;
     const opponentStreak = identity.userId === session.source_host_id ? targetStreak : sourceStreak;

@@ -75,7 +75,13 @@ async function team(connection:PoolConnection,roomId:string){
     if(rows[0].seatIndex!=null&&Number(rows[0].seatIndex)===index || selected.some(member=>Number(member.seatIndex)===index))continue;
     selected.push({id:null,name:null,seatIndex:index,muted:true,locked:locked.has(index)} as RowDataPacket);
   }
-  return {host:rows[0],seats:selected};
+  const [totals]=await connection.query<RowDataPacket[]>(`SELECT u.public_id,SUM(e.diamond_value) diamonds,SUM(e.coin_value) gross
+    FROM live_room_gift_events e JOIN application_users u ON u.id=e.receiver_application_user_id
+    JOIN audio_pk_room_links l ON l.room_id=e.room_id JOIN audio_pk_sessions p ON p.id=l.session_id
+    WHERE e.room_id=? AND e.created_at>=p.started_at AND e.created_at<=COALESCE(p.ends_at,CURRENT_TIMESTAMP(3))
+    GROUP BY u.public_id`,[roomId]);
+  const enriched=(member:RowDataPacket):RowDataPacket=>({...member,receivedDiamonds:Number(totals.find(t=>String(t.public_id)===String(member.id))?.diamonds??0),receivedGiftValue:Number(totals.find(t=>String(t.public_id)===String(member.id))?.gross??0)} as RowDataPacket);
+  return {host:enriched(rows[0]),seats:selected.map(enriched)};
 }
 export async function audioPkSnapshot(identity:MobileIdentity,roomCode:string){
   let changed:Session|undefined;
