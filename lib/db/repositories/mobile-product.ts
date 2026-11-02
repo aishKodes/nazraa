@@ -1098,6 +1098,9 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
       const [rows]=await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.lucky_gifts'");
       luckyConfig=luckyPolicy(rows[0]?.setting_value);
       if(!luckyConfig.enabled)throw new Error('Lucky Gifts are not available yet.');
+      // Validate the largest possible bonus before drawing: numeric limits must
+      // never selectively reject a winning outcome. No balance enters RNG.
+      if(BigInt(String(funds[0].available_balance))+BigInt(fullCost)*24n>BigInt(Number.MAX_SAFE_INTEGER))throw new Error('This gift exceeds the supported wallet range.');
     }
     const results = [];
     for (const recipientPublicId of recipients) {

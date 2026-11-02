@@ -45,6 +45,6 @@ export async function partyMusic(identity:MobileIdentity,input:{roomCode:string;
   }
   const [rows]=await c.query<RowDataPacket[]>(`SELECT music.*,u.public_id controller_public_id,CURRENT_TIMESTAMP(3) server_now FROM party_room_music music LEFT JOIN application_users u ON u.id=music.controller_user_id WHERE music.room_id=?`,[member.id]);
   const row=rows[0];const track=row?.source_kind==='LOCAL_PCM'?(row.track_key?{id:'local',title:String(row.display_name)}:null):roomMusicCatalog.find(t=>t.id===row?.track_key);
-  return {canEdit:Boolean(edit),canStart,catalog:roomMusicCatalog.filter(t=>t.title.toLowerCase().includes((input.query??'').toLowerCase().trim())),state:row?{track,sourceKind:row.source_kind,controllerId:row.controller_public_id==null?null:String(row.controller_public_id),generation:Number(row.publication_generation),playing:Boolean(row.playing),positionMs:Number(row.position_ms),version:Number(row.version),updatedAt:row.updated_at,serverNow:row.server_now}:null};
+  return {canEdit:Boolean(edit),canStart,catalog:roomMusicCatalog.filter(t=>t.title.toLowerCase().includes((input.query??'').toLowerCase().trim())),state:row?{track,sourceKind:row.source_kind,controllerId:row.controller_public_id==null?null:String(row.controller_public_id),generation:Number(row.publication_generation),playing:Boolean(row.playing),positionMs:Number(row.position_ms),version:Number(row.version),updatedAt:row.updated_at,serverNow:row.server_now,leaseExpiresAt:row.lease_expires_at}:null};
  });
 }
