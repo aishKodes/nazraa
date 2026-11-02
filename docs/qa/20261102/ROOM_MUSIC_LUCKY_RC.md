@@ -91,7 +91,7 @@ Retried successful Lucky receipts retain their outcome without replaying effects
 
 ## Focused evidence
 
-- Flutter analysis: no issues. 26 focused tests cover controller lifecycle, 20 rapid
+- Flutter analysis: no issues. 38 focused tests cover controller lifecycle, 20 rapid
   taps, same-ID retry, Stop, inactivity, insufficient balance and existing Party /
   Face PK presentation, Inbox and LiveKit permission semantics.
 - Android native instrumentation: two tests, including real AAC/M4A and stereo 44.1 kHz WAV decode, duration preservation through one resample, and the exact PCM callback contract.
@@ -119,3 +119,89 @@ prospective Master activation are still required before production can use Lucky
 No physical phone was connected; do not infer physical-device or production QA
 from the emulator/local-SFU measurements. Earlier baseline Face PK/video/Beauty
 work is preserved, rather than reported as freshly production-tested here.
+
+## Final exact signed artifact
+
+- Version: **2.5.09+7421**.
+- Compiled mobile commit: **a40b349aa40c7892a981a562c5006bed8dc676b5**.
+- Backend runtime source commit: **54cca30**; backend documentation HEAD at build: **88af634**.
+- APK: `/Users/aishwaryam/nazra2/dist/Nazraa-Live-2.5.09-7421-release-a40b349aa40c.apk`.
+- SHA-256: `f4a475405e39cf3caea484975df9ffb094bfb0c55cbaad19b6f7f73c5cc0304c`.
+- Pulled the installed `base.apk`: byte hash matches this artifact.
+- Permanent signing certificate SHA-256 matches the prior signed baseline:
+  `5e3d3fb10afd21f77c57721b05184453f0061d23e3000416ce409d3ead9367c4`.
+- Package `com.nazraa.live`; target SDK 36; non-debuggable signed release.
+- This is an isolated **OWNER TEST RC**, not a public APK. It needs the local
+  API/SFU and ADB reverse documented above. No website/GitHub or minimum-version
+  update has been made. The local `dist/Nazraa-Live-release.apk` alias was restored
+  to its pre-task production baseline. Superseded test iterations are archived
+  under the evidence directory and are not the final candidate.
+
+### Exact-release runtime checks
+
+Party: Android document picker selected the MP3, Play transmitted actual audio
+through the unchanged microphone publication; an independent official LiveKit
+Node subscriber decoded mean absolute PCM ~792.2. One current audio publication.
+One initial Lucky send plus three rapid taps produced **four unique batches**,
+**400 gross Coins / 80 receiver Diamonds / 20 sender bonus Coins**. Sender net
+Coin change was -380. Stop produced no subsequent financial transaction.
+
+Face: the real full-app Host path authorized through the local backend. The
+initial disposable fixture lacked Agency membership and a session ledger row;
+only those local test fixtures were completed, using the existing active QA
+Agency and canonical accounting schema. No production eligibility bypass.
+Received **720×1280 video frames continued** while MP3 music played, paused,
+resumed, changed to a stereo 44.1 kHz WAV, and Lucky Gifts were sent. One initial
+send plus two rapid taps produced **three unique batches**, **300 gross Coins /
+60 receiver Diamonds / 20 sender bonus Coins**; sender net Coin change -280.
+No unrelated wallet changed in either exact-release check.
+
+Paused and stopped audio decoded to mean absolute PCM **0.0**, with video frames
+still advancing. Resumed MP3 measured ~792.9; the second WAV measured ~589.8
+(different synthetic input frequency/channel content, not a quality comparison).
+An abrupt **three-second local SFU process outage** forced reconnection. Music
+recovered (~589.4), video frames advanced, publication SIDs rebound, and exactly
+one current audio plus one video publication remained. The same local Nazraa room
+and accounting row remained. This was not a production outage or physical-network
+certification. A sanitized music update notice appeared during the outage; the
+subsequent successful Stop cleared it, without stopping the room.
+
+Two actual UI bugs were found and corrected during release testing:
+
+1. The level/VIP badge Column in the compact effect used the default expanding
+   main axis, stretching the gold notice background over the room. A regression
+   test reproduced **600 px height** before the fix; the badge now shrink-wraps,
+   the notice is asserted below 100 logical px, and the exact APK screenshot
+   confirms a bounded top notice. Underlying controls remain non-intercepted.
+2. Face Tools tried to open Music before the current sheet closed, so the overlay
+   serializer rejected the new sheet. Music now uses the existing wait-for-close
+   helper; selecting Music opens its controls successfully in the exact APK.
+
+The Lucky tray now keeps its gift artwork visible, including small-height and
+large-text cases. The 52 px rapid circle and separate accessible Stop sit above
+bottom controls and clear the unchanged Games launcher. Games/modals suppress
+this temporary control. Rapid remembering is deliberately SINGLE-recipient only;
+ALL still uses its existing authoritative full-batch settlement and does not
+retain a changing audience set as a rapid target.
+
+### Retained evidence
+
+Directory: `/Users/aishwaryam/nazraa-release-evidence/20261102-music-lucky-rc/`.
+
+- `FINAL_ARTIFACT.json`, signature/badging verification, exact installed APK.
+- `flutter-focused-tests.log`: **38 passed**; `flutter-analyze.log`: no issues.
+- `native-mix-tests.log`: two native instrumentation tests passed.
+- `lucky-simulation.json`: complete 100,000-attempt distribution.
+- `exact-final-wallet-reconciliation.json`: exact Party/Face debit and credit checks.
+- `exact-final-face-markers.json`: pause/resume, change, reconnect and Stop samples.
+- `exact-final-face-media.json` / `exact-final-party-media.json`: actual receiver counters.
+- Screenshots: `final-rc-party-music.png`, `final-rc-face-music.png`,
+  `final-rc-lucky-panel.png`, `final-rc-face-lucky-panel.png`,
+  `final-rc-party-rapid.png`, `final-rc-face-rapid.png`,
+  `final-rc-party-compact-gift.png`.
+
+No physical Android device was available. Emulator synthetic camera transport is
+verified, not real-person beauty quality. Its audio callback is mono 16 kHz;
+physical-device music fidelity, headset behavior, prolonged screen lock and a
+real-world weak-network soak remain unverified. No new two-Host production PK
+claim is made; focused existing PK/Inbox/permission regression tests passed.
