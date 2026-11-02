@@ -28,7 +28,10 @@ export async function syncPartyMicrophone(
   return withTransaction(async connection => {
     const [rows] = await connection.query<RowDataPacket[]>(
       `SELECT room.room_type,room.status,user.account_status,member.left_at,
-        member.media_role,member.seat_index,member.muted,member.muted_by_staff
+        member.media_role,member.seat_index,member.muted,member.muted_by_staff,
+        EXISTS(SELECT 1 FROM party_room_music music WHERE music.room_id=room.id
+          AND music.source_kind='LOCAL_PCM' AND music.controller_user_id=member.application_user_id
+          AND music.playing=TRUE AND music.lease_expires_at>CURRENT_TIMESTAMP(3)) room_music_active
        FROM live_rooms room JOIN live_room_members member ON member.room_id=room.id
        JOIN application_users user ON user.id=member.application_user_id
        WHERE room.room_code=? AND user.public_id=? LIMIT 1 FOR UPDATE`, [roomCode,publicId]);
@@ -37,7 +40,10 @@ export async function syncPartyMicrophone(
     const canPublish = row.account_status==='ACTIVE' && ['ACTIVE','LOCKED'].includes(row.status)
       && row.left_at==null && !Boolean(row.muted_by_staff)
       && (row.media_role==='PARTY_OWNER' || (row.media_role==='RTC_SPEAKER' && row.seat_index!=null));
-    const muted=Boolean(row.muted) || !canPublish;
+    // The authorized source gates its own speech before mixing PCM. Self-mute
+    // must not mute the entire music-bearing publication. Staff mute/revoked
+    // seat capability still silences it, regardless of music metadata.
+    const muted=(Boolean(row.muted) && !row.room_music_active) || !canPublish;
     return {isParty:true,canPublish,muted,applied:await apply({roomCode,publicId,canPublish,muted})};
   });
 }

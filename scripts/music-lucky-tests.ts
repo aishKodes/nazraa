@@ -7,6 +7,7 @@ import type {Scope} from '@/types/platform';
 import {sendGift} from '@/lib/db/repositories/mobile-product';
 import {luckyDefaults,luckyPolicy,drawLucky,luckyExpectation} from '@/lib/policy/lucky-gifts';
 import {partyMusic} from '@/lib/db/repositories/party-music';
+import {syncPartyMicrophone} from '@/lib/services/livekit-room-authority';
 import {luckyGiftControl} from '@/lib/db/repositories/lucky-gifts';
 export async function verifyMusicLucky(root:mysql.Connection,user:(name:string)=>Promise<MobileIdentity>,master:Scope){
  const p=luckyPolicy({...luckyDefaults,enabled:true});
@@ -48,6 +49,12 @@ export async function verifyMusicLucky(root:mysql.Connection,user:(name:string)=
  await root.query(await readFile('db/migrations/0113_room_music_lucky_gifts.sql','utf8'));
  const [replayedMigration]=await root.query<mysql.RowDataPacket[]>('SELECT COUNT(*) n FROM lucky_gift_results');assert.equal(Number(replayedMigration[0].n),24);
  const music=await partyMusic(host,{roomCode:code,action:'local-start',fileName:'Local tune.mp3'});assert.equal(music.state?.sourceKind,'LOCAL_PCM');assert.equal(music.state?.controllerId,host.publicId);assert(music.state?.playing);
+ await root.execute('UPDATE live_room_members SET muted=TRUE WHERE room_id=? AND application_user_id=?',[room,host.userId]);
+ const transport=await syncPartyMicrophone(code,host.publicId,async s=>{assert(s.canPublish);assert.equal(s.muted,false);return true;});assert(transport.isParty);
+ await root.execute('UPDATE live_room_members SET muted_by_staff=TRUE WHERE room_id=? AND application_user_id=?',[room,host.userId]);
+ await syncPartyMicrophone(code,host.publicId,async s=>{assert.equal(s.canPublish,false);assert(s.muted);return true;});
+ await assert.rejects(()=>partyMusic(host,{roomCode:code,action:'resume',generation:music.state!.generation}),/authorized microphone/);
+ await root.execute('UPDATE live_room_members SET muted_by_staff=FALSE WHERE room_id=? AND application_user_id=?',[room,host.userId]);
  const generation=music.state!.generation;
  await assert.rejects(()=>partyMusic(guest,{roomCode:code,action:'local-start',fileName:'Hijack.mp3'}),/Only the Host/);
  await assert.rejects(()=>partyMusic(host,{roomCode:code,action:'local-start',fileName:'/private/path.mp3'}),/file name/);

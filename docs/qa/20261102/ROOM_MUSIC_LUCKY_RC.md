@@ -16,7 +16,7 @@ LiveKit microphone publication → SFU → subscribers. There is no local speake
 player, acoustic loopback, extra room, camera replacement or audio publication.
 The source is added after microphone AEC/NS/AGC. Speech stays available; logical
 mic mute gates only speech while the SDK publication carries music. Stop restores
-SDK mute before removing that gate. Decoder buffers stop even if transport cleanup
+SDK mute before removing that gate. Party self-mute sync preserves only an authorized, leased music source; staff mute still revokes all publishing. The existing room audio publication uses an Opus 96 kbps ceiling with DTX off so injected music is not treated as speech silence. Decoder buffers stop even if transport cleanup
 fails. One serialized native source prevents disposal of an old room from stopping
 a newer source. File paths never leave the device; server stores display names.
 
@@ -110,7 +110,7 @@ The signed TEST APK uses `tool/owner_music_lucky_staging.dart`: a clearly labell
 local account selector opens the full app with disposable Party Host, Face Host
 or sender/viewer sessions. No production credentials or LiveKit API secret are
 compiled. Loopback API 127.0.0.1:3998 and SFU 127.0.0.1:7880 require ADB reverse
-from this Mac; WebRTC UDP advertises the Mac LAN address. Plaintext signaling is
+from this Mac; The local SFU enables loopback ICE candidates and uses ADB-reversed TCP 7881; the initial LAN/NAT path was unreliable for this full-app harness. This changes only the local QA server, not production. Plaintext signaling is
 restricted to this local test entry. Production main.dart and secure token rules
 remain unchanged. This test artifact is not a public production distribution.
 Source/config for the prepared local fixtures remains in protected /tmp files;

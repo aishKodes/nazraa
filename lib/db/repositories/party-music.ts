@@ -8,13 +8,13 @@ export type MusicAction='state'|'search'|'play'|'local-start'|'pause'|'resume'|'
 export async function partyMusic(identity:MobileIdentity,input:{roomCode:string;action:MusicAction;trackId?:string;query?:string;fileName?:string;generation?:number}){
  return withTransaction(async c=>{
   const [members]=await c.query<RowDataPacket[]>(`SELECT r.id,r.room_type,r.host_application_user_id,m.room_role,m.media_role,
-    EXISTS(SELECT 1 FROM party_room_admins a WHERE a.room_id=r.id AND a.application_user_id=m.application_user_id AND a.revoked_at IS NULL) permanent_admin
+    m.muted_by_staff,EXISTS(SELECT 1 FROM party_room_admins a WHERE a.room_id=r.id AND a.application_user_id=m.application_user_id AND a.revoked_at IS NULL) permanent_admin
     FROM live_rooms r JOIN live_room_members m ON m.room_id=r.id AND m.application_user_id=? AND m.left_at IS NULL
     WHERE r.room_code=? AND r.status IN ('ACTIVE','LOCKED') FOR UPDATE`,[identity.userId,input.roomCode]);
   const member=members[0];if(!member)throw Error('Join this room to use music.');
   const owner=String(member.host_application_user_id)===identity.userId;
   const edit=owner||(member.room_type==='PARTY'&&member.permanent_admin);
-  const canStart=Boolean(edit&&['HOST','PARTY_OWNER','RTC_SPEAKER'].includes(member.media_role));
+  const canStart=Boolean(edit&&!member.muted_by_staff&&['HOST','PARTY_OWNER','RTC_SPEAKER'].includes(member.media_role));
   const [prior]=await c.query<RowDataPacket[]>('SELECT *,CURRENT_TIMESTAMP(3) server_now FROM party_room_music WHERE room_id=? FOR UPDATE',[member.id]);let old=prior[0];
   if(old?.source_kind==='LOCAL_PCM'&&old.lease_expires_at&&new Date(old.lease_expires_at)<new Date(old.server_now)){
     await c.execute('UPDATE party_room_music SET playing=FALSE,track_key=NULL,controller_user_id=NULL,version=version+1 WHERE room_id=?',[member.id]);old={...old,playing:false,track_key:null,controller_user_id:null} as RowDataPacket;
