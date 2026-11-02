@@ -2,15 +2,16 @@ import {randomInt} from 'node:crypto';
 import {mobileGamesConfig,type ConfigurableGameId,type GameRuntimeConfig} from './game-config';
 
 export {gameNames} from './game-names';
-export type EconomyDraft={enabled:boolean;maintenance:boolean;minimumBet:number;maximumBet:number;maximumPayoutMultiplier:number;payoutScalePpm:number;outcomeWeights?:number[];sideBetPayoutScalePpm?:number;saladWeight?:number;pizzaWeight?:number;poolContributionBps?:number;poolMinimumForSpecial?:number};
+export type EconomyDraft={enabled:boolean;maintenance:boolean;minimumBet:number;maximumBet:number;maximumPayoutMultiplier:number;payoutScalePpm:number;outcomeWeights?:number[];sideBetPayoutScalePpm?:number;saladWeight?:number;pizzaWeight?:number;poolContributionBps?:number;poolMinimumForSpecial?:number;princessServiceFeeBps?:number};
 export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,draft:EconomyDraft){
   if(typeof draft.enabled!=='boolean'||typeof draft.maintenance!=='boolean')throw new Error('Choose valid availability.');
   for(const [key,min,max] of [['minimumBet',1,50_000_000],['maximumBet',1,game==='lion_vs_tiger'?Number.MAX_SAFE_INTEGER:50_000_000],['payoutScalePpm',1,5_000_000]] as const){
     const n=draft[key];if(!Number.isSafeInteger(n)||n<min||n>max)throw new Error('Choose valid game limits and payout scale.');
   }
   if(!Number.isFinite(draft.maximumPayoutMultiplier)||draft.maximumPayoutMultiplier<1||draft.maximumPayoutMultiplier>1000||draft.maximumBet<draft.minimumBet)throw new Error('Choose valid game limits.');
-  if(game==='teen_patti'&&(draft.minimumBet!==100||draft.maximumPayoutMultiplier!==3||draft.payoutScalePpm!==1_000_000))throw new Error('Princess must retain exactly 3.00× gross and its 3% fee.');
+  if(game==='teen_patti'&&(draft.minimumBet!==100||draft.maximumPayoutMultiplier!==3||draft.payoutScalePpm!==1_000_000))throw new Error('Princess must retain exactly 3.00× gross; change its published service fee instead.');
   if(game==='lion_vs_tiger'&&(draft.minimumBet!==1||draft.maximumBet!==Number.MAX_SAFE_INTEGER||draft.maximumPayoutMultiplier!==30||draft.payoutScalePpm!==1_000_000))throw new Error('Lion Vs Tiger has a protected fixed paytable and unrestricted stake sizing.');
+  if(draft.princessServiceFeeBps!==undefined&&(game!=='teen_patti'||!Number.isSafeInteger(draft.princessServiceFeeBps)||draft.princessServiceFeeBps<0||draft.princessServiceFeeBps>2500))throw new Error('Choose a valid Princess service fee (0–2500 basis points).');
   const adjustableWeights=game==='luck77'||game==='bounty_football';
   if(draft.outcomeWeights!==undefined){
     if(!adjustableWeights||draft.outcomeWeights.length!==(game==='luck77'?3:10)||draft.outcomeWeights.some(n=>!Number.isSafeInteger(n)||n<0||n>1_000_000)||!draft.outcomeWeights.some(n=>n>0))throw new Error('Choose valid outcome weights for this game.');
@@ -25,6 +26,7 @@ export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,d
   if(game!=='lion_vs_tiger' && (next.maximumBet!==current.maximumBet||next.maximumPayoutMultiplier!==current.maximumPayoutMultiplier||next.payoutScalePpm!==current.payoutScalePpm) &&
     next.maximumBet*next.maximumPayoutMultiplier>1_250_000_000)
     throw new Error('Choose limits whose maximum round return fits the existing 1,250,000,000-Coin settlement limit.');
+  if(game==='teen_patti'){next.princessPreviewQuotes=false;next.princessServiceFeeBps=draft.princessServiceFeeBps??current.princessServiceFeeBps??300;next.targetRtp=1-next.princessServiceFeeBps/10000;next.denominations=[100,1000,10000,100000];}
   return mobileGamesConfig({games:{[game]:next}}).games[game];
 }
 
@@ -42,7 +44,7 @@ export function economyModel(game:ConfigurableGameId,c:GameRuntimeConfig){
   const scale=game==='teen_patti'||game==='lion_vs_tiger'?1:c.payoutScalePpm/1_000_000;
   const areas=multipliers.map((m,i)=>{
     const gross=game==='teen_patti'||game==='lion_vs_tiger'?m:Math.min(m*scale,c.maximumPayoutMultiplier);
-    const fee=game==='teen_patti'?.03:game==='lion_vs_tiger'?0:(c.settlementDeductionRate??.01);
+    const fee=game==='teen_patti'?(c.princessServiceFeeBps??300)/10000:game==='lion_vs_tiger'?0:(c.settlementDeductionRate??.01);
     const net=gross*(gross>1?1-fee:1);
     return {label:labels[i],probability:weights[i]/total,netReturn:net,rtp:weights[i]/total*net};
   });

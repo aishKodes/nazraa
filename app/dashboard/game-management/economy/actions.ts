@@ -13,7 +13,7 @@ function parse(form:FormData){
   if(!['ACTIVE','MAINTENANCE','DISABLED'].includes(String(form.get('availability'))))throw new Error('Choose valid availability.');
   const weights=String(form.get('outcomeWeights')??'').trim();
   if(weights){if(weights.split(',').some(n=>!n.trim()))throw new Error('Choose valid outcome weights.');draft.outcomeWeights=weights.split(',').map(n=>Number(n.trim()));}
-  for(const key of ['sideBetPayoutScalePpm','saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const)if(form.has(key))draft[key]=Number(form.get(key));
+  for(const key of ['princessServiceFeeBps','sideBetPayoutScalePpm','saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const)if(form.has(key))draft[key]=Number(form.get(key));
   return {game,draft};
 }
 function safeError(e:unknown){const message=e instanceof Error?e.message:'';return /^(Choose |Princess |Lion Vs Tiger |Maximum bet |Enter a change |Configuration changed|Only Master|Game settings|Multi-payline|Stateful|No verified)/.test(message)?message:'The game configuration could not be processed. Please retry.';}

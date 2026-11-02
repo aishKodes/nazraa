@@ -14,6 +14,7 @@ import {recordGameConfigVersion,requireGameEconomy} from './game-economy';
 export type MallCatalogType = "VIRTUAL_GIFT" | "ENTRY_FRAME" | "ENTRY_EFFECT" | "AVATAR_FRAME" | "PROFILE_EFFECT" | "CHAT_FRAME" | "MEDAL" | "BADGE";
 
 export type EffectAssetConfigInput = {
+  frameAnimationStyle?: "AUTO" | "GOLD_ROYAL" | "DIAMOND_BLUE" | "FIRE" | "NEON" | "DRAGON_VIP";
   width?: number;
   height?: number;
   durationMs: number;
@@ -86,6 +87,8 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
   const config = {
     accent: accentValue(input.accentHex),
     ...input.effectConfig,
+    ...(input.animation?.durationMs ? {durationMs: Math.max(250, Math.min(8000, input.animation.durationMs))} : {}),
+    ...(input.animation?.width ? {width: input.animation.width, height: input.animation.height} : {}),
     assetType: input.animation?.assetType ?? (visualUrl ? "STATIC_IMAGE" : "NONE"),
     ...(input.animation?.assetType==='PAG'?{minimumAppVersion:pagMinimumVersion(input.effectConfig.minimumAppVersion)}:{}),
     assetUrl: animationKey ?? visualUrl,
@@ -150,6 +153,8 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
       ...previousConfig,
       accent: accentValue(input.accentHex),
       ...input.effectConfig,
+    ...(input.animation?.durationMs ? {durationMs: Math.max(250, Math.min(8000, input.animation.durationMs))} : {}),
+    ...(input.animation?.width ? {width: input.animation.width, height: input.animation.height} : {}),
       assetType,
       ...(assetType==='PAG'?{minimumAppVersion:pagMinimumVersion(input.effectConfig.minimumAppVersion)}:{}),
       assetUrl: animationKey ?? visualUrl,

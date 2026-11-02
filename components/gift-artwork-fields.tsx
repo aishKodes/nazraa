@@ -62,11 +62,11 @@ export function GiftArtworkFields({
         style={preview ? { backgroundImage: `url(${JSON.stringify(preview)})` } : undefined}
       >{preview ? "" : "Choose item artwork"}</span>
     </label>}
-    <label>Animation <span>PAG up to 12 MB; Lottie, animated WebP, MP4 or WebM up to 3 MB</span>
+    <label>Animation <span>PAG up to 12 MB; Lottie, GIF, animated WebP, MP4 or WebM up to 3 MB</span>
       <input
         name="animation"
         type="file"
-        accept="application/json,.json,image/webp,video/mp4,video/webm,.webm,.pag,application/x-pag"
+        accept="application/json,.json,image/gif,.gif,image/webp,video/mp4,video/webm,.webm,.pag,application/x-pag"
         onChange={(event) => {
           const file = event.target.files?.[0];
           if (!file) return;
@@ -74,7 +74,7 @@ export function GiftArtworkFields({
           const next = URL.createObjectURL(file);
           setAnimationObjectUrl(next);
           setAnimationPreview(next);
-          setAnimationPreviewType(file.name.toLowerCase().endsWith('.pag')?'PAG':file.type.startsWith("video/") ? "VIDEO" : file.type === "image/webp" ? "ANIMATED_WEBP" : "LOTTIE");
+          setAnimationPreviewType(file.name.toLowerCase().endsWith('.pag')?'PAG':file.type.startsWith("video/") ? "VIDEO" : ["image/webp", "image/gif"].includes(file.type) ? "ANIMATED_WEBP" : "LOTTIE");
         }}
       />
       {animationPreview ? <span className="effect-file-preview">
@@ -88,6 +88,12 @@ export function GiftArtworkFields({
     {currentAnimationKey ? <label className="checkbox-row">
       <input name="removeAnimation" type="checkbox" value="true" /> Remove current animation
     </label> : null}
+    <label>Frame motion style
+      <select name="frameAnimationStyle" defaultValue={configured("frameAnimationStyle", "AUTO").toUpperCase()}>
+        <option value="AUTO">Automatic from equipped frame</option><option value="GOLD_ROYAL">Gold Royal</option><option value="DIAMOND_BLUE">Diamond Blue</option><option value="FIRE">Fire</option><option value="NEON">Neon</option><option value="DRAGON_VIP">Dragon / VIP</option>
+      </select>
+      <small>Decorates entitled avatar frames only; does not grant an item or change roles.</small>
+    </label>
     <label>Presentation tier
       <select name="presentationTier" defaultValue={configured("presentationTier", "MEDIUM").toUpperCase()}>
         <option value="SMALL">Small</option><option value="MEDIUM">Medium</option><option value="PREMIUM">Premium</option><option value="ULTRA">Ultra / special</option>

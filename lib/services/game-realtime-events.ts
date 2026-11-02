@@ -14,8 +14,11 @@ export type SharedGameRealtimeState = {
     bettingEndsAt: string;
     resultCommittedAt: string;
     resultVersion: number;
+    configVersion?: number;
   };
   outcome: Record<string, unknown> | null;
+  winningItemId?: string;
+  settlementStatus?: 'RESULT_COMMITTED';
 };
 
 let publisher: RedisClientType | undefined;

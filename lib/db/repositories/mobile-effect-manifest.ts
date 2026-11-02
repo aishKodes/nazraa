@@ -20,6 +20,7 @@ type AssetRow = RowDataPacket & {
   id: string;
   byte_size: number;
   checksum_sha256: string;
+  mime_type: string;
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -71,7 +72,7 @@ export async function mobileEffectManifest() {
   if (assetIds.size) {
     const ids = [...assetIds];
     const [assets] = await db().query<AssetRow[]>(
-      `SELECT id, byte_size, checksum_sha256
+      `SELECT id, byte_size, checksum_sha256, mime_type
          FROM gift_assets
         WHERE id IN (${ids.map(() => "?").join(",")})`,
       ids,
@@ -98,6 +99,11 @@ export async function mobileEffectManifest() {
       assetConfig: {
         ...config,
         assetType: typeof config.assetType==='string'?config.assetType:null,
+        // Only validated, Control-owned video blobs get this permission. The
+        // mobile renderer keeps all opaque video inside a bounded surface.
+        ...(primary && ['video/mp4','video/webm'].includes(primary.mime_type)?{
+          assetType:'VIDEO',videoPresentation:'BOUNDED_CINEMATIC',displayRegion:'LOWER_VIDEO',position:'BOTTOM',
+        }:{}),
         assetUrl: primaryUrl,
         previewUrl,
         fallbackVisualUrl: previewUrl,
@@ -119,7 +125,7 @@ export async function mobileEffectManifest() {
     };
   });
   const manifestVersion = createHash("sha256")
-    .update(effects.map((effect) => `${effect.id}:${effect.assetConfig.assetVersion}`).join("|"))
+    .update(JSON.stringify(effects))
     .digest("hex")
     .slice(0, 20);
   return { manifestVersion, effects };

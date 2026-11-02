@@ -800,6 +800,7 @@ function catalogArtworkOptions(catalogType: string) {
 }
 
 const effectFields = {
+  frameAnimationStyle: z.enum(["AUTO", "GOLD_ROYAL", "DIAMOND_BLUE", "FIRE", "NEON", "DRAGON_VIP"]).default("AUTO"),
   effectWidth: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.coerce.number().int().min(1).max(1920).optional(),
@@ -839,6 +840,7 @@ function effectConfigFrom(
   input: z.infer<z.ZodObject<typeof effectFields>>,
 ): EffectAssetConfigInput {
   return {
+    frameAnimationStyle: input.frameAnimationStyle,
     width: input.effectWidth,
     height: input.effectHeight,
     durationMs: input.durationMs,

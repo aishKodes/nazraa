@@ -3,6 +3,7 @@ import {evaluateChairHand,teenPattiChairs,teenPattiCard,chairSettlement} from '.
 
 export const princessQuoteRules='PRINCESS_PUBLIC_CARD_QUOTE_V3';
 export const princessFixedQuoteRules='PRINCESS_PUBLIC_CARD_FIXED_3X_V4';
+export const princessHiddenConfigRules='PRINCESS_HIDDEN_FIXED_3X_V5';
 export function isPrincessQuotedRules(value:unknown){
   return value===princessQuoteRules || value===princessFixedQuoteRules;
 }
@@ -85,6 +86,14 @@ export function princessFixedQuote(publicCards:readonly number[]):PrincessQuote 
     totalCompletions:0,grossMultiplierPpm:[3_000_000,3_000_000,3_000_000],
     targetRtpPpm:970_000,feeBps:300,maximumMultiplier:3};
 }
+/** Equal fixed returns require hidden cards during wagering. Fee is published
+ * before the round and committed with the fair deck, never selected from bets. */
+export function princessHiddenQuote(feeBps:number):PrincessQuote {
+  if(!Number.isSafeInteger(feeBps)||feeBps<0||feeBps>2500)throw Error('Invalid Princess service fee.');
+  return {rulesVersion:princessHiddenConfigRules,publicCards:[],winCompletions:[],
+    totalCompletions:0,grossMultiplierPpm:[3_000_000,3_000_000,3_000_000],
+    targetRtpPpm:(10000-feeBps)*100,feeBps,maximumMultiplier:3};
+}
 export function commitPrincessQuote(hands:unknown,quote:PrincessQuote,nonce=randomBytes(32).toString('hex')){
   // MySQL JSON reorders object keys. Canonicalize recursively so the public
   // proof survives durable round trips without changing a single value.
@@ -107,11 +116,13 @@ export function quotedPrincessSettlement(bets:Record<string,number>,winner:strin
 }
 export function princessSettlement(bets:Record<string,number>,outcome:Record<string,unknown>){
  const validated=chairSettlement(bets,String(outcome.winner));
- if(!isPrincessQuotedRules(outcome.rulesVersion))return validated;
+ const hidden=outcome.rulesVersion===princessHiddenConfigRules;
+ if(!hidden&&!isPrincessQuotedRules(outcome.rulesVersion))return validated;
  const quote=outcome.pricing as PrincessQuote;
  if(!quote || quote.rulesVersion!==outcome.rulesVersion || quote.grossMultiplierPpm?.length!==3 ||
-   quote.grossMultiplierPpm.some(v=>!Number.isSafeInteger(v)||v<1||v>1_000_000_000) || quote.feeBps!==300 ||
-   (outcome.rulesVersion===princessFixedQuoteRules && (quote.maximumMultiplier!==3 || quote.grossMultiplierPpm.some(v=>v!==3_000_000))) ||
+   quote.grossMultiplierPpm.some(v=>!Number.isSafeInteger(v)||v<1||v>1_000_000_000) ||
+   (hidden?(!Number.isSafeInteger(quote.feeBps)||quote.feeBps<0||quote.feeBps>2500||quote.publicCards.length!==0):quote.feeBps!==300) ||
+   ((hidden||outcome.rulesVersion===princessFixedQuoteRules) && (quote.maximumMultiplier!==3 || quote.grossMultiplierPpm.some(v=>v!==3_000_000))) ||
    typeof outcome.nonce!=='string' || commitPrincessQuote(outcome.hands,quote,outcome.nonce).commitment!==outcome.commitment)
    throw new Error('The Princess round commitment is invalid.');
  return {wager:validated.wager,...quotedPrincessSettlement(bets,String(outcome.winner),quote)};

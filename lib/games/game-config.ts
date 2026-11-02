@@ -44,6 +44,8 @@ export type GameRuntimeConfig = {
   poolContributionBps?: number;
   poolMinimumForSpecial?: number;
   princessPreviewQuotes?: boolean;
+  /** Princess only; frozen per round. Missing historical values mean 3%. */
+  princessServiceFeeBps?: number;
 };
 
 export type MobileGamesConfig = {
@@ -303,10 +305,11 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       poolMinimumForSpecial: integer(stored.poolMinimumForSpecial, fallback.poolMinimumForSpecial ?? 0, 0, 1_000_000_000),
       ...(id === 'teen_patti' ? {
         princessPreviewQuotes: stored.princessPreviewQuotes===true,
-        targetRtp: stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):.97,
+        princessServiceFeeBps: integer(stored.princessServiceFeeBps,300,0,2500),
+        targetRtp: stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
         payoutScalePpm: 1_000_000,
         maximumPayoutMultiplier: 3,
-        minimumBet: 100, denominations: [100,500,1000,5000],
+        minimumBet: 100, denominations: [100,1000,10000,100000],
         outcomeWeights: undefined, autoPlay: false,
       } : {}),
       ...(id === 'lion_vs_tiger' ? {

@@ -53,6 +53,12 @@ export function dealChairRound(){
  * versions. V2 omits cards: old APKs index any non-null array. */
 export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
+ if(outcome.rulesVersion==='PRINCESS_HIDDEN_FIXED_3X_V5'&&quote){
+  const hands=outcome.hands as {cards:number[]}[];
+  return {payoutVersion:outcome.rulesVersion,feeBps:quote.feeBps,
+   grossMultiplierPpm:quote.grossMultiplierPpm,targetRtpPpm:quote.targetRtpPpm,
+   ...(bettingClosed?{cards:hands.map(h=>h.cards[0])}:{})};
+ }
  if(quote && ['PRINCESS_PUBLIC_CARD_QUOTE_V3','PRINCESS_PUBLIC_CARD_FIXED_3X_V4'].includes(String(outcome.rulesVersion)) && quote.rulesVersion===outcome.rulesVersion){
   // Keep the preview protocol understood by installed V3 APKs. The separate
   // payout version identifies the immutable V4 paytable, not a new card UI.

@@ -32,7 +32,7 @@ import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig,effectiveMobileGamesConfig,snapshotGameConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import {TEEN_PATTI_ID,dealChairRound,chairPreview,teenPattiChairs} from '@/lib/games/teen-patti';
-import {isPrincessQuotedRules,princessFixedQuoteRules,princessFixedQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
+import {isPrincessQuotedRules,princessFixedQuoteRules,princessFixedQuote,princessHiddenConfigRules,princessHiddenQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
@@ -1916,7 +1916,10 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
   if (game === LION_VS_TIGER_ID) return dealLionTigerOutcome();
   if(game===TEEN_PATTI_ID){
     const dealt=dealChairRound();
-    if(!config.princessPreviewQuotes)return dealt;
+    if(!config.princessPreviewQuotes){
+      const pricing=princessHiddenQuote(config.princessServiceFeeBps??300);
+      return {...dealt,rulesVersion:princessHiddenConfigRules,serviceFeePercent:pricing.feeBps/100,pricing,...commitPrincessQuote(dealt.hands,pricing)};
+    }
     const pricing=princessFixedQuote(dealt.hands.map(h=>h.cards[0]));
     return {...dealt,rulesVersion:princessFixedQuoteRules,multiplier:3,pricing,...commitPrincessQuote(dealt.hands,pricing)};
   }
@@ -2180,8 +2183,10 @@ function sharedGameRealtimeState(round: SharedRoundRow, now: Date): SharedGameRe
       bettingEndsAt: new Date(round.betting_ends_at).toISOString(),
       resultCommittedAt: new Date(round.result_committed_at ?? round.drawing_ends_at).toISOString(),
       resultVersion: Number(round.result_version ?? 1),
+      configVersion: Number(round.config_version ?? 0),
     },
     outcome: reveal ? asObject(round.outcome_json) : null,
+    ...(reveal?{winningItemId:sharedWinningItemId(round.game_name,asObject(round.outcome_json)),settlementStatus:'RESULT_COMMITTED' as const}:{}),
   };
 }
 
@@ -2242,7 +2247,7 @@ async function settleMaturedSharedRounds(
       ),
       gameConfig,
     );
-    const deductionRate = game===LION_VS_TIGER_ID ? 0 : game===TEEN_PATTI_ID ? 0.03 : gameConfig.settlementDeductionRate??gameEconomyRules(settings).winningsDeductionRate;
+    const deductionRate = game===LION_VS_TIGER_ID ? 0 : game===TEEN_PATTI_ID ? Number(asObject(finalizedOutcome.pricing).feeBps??300)/10000 : gameConfig.settlementDeductionRate??gameEconomyRules(settings).winningsDeductionRate;
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
     const deduction = game===TEEN_PATTI_ID

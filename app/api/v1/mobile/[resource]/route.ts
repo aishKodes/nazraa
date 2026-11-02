@@ -1,3 +1,4 @@
+import {recordLiveStartDenial,liveStartReasons} from '@/lib/services/live-start-reason';
 import {claimRandomPkReward} from "@/lib/db/repositories/mobile-rewards";
 import { after, NextResponse } from "next/server";
 import { z } from "zod";
@@ -228,6 +229,7 @@ function errorResponse(error: unknown, status = 400) {
       message: hideInternalDetails
         ? "Nazraa is reconnecting to the server. Please retry."
         : rawMessage,
+      ...((error as {liveStartReason?:string})?.liveStartReason && liveStartReasons.includes((error as {liveStartReason:string}).liveStartReason as typeof liveStartReasons[number]) ? {reasonCode:(error as {liveStartReason:string}).liveStartReason}:{}),
       ...(accessDenied
         ? {
             code: error.accessCode,
@@ -1135,7 +1137,7 @@ export async function POST(
             if (faceStart)
               after(() => recordFaceLiveStartOutcome("FAILURE", "ELIGIBILITY"));
             return errorResponse(
-              new Error("Your role cannot start this room type."),
+              recordLiveStartDenial(new Error("Your role cannot start this room type."),parsed.kind,identity.role),
               403,
             );
           }
@@ -1145,7 +1147,7 @@ export async function POST(
           ) {
             after(() => recordFaceLiveStartOutcome("FAILURE", "VERIFICATION"));
             return errorResponse(
-              new Error("Verified Face Live access is required."),
+              recordLiveStartDenial(new Error("Verified Face Live access is required."),parsed.kind,identity.role),
               403,
             );
           }
@@ -1161,6 +1163,7 @@ export async function POST(
           if (faceStart) after(() => recordFaceLiveStartOutcome("SUCCESS"));
           return NextResponse.json(result, { status: 201 });
         } catch (error) {
+          recordLiveStartDenial(error,parsed.kind,identity.role);
           if (faceStart) {
             const category = classifyFaceLiveStartFailure(error);
             after(() => recordFaceLiveStartOutcome("FAILURE", category));

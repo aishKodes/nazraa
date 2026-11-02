@@ -22,6 +22,9 @@ export type PreparedPublicEffect = {
   originalName: string;
   extension: "json" | "webp" | "mp4" | "webm" | "pag";
   assetType: "LOTTIE" | "ANIMATED_WEBP" | "VIDEO" | "PAG";
+  width?: number;
+  height?: number;
+  durationMs?: number;
 };
 
 export type PreparedPublicSound = {
@@ -166,6 +169,24 @@ export async function preparePublicEffect(
     if(data.length<8 || data.subarray(0,3).toString('ascii')!=='PAG' || !['','application/octet-stream','application/x-pag'].includes(file.type)) throw new Error(`${label} PAG data is invalid.`);
     return {mimeType:'application/octet-stream',data,byteSize:data.length,originalName:`${safeStem(file.name,'effect')}.pag`,extension:'pag',assetType:'PAG'};
   }
+  if (lowerName.endsWith(".gif")) {
+    if (!["image/gif", ""].includes(file.type) || !["GIF87a", "GIF89a"].includes(data.subarray(0, 6).toString("ascii"))) {
+      throw new Error(`${label} GIF data is invalid.`);
+    }
+    const source = sharp(data, { animated: true, limitInputPixels: 40_000_000 });
+    const metadata = await source.metadata();
+    const pages = metadata.pages ?? 1;
+    const frameHeight = metadata.pageHeight ?? metadata.height ?? 0;
+    const durationMs = (metadata.delay ?? []).reduce((sum, delay) => sum + Math.max(20, delay), 0);
+    if (!metadata.width || !frameHeight || metadata.width > 1920 || frameHeight > 1920 || pages > 240 || durationMs > 10000) {
+      throw new Error(`${label} GIF must fit 1920×1920, 240 frames and 10 seconds.`);
+    }
+    // Preserve alpha and frame timing; never turn raster animation into fake SVG/PAG.
+    const optimized = await source.resize({ width: 720, height: 720, fit: "inside", withoutEnlargement: true }).webp({ quality: 78, effort: 4, loop: 0 }).toBuffer();
+    if (optimized.length > maxBytes) throw new Error(`${label} is too large after optimization.`);
+    const output = await sharp(optimized, { animated: true }).metadata();
+    return { mimeType: "image/webp", data: optimized, byteSize: optimized.length, originalName: `${safeStem(file.name, "effect")}.webp`, extension: "webp", assetType: "ANIMATED_WEBP", width: output.width, height: output.pageHeight ?? output.height, durationMs: durationMs || undefined };
+  }
   if (lowerName.endsWith(".webp")) {
     if (file.type !== "image/webp" || detectedMime(data) !== "image/webp") {
       throw new Error(`${label} WebP data is invalid.`);
@@ -214,7 +235,7 @@ export async function preparePublicEffect(
     };
   }
 
-  throw new Error(`${label} must be PAG, Lottie JSON, animated WebP, MP4, or WebM.`);
+  throw new Error(`${label} must be PAG, Lottie JSON, GIF, animated WebP, MP4, or WebM.`);
 }
 
 /** Validate a short optional sound paired with a visual effect. */
