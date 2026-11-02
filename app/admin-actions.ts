@@ -866,6 +866,7 @@ export async function submitCreateGift(formData: FormData) {
         .max(80),
       name: z.string().trim().min(2).max(100),
       category: z.string().trim().min(2).max(60),
+      economyType:z.enum(["NORMAL","LUCKY"]).default("NORMAL"),
       catalogType: z.enum([
         "VIRTUAL_GIFT",
         "ENTRY_FRAME",
@@ -956,6 +957,7 @@ export async function submitGiftUpdate(formData: FormData) {
       id: z.string().uuid(),
       name: z.string().trim().min(2).max(100),
       category: z.string().trim().min(2).max(60),
+      economyType:z.enum(["NORMAL","LUCKY"]).default("NORMAL"),
       catalogType: z.enum([
         "VIRTUAL_GIFT",
         "ENTRY_FRAME",

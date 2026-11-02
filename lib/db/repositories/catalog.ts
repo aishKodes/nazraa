@@ -65,17 +65,17 @@ async function auditedMutation(input: { scope: Scope; action: string; module: st
 }
 
 export async function listGifts() {
-  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; catalog_type: string; emoji: string | null; coin_price: number; currency: string; validity_days: number; vip_tier_eligibility: number | null; sort_order: number; visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null; active: number; updated_at: string })[]>(
-    "SELECT id, gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, active, updated_at FROM gift_catalog ORDER BY active DESC, catalog_type, sort_order, coin_price, name",
+  const [rows] = await db().query<(RowDataPacket & { id: string; gift_key: string; name: string; category: string; catalog_type: string; economy_type:string; emoji: string | null; coin_price: number; currency: string; validity_days: number; vip_tier_eligibility: number | null; sort_order: number; visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null; active: number; updated_at: string })[]>(
+    "SELECT id, gift_key, name, category, catalog_type,economy_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, active, updated_at FROM gift_catalog ORDER BY active DESC, catalog_type, sort_order, coin_price, name",
   );
   return rows.map((row) => {
     let config: Record<string, unknown> = {};
     try { config = typeof row.asset_config === "string" ? JSON.parse(row.asset_config) as Record<string, unknown> : row.asset_config ?? {}; } catch { config = {}; }
-    return { id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type, emoji: row.emoji, coinPrice: Number(row.coin_price), currency: row.currency, validityDays: Number(row.validity_days), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), sortOrder: Number(row.sort_order), accentHex: `#${Number(config.accent ?? 0xff8a5cff).toString(16).slice(-6).padStart(6, "0")}`, visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: config, active: Boolean(row.active), updatedAt: row.updated_at };
+    return { id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type,economyType:row.economy_type, emoji: row.emoji, coinPrice: Number(row.coin_price), currency: row.currency, validityDays: Number(row.validity_days), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), sortOrder: Number(row.sort_order), accentHex: `#${Number(config.accent ?? 0xff8a5cff).toString(16).slice(-6).padStart(6, "0")}`, visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: config, active: Boolean(row.active), updatedAt: row.updated_at };
   });
 }
 
-export async function createGift(input: { scope: Scope; key: string; name: string; category: string; catalogType: MallCatalogType; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; effectConfig: EffectAssetConfigInput }) {
+export async function createGift(input: { scope: Scope; key: string; name: string; category: string; economyType?:"NORMAL"|"LUCKY"; catalogType: MallCatalogType; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; effectConfig: EffectAssetConfigInput }) {
   const id = randomUUID();
   const assetId = input.image ? randomUUID() : null;
   const animationAssetId = input.animation ? randomUUID() : null;
@@ -114,10 +114,11 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
       await connection.execute("INSERT INTO gift_assets (id, mime_type, image_data, byte_size, original_name, uploaded_by, checksum_sha256) VALUES (?, ?, ?, ?, ?, ?, ?)", [soundAssetId, input.sound.mimeType, input.sound.data, input.sound.byteSize, input.sound.originalName, input.scope.account.id, assetChecksum(input.sound.data)]);
     }
     await connection.execute("INSERT INTO gift_catalog (id, gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'COIN', ?, ?, ?, ?, ?, ?, ?)", [id, input.key, input.name, input.category, input.catalogType, input.emoji || null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.scope.account.id]);
+    await connection.execute('UPDATE gift_catalog SET economy_type=? WHERE id=?',[input.catalogType==='VIRTUAL_GIFT'&&input.economyType==='LUCKY'?'LUCKY':'NORMAL',id]);
   } });
 }
 
-export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; catalogType: MallCatalogType; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; removeAnimation?: boolean; removeSound?: boolean; effectConfig: EffectAssetConfigInput; reason: string }) {
+export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; economyType?:"NORMAL"|"LUCKY"; catalogType: MallCatalogType; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; removeAnimation?: boolean; removeSound?: boolean; effectConfig: EffectAssetConfigInput; reason: string }) {
   await auditedMutation({ scope: input.scope, action: "gift.update", module: "gifts", targetType: "gift", targetId: input.id, reason: input.reason, run: async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null })[]>("SELECT visual_url, animation_key, asset_config FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
     if (!rows[0]) throw new Error("Gift was not found.");
@@ -176,6 +177,7 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
       "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, validity_days = ?, vip_tier_eligibility = ?, sort_order = ?, visual_url = ?, animation_key = ?, asset_config = ? WHERE id = ?",
       [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.id],
     );
+    await connection.execute('UPDATE gift_catalog SET economy_type=? WHERE id=?',[input.catalogType==='VIRTUAL_GIFT'&&input.economyType==='LUCKY'?'LUCKY':'NORMAL',input.id]);
   } });
 }
 

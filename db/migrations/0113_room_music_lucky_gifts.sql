@@ -1,0 +1,27 @@
+-- Additive only; activation and weights remain in canonical Master settings.
+SET @schema_name=DATABASE();
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='gift_catalog' AND COLUMN_NAME='economy_type')=0;
+SET @ddl=IF(@missing,'ALTER TABLE gift_catalog ADD COLUMN economy_type VARCHAR(16) NOT NULL DEFAULT ''NORMAL''','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+UPDATE gift_catalog SET economy_type='LUCKY' WHERE @missing AND catalog_type='VIRTUAL_GIFT' AND LOWER(TRIM(category))='lucky';
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='live_room_gift_events' AND COLUMN_NAME='gift_economy_type')=0;
+SET @ddl=IF(@missing,'ALTER TABLE live_room_gift_events ADD COLUMN gift_economy_type VARCHAR(16) NOT NULL DEFAULT ''NORMAL''','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='party_room_music' AND COLUMN_NAME='source_kind')=0;
+SET @ddl=IF(@missing,'ALTER TABLE party_room_music ADD COLUMN source_kind VARCHAR(16) NOT NULL DEFAULT ''BUNDLED''','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='party_room_music' AND COLUMN_NAME='display_name')=0;
+SET @ddl=IF(@missing,'ALTER TABLE party_room_music ADD COLUMN display_name VARCHAR(128) NULL','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='party_room_music' AND COLUMN_NAME='controller_user_id')=0;
+SET @ddl=IF(@missing,'ALTER TABLE party_room_music ADD COLUMN controller_user_id CHAR(36) NULL','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='party_room_music' AND COLUMN_NAME='publication_generation')=0;
+SET @ddl=IF(@missing,'ALTER TABLE party_room_music ADD COLUMN publication_generation BIGINT UNSIGNED NOT NULL DEFAULT 0','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @missing=(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=@schema_name AND TABLE_NAME='party_room_music' AND COLUMN_NAME='lease_expires_at')=0;
+SET @ddl=IF(@missing,'ALTER TABLE party_room_music ADD COLUMN lease_expires_at DATETIME(3) NULL','SELECT 1');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;
+SET @event_type=(SELECT CONCAT('CHAR(36) CHARACTER SET ',CHARACTER_SET_NAME,' COLLATE ',COLLATION_NAME) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='live_room_gift_events' AND COLUMN_NAME='id');
+SET @ddl=CONCAT('CREATE TABLE IF NOT EXISTS lucky_gift_results (gift_event_id ',@event_type,' PRIMARY KEY, gross_coins BIGINT UNSIGNED NOT NULL, receiver_diamonds BIGINT UNSIGNED NOT NULL, company_allocation BIGINT UNSIGNED NOT NULL, won BOOLEAN NOT NULL, tier_id VARCHAR(40) NOT NULL, multiplier_bps INT UNSIGNED NOT NULL, reward_coins BIGINT UNSIGNED NOT NULL, sender_balance_before BIGINT UNSIGNED NOT NULL, sender_balance_after BIGINT UNSIGNED NOT NULL, policy_snapshot JSON NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), CONSTRAINT fk_lucky_gift_event FOREIGN KEY(gift_event_id) REFERENCES live_room_gift_events(id), INDEX ix_lucky_created(created_at))');
+PREPARE s FROM @ddl; EXECUTE s; DEALLOCATE PREPARE s;

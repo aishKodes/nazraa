@@ -34,6 +34,7 @@ export default async function GiftsPage({ searchParams }: { searchParams: Promis
       description="Manage gifts and entitlement-driven cosmetics without an APK release. Prices, validity, VIP grants, order and uploaded artwork are server controlled."
       action={manage ? <a className="primary-button" href="#new-gift"><Plus size={16} />New item</a> : undefined}
     />
+    {scope.account.role==="MASTER"?<p><a href="/dashboard/lucky-gifts">Lucky Gift policy, weights and internal accounting</a></p>:null}
     {success ? <Notice type="success">{success}</Notice> : null}
     {error ? <Notice type="error">{error}</Notice> : null}
     {manage ? <Card className="create-panel">
@@ -45,6 +46,7 @@ export default async function GiftsPage({ searchParams }: { searchParams: Promis
             <label>Type<select name="catalogType" defaultValue="VIRTUAL_GIFT" required><TypeOptions /></select></label>
             <label>Name<input name="name" required /></label>
             <label>Category<input name="category" required placeholder="Premium" /></label>
+            <label>Gift economy<select name="economyType" defaultValue="NORMAL"><option value="NORMAL">Normal</option><option value="LUCKY">Lucky</option></select></label>
             <label>Coin price<input name="coinPrice" type="number" min="1" required /></label>
             <label>Validity (days)<input name="validityDays" type="number" min="1" max="3650" defaultValue="30" required /></label>
             <label>VIP grant from tier <span>(optional)</span><select name="vipTierEligibility" defaultValue=""><option value="">Mall purchase only</option>{[1, 2, 3, 4, 5].map((tier) => <option key={tier} value={tier}>VIP {tier}+</option>)}</select></label>
@@ -75,7 +77,7 @@ export default async function GiftsPage({ searchParams }: { searchParams: Promis
             <input type="hidden" name="id" value={gift.id} />
             <label>Name<input name="name" defaultValue={gift.name} required /></label>
             <label>Type<select name="catalogType" defaultValue={gift.catalogType} required><TypeOptions /></select></label>
-            <label>Category<input name="category" defaultValue={gift.category} required /></label>
+            <label>Category<input name="category" defaultValue={gift.category} required /></label><label>Gift economy<select name="economyType" defaultValue={gift.economyType}><option value="NORMAL">Normal</option><option value="LUCKY">Lucky</option></select></label>
             <label>Coin price<input name="coinPrice" type="number" min="1" defaultValue={gift.coinPrice} required /></label>
             <label>Validity (days)<input name="validityDays" type="number" min="1" max="3650" defaultValue={gift.validityDays} required /></label>
             <label>VIP grant from tier<select name="vipTierEligibility" defaultValue={gift.vipTierEligibility ?? ""}><option value="">Mall purchase only</option>{[1, 2, 3, 4, 5].map((tier) => <option key={tier} value={tier}>VIP {tier}+</option>)}</select></label>

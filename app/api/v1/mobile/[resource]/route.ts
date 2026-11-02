@@ -610,9 +610,9 @@ export async function POST(
       }
       const body = await request.json();
       if(resource==='party-music') {
-        const parsed=z.object({roomCode:z.string().min(3).max(80),action:z.enum(['state','search','play','pause','resume','stop']),trackId:z.string().max(40).optional(),query:z.string().max(120).optional()}).parse(body);
+        const parsed=z.object({roomCode:z.string().min(3).max(80),action:z.enum(['state','search','play','local-start','pause','resume','stop','heartbeat']),trackId:z.string().max(40).optional(),query:z.string().max(120).optional(),fileName:z.string().trim().min(1).max(128).optional(),generation:z.number().int().nonnegative().optional()}).parse(body);
         const result=await partyMusic(identity,parsed);
-        if(!['state','search'].includes(parsed.action))notifyRoom(parsed.roomCode,'settings');
+        if(!['state','search','heartbeat'].includes(parsed.action))notifyRoom(parsed.roomCode,'settings');
         return NextResponse.json(result,{headers:{'Cache-Control':'private, no-store'}});
       }
       if (resource === 'party-coin-reward') {
@@ -1684,6 +1684,7 @@ export async function POST(
             giftId: z.string().trim().min(1).max(80),
             recipientPublicId: z.string().regex(/^\d+$/),
             recipientMode: z.enum(["SINGLE", "ALL"]).optional(),
+            expectedRecipientPublicIds:z.array(z.string().regex(/^\d+$/)).min(1).max(20).optional(),
             quantity: z.number().int().min(1).max(99),
           })
           .parse(body);

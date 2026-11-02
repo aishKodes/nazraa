@@ -441,8 +441,9 @@ async function main() {
       };
     }
     const owner = await user("QA Room Owner");
-    if(process.env.NAZRAA_QA_ONLY_OWNER_UPDATE==='1'){
+    if(process.env.NAZRAA_QA_ONLY_OWNER_UPDATE==='1'||process.env.NAZRAA_QA_ONLY_MUSIC_LUCKY==='1'){
       const preview=await (await import('./owner-party-pk-staging-tests')).verifyOwnerPartyPkStaging(root,user,master);
+      if(process.env.NAZRAA_QA_ONLY_MUSIC_LUCKY==='1')await (await import('./music-lucky-tests')).verifyMusicLucky(root,user,master);
       if(process.env.NAZRAA_QA_KEEP==='1'){
         const fixtures=[];
         for(const identity of [preview.partySender,preview.partyHost,preview.faceHost,preview.faceSender,preview.rewardHost]){

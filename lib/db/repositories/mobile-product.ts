@@ -1,4 +1,5 @@
 import "server-only";
+import {luckyPolicy,drawLucky,type LuckyPolicy} from "@/lib/policy/lucky-gifts";
 import {giftSettlementPolicy} from "@/lib/policy/gift-settlement-policy";
 import {closePartyBoardSegments} from './party-board-history';
 import { saveOwnerRoomProfile } from "./room-profile";
@@ -164,6 +165,7 @@ type GiftCatalogRow = RowDataPacket & {
   name: string;
   category: string;
   catalog_type: string;
+  economy_type?: string;
   emoji: string | null;
   coin_price: number;
   currency: string | null;
@@ -183,6 +185,8 @@ function mobileGiftPayload(rows: GiftCatalogRow[]) {
       symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)),
       cost: Number(row.coin_price),
       category: String(row.category),
+      economyType:row.economy_type==='LUCKY'?'LUCKY':'NORMAL',
+      ...(row.economy_type==='LUCKY'?{luckyTerms:{winPercent:25,minMultiplier:0.1,maxMultiplier:25,minimumGrossCoins:1,rounding:'Whole Coins, rounded down'}}:{}),
       accent: Number(asObject(row.asset_config).accent ?? [0xffff4fa2, 0xff9a5cff, 0xffffc857, 0xff4cc9f0][index % 4]),
       visualUrl: row.visual_url,
       animationKey: row.animation_key,
@@ -214,7 +218,7 @@ function mobileGiftPayload(rows: GiftCatalogRow[]) {
  */
 export async function mobileGiftCatalogSnapshot() {
   const [rows] = await withDatabaseReadRetry(() => db().query<GiftCatalogRow[]>(
-    `SELECT gift_key, name, category, catalog_type, emoji, coin_price,
+    `SELECT gift_key, name, category, catalog_type, economy_type, emoji, coin_price,
             currency, validity_days, vip_tier_eligibility, sort_order,
             visual_url, animation_key, asset_config
        FROM gift_catalog
@@ -474,7 +478,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
         AND (account.application_user_id = user.id OR account.application_user_id = user.external_user_id OR account.application_user_id = CAST(user.public_id AS CHAR))
        ORDER BY user.last_active_at DESC LIMIT 80`,
     ),
-    db().query<GiftCatalogRow[]>("SELECT gift_key, name, category, catalog_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
+    db().query<GiftCatalogRow[]>("SELECT gift_key, name, category, catalog_type, economy_type, emoji, coin_price, currency, validity_days, vip_tier_eligibility, sort_order, visual_url, animation_key, asset_config FROM gift_catalog WHERE active = TRUE ORDER BY catalog_type, sort_order, coin_price, name"),
     db().query<RowDataPacket[]>(
       `SELECT id, placement, title, subtitle, image_url, action_type, action_target, priority, starts_at, ends_at
        FROM banners WHERE active = TRUE AND (starts_at IS NULL OR starts_at <= CURRENT_TIMESTAMP(3))
@@ -1029,7 +1033,7 @@ export async function createRoom(identity: MobileIdentity, input: { autoResumeVe
   return createdRoom;
 }
 
-type GiftInput = { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number; recipientMode?: "SINGLE" | "ALL" };
+type GiftInput = { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number; recipientMode?: "SINGLE" | "ALL"; expectedRecipientPublicIds?:string[] };
 
 // SINGLE and ALL must agree about recoverable occupied Guest seats. Provider
 // evidence preserves a valid muted/reconnecting speaker, not a stale audience.
@@ -1045,7 +1049,7 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
   const intentId = input.clientGiftId ?? randomUUID();
   const key = `GIFT:${identity.userId}:${intentId}`;
   const intent = JSON.stringify({ roomCode: input.roomCode, giftId: input.giftId,
-    recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity });
+    recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity, ...(input.expectedRecipientPublicIds?{expectedRecipients:[...input.expectedRecipientPublicIds].sort().join(',')}:{}) });
   return withIdempotentTransaction(async (connection) => {
     // Acquire an exclusive lock on an existing intent immediately. INSERT
     // IGNORE takes shared duplicate-key locks, which deadlock when concurrent
@@ -1081,10 +1085,24 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
       recipients = targets.map((target) => String(target.public_id));
       if (!recipients.length || recipients.length > (rooms[0].room_type === "PARTY" ? 20 : 4)) throw new Error("The room's gift recipients changed. Please try again.");
     }
+    if(input.expectedRecipientPublicIds && [...new Set(input.expectedRecipientPublicIds)].sort().join(',')!==[...recipients].sort().join(','))throw new Error('Gift recipients changed. Choose recipients again.');
+    if(!Number.isSafeInteger(input.quantity)||input.quantity<1||input.quantity>99)throw new Error('Choose a valid gift quantity.');
+    const [priceRows]=await connection.query<RowDataPacket[]>("SELECT coin_price,economy_type FROM gift_catalog WHERE gift_key=? AND catalog_type='VIRTUAL_GIFT' AND active=TRUE",[input.giftId]);
+    const fullCost=Number(priceRows[0]?.coin_price)*input.quantity*recipients.length;
+    if(!Number.isSafeInteger(fullCost)||fullCost<1)throw new Error('The gift is unavailable.');
+    await ensureWallet(connection,identity.userId,'COIN');
+    const [funds]=await connection.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_type='APPLICATION_USER' AND owner_id=? AND asset_type='COIN' FOR UPDATE",[identity.userId]);
+    if(Number(funds[0].available_balance)<fullCost)throw new Error('Not enough Coins.');
+    let luckyConfig:LuckyPolicy|undefined;
+    if(priceRows[0]?.economy_type==='LUCKY'){
+      const [rows]=await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.lucky_gifts'");
+      luckyConfig=luckyPolicy(rows[0]?.setting_value);
+      if(!luckyConfig.enabled)throw new Error('Lucky Gifts are not available yet.');
+    }
     const results = [];
     for (const recipientPublicId of recipients) {
       results.push(await sendGiftToRecipient(connection, identity, { ...input, recipientPublicId,
-        clientGiftId: input.recipientMode === "ALL" ? `${intentId}:ALL:${recipientPublicId}` : intentId }, {config:feeConfig,at:feeAt,batchId:key}));
+        clientGiftId: input.recipientMode === "ALL" ? `${intentId}:ALL:${recipientPublicId}` : intentId }, {config:feeConfig,at:feeAt,batchId:key,lucky:luckyConfig}));
     }
     const batchCoins=results.reduce((sum,item)=>sum+(item.event?.value??0),0);
     if(!Number.isSafeInteger(batchCoins))throw new Error("This gift price is outside the supported wallet range.");
@@ -1093,14 +1111,16 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
       totalCoins: batchCoins,
       batchId:key,recipientCount:results.length,
       totalNetDiamonds:results.reduce((sum,item)=>sum+(item.event?.diamondValue??0),0),
-      totalPlatformFee:results.reduce((sum,item)=>sum+(item.event?.platformFee??0),0),
+      ...(luckyConfig?{}:{totalPlatformFee:results.reduce((sum,item)=>sum+(item.event?.platformFee??0),0)}),
+      totalLuckyPayout:results.reduce((sum,item)=>sum+(item.event?.lucky?.payoutCoins??0),0),
+      ...(luckyConfig?{luckyOutcome:{won:results.some(item=>item.event?.lucky?.won===true),payoutCoins:results.reduce((sum,item)=>sum+(item.event?.lucky?.payoutCoins??0),0)}}:{}),
       message: input.recipientMode === "ALL" ? `Sent to ${recipients.length} recipients` : results[0].message, replayed: false };
     await connection.execute("UPDATE gift_intent_receipts SET receipt_json = ? WHERE idempotency_key = ?", [JSON.stringify(result), key]);
     return result;
   });
 }
 
-async function sendGiftToRecipient(connection: PoolConnection, identity: MobileIdentity, input: GiftInput, fee: {config:Record<string,unknown>;at:Date;batchId:string}) {
+async function sendGiftToRecipient(connection: PoolConnection, identity: MobileIdentity, input: GiftInput, fee: {config:Record<string,unknown>;at:Date;batchId:string;lucky?:LuckyPolicy}) {
   if (!Number.isSafeInteger(input.quantity) || input.quantity < 1 || input.quantity > 99) throw new Error("Choose a valid gift quantity.");
   const idempotencyKey = `GIFT:${identity.userId}:${input.clientGiftId ?? randomUUID()}`;
     const liveRules = await loadFaceLiveRules(connection);
@@ -1134,7 +1154,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       );
       return { success: true, remainingCoins: Number(balanceRows[0]?.available_balance ?? 0), message: "Gift already sent", rocket: null, event: null };
     }
-    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; animation_key: string | null; asset_config: unknown; coin_price: number })[]>("SELECT id, name, emoji, visual_url, animation_key, asset_config, coin_price FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
+    const [giftRows] = await connection.query<(RowDataPacket & { id: string; name: string; emoji: string | null; visual_url: string | null; animation_key: string | null; asset_config: unknown; coin_price: number;economy_type:string })[]>("SELECT id, name, emoji, visual_url, animation_key, asset_config, coin_price,economy_type FROM gift_catalog WHERE gift_key = ? AND catalog_type = 'VIRTUAL_GIFT' AND active = TRUE LIMIT 1", [input.giftId]);
     const [roomRows] = await connection.query<(RowDataPacket & { id: string; room_type: string; host_application_user_id: string; live_session_id: string | null })[]>(
       `SELECT room.id, room.room_type, room.host_application_user_id,
          (SELECT id FROM live_session_accounting WHERE room_id = room.id AND status = 'ACTIVE') live_session_id FROM live_rooms room
@@ -1179,21 +1199,27 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
     if (blocks[0]) throw new Error("Gifts are unavailable because one of you has blocked the other account.");
     const total = Number(gift.coin_price) * input.quantity;
     if (!Number.isSafeInteger(total) || total < 1) throw new Error("This gift price is outside the supported wallet range.");
-    const settlement = giftSettlementPolicy(total,fee.config,fee.at);
+    const isLucky=gift.economy_type==='LUCKY';
+    if(isLucky&&!fee.lucky)throw new Error('Lucky Gift configuration is unavailable.');
+    const settlement = isLucky ? {grossCoins:total,netDiamonds:Number(BigInt(total)*BigInt(fee.lucky!.receiverBps)/10000n),platformFee:total-Number(BigInt(total)*BigInt(fee.lucky!.receiverBps)/10000n),platformFeeBps:fee.lucky!.companyBps,policyVersion:'LUCKY_GIFT_V1',giftCoinUnits:10000,receiverDiamondUnits:fee.lucky!.receiverBps} : giftSettlementPolicy(total,fee.config,fee.at);
     const {giftCoinUnits,receiverDiamondUnits,netDiamonds:diamondValue,platformFee,platformFeeBps,policyVersion}=settlement;
     const eventId=randomUUID();
     const [pkContexts]=await connection.query<RowDataPacket[]>(`SELECT
       EXISTS(SELECT 1 FROM live_pk_sessions WHERE status='ACTIVE' AND (source_room_id=? OR target_room_id=?)) face_pk,
       EXISTS(SELECT 1 FROM audio_pk_room_links l JOIN audio_pk_sessions p ON p.id=l.session_id WHERE l.room_id=? AND p.status='ACTIVE') party_pk`,[room.id,room.id,room.id]);
     const giftContext=room.room_type==='PARTY'?(pkContexts[0]?.party_pk?'PARTY_PK':'PARTY'):(pkContexts[0]?.face_pk?'FACE_PK':'FACE');
-    const audit=JSON.stringify({giftTransactionId:eventId,batchId:fee.batchId,roomCode:input.roomCode,roomId:room.id,liveSessionId:room.live_session_id,
+    const auditFields={giftTransactionId:eventId,batchId:fee.batchId,roomCode:input.roomCode,roomId:room.id,liveSessionId:room.live_session_id,
       giftContext,giftId:input.giftId,recipientPublicId:input.recipientPublicId,quantity:input.quantity,
-      coinValue:total,diamondValue,grossCoins:total,netDiamonds:diamondValue,platformFee,platformFeeBps,policyVersion,giftCoinUnits,receiverDiamondUnits});
+      coinValue:total,diamondValue,grossCoins:total,netDiamonds:diamondValue,platformFee,platformFeeBps,policyVersion,giftCoinUnits,receiverDiamondUnits,giftEconomyType:isLucky?'LUCKY':'NORMAL'};
     await ensureWallet(connection, identity.userId, "COIN"); await ensureWallet(connection, recipient.id, "DIAMOND");
     const [senderRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'COIN' FOR UPDATE", [identity.userId]);
     const [receiverRows] = await connection.query<(RowDataPacket & { id: string; available_balance: number })[]>("SELECT id, available_balance FROM wallet_balances WHERE owner_type = 'APPLICATION_USER' AND owner_id = ? AND asset_type = 'DIAMOND' FOR UPDATE", [recipient.id]);
     if (Number(senderRows[0].available_balance) < total) throw new Error("Not enough Coins.");
-    await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [total, senderRows[0].id]);
+    const lucky=isLucky?drawLucky(fee.lucky!,total):undefined;
+    const balanceBefore=Number(senderRows[0].available_balance),balanceAfter=balanceBefore-total+(lucky?.payoutCoins??0);
+    if(!Number.isSafeInteger(balanceAfter)||balanceAfter<0)throw new Error('This gift exceeds the supported wallet range.');
+    const audit=JSON.stringify({...auditFields,balanceBefore,balanceAfter,...(lucky?{lucky,policySnapshot:fee.lucky}: {})});
+    await connection.execute("UPDATE wallet_balances SET available_balance = ? WHERE id = ?", [balanceAfter, senderRows[0].id]);
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance + ? WHERE id = ?", [diamondValue, receiverRows[0].id]);
     const transferCode = code("GFT");
     await connection.execute(`INSERT INTO ledger_transactions
@@ -1206,8 +1232,10 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       [randomUUID(),`${transferCode}-R`,identity.userId,recipient.id,diamondValue,`${gift.name} ×${input.quantity}`,audit]);
     if(platformFee>0) await connection.execute(`INSERT INTO ledger_transactions
       (id,transaction_code,idempotency_key,asset_type,transaction_type,source_type,source_id,destination_type,amount,status,reason,metadata)
-      VALUES (?,?,?,'COIN','GIFT_PLATFORM_FEE','GIFT',?,'SYSTEM',?,'COMPLETED','Gift platform deduction (accounting only)',?)`,
-      [randomUUID(),`${transferCode}-F`,`${idempotencyKey}:FEE`,eventId,platformFee,audit]);
+      VALUES (?,?,?,'COIN',?,'GIFT',?,'SYSTEM',?,'COMPLETED','Gift platform allocation (accounting only)',?)`,
+      [randomUUID(),`${transferCode}-F`,`${idempotencyKey}:FEE`,isLucky?'LUCKY_COMPANY_ALLOCATION':'GIFT_PLATFORM_FEE',eventId,platformFee,audit]);
+    if(lucky && lucky.payoutCoins>0) await connection.execute(`INSERT INTO ledger_transactions(id,transaction_code,idempotency_key,asset_type,transaction_type,source_type,destination_type,destination_id,amount,status,reason,metadata)
+      VALUES (?,?,?,'COIN','LUCKY_GIFT_REWARD','SYSTEM','APPLICATION_USER',?,?,'COMPLETED','Lucky Gift sender bonus',?)`,[randomUUID(),`${transferCode}-L`,`${idempotencyKey}:LUCKY`,identity.userId,lucky.payoutCoins,audit]);
     await connection.execute(
       `UPDATE application_users user
        SET consumption_points = user.consumption_points + ?,
@@ -1235,10 +1263,11 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id,gift_batch_id,platform_fee,platform_fee_bps,fee_policy_version,gift_context)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id,fee.batchId,platformFee,platformFeeBps,policyVersion,giftContext],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id,gift_batch_id,platform_fee,platform_fee_bps,fee_policy_version,gift_context,gift_economy_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id,fee.batchId,platformFee,platformFeeBps,policyVersion,giftContext,isLucky?'LUCKY':'NORMAL'],
     );
+    if(lucky)await connection.execute(`INSERT INTO lucky_gift_results(gift_event_id,gross_coins,receiver_diamonds,company_allocation,won,tier_id,multiplier_bps,reward_coins,sender_balance_before,sender_balance_after,policy_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,[eventId,total,diamondValue,platformFee,lucky.won,lucky.tierId,lucky.multiplierBps,lucky.payoutCoins,balanceBefore,balanceAfter,JSON.stringify(fee.lucky)]);
     const audioPk=room.room_type==='PARTY'?await recordAudioPkGift(connection,{roomId:room.id,giftEventId:eventId,senderUserId:identity.userId,diamonds:diamondValue}):null;
     const rocket = await recordRocketGift(connection, {
       roomId: room.id,
@@ -1257,7 +1286,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       audioPk,
       rocket,
       event: {
-        id: eventId, batchId:fee.batchId, giftContext, platformFee, platformFeeBps, policyVersion, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
+        id: eventId, batchId:fee.batchId, giftContext, giftEconomyType:isLucky?'LUCKY':'NORMAL', ...(isLucky?{lucky,platformFee:undefined,platformFeeBps:undefined}:{lucky:undefined,platformFee,platformFeeBps}), policyVersion, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
         gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
