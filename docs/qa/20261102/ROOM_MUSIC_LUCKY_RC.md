@@ -11,7 +11,7 @@ Before-change bundles and evidence are retained at
 The current Flutter WebRTC bridge does not expose an independent PCM audio
 source. We use the permitted mixed-track option, without changing RTC stacks:
 Android audio picker → app-private cached file → worker-thread MediaExtractor /
-MediaCodec → mono 48 kHz bounded ring → m137 capture-post callback → existing
+MediaCodec → native-rate mono bounded ring (one resample at the actual capture rate) → m137 capture-post callback → existing
 LiveKit microphone publication → SFU → subscribers. There is no local speaker
 player, acoustic loopback, extra room, camera replacement or audio publication.
 The source is added after microphone AEC/NS/AGC. Speech stays available; logical
@@ -22,10 +22,10 @@ a newer source. File paths never leave the device; server stores display names.
 
 Common MP3, AAC/M4A and WAV files are selected through Android's audio picker.
 Other formats depend on the installed Android decoder. Invalid/encrypted files
-fail cleanly, without closing Live. Maximum selected file size is 1 GiB; decoded
+fail cleanly, without closing Live. Lucky gift sheets reserve a visible artwork row and scroll safely at large text sizes, with no change to gift prices or settlement. Maximum selected file size is 1 GiB; decoded
 PCM ring is capped at 96,000 floats (384,000 bytes), not an entire decoded file.
 One server controller/generation has a 60-second lease; controller refreshes every
-20 seconds. Native authorization expires at 55 seconds. Viewers cannot acquire
+20 seconds. Native authorization is at most 55 seconds and is capped by remaining server lease minus request RTT and local setup time. State reads/play do not renew it; only a fresh server grant does. Viewers cannot acquire
 control. An authorized Party Admin must also hold an existing publishing seat.
 Face and Party use the same controller and audio injection path.
 
@@ -42,7 +42,7 @@ full reconnect, and 0 after Stop. Exactly one current publication remained.
 Joining the receiver mid-stream did not restart the source. Native instrumentation
 also decoded AAC/M4A and verified speech + music, independent voice gate,
 authorization expiry, bounded buffering, and repeated replacement cleanup.
-The emulator's actual m137 callback rate was 16 kHz (not claimed as 48 kHz output);
+The first full-app encoder path attenuated the remote test tone to about 72 mean absolute PCM units with DTX on; disabling DTX restored about 792 units with the same file/gain/source. The emulator's actual m137 callback rate was 16 kHz (not claimed as 48 kHz output);
 the mixer resamples to the actual callback rate. Physical-device music fidelity,
 headset routing and long screen-lock behavior remain device QA limitations.
 
@@ -64,8 +64,8 @@ gross, plus recipient allocation; no guarantee of company profit on one event.
 Configured expected sender return is 9.75% before integer floors. Expected company
 remainder is 70.25% before Rocket/other existing liabilities, infrastructure and
 other costs. Unconditional 25× probability is 0.0025% (about 1 in 40,000 attempts).
-The retained 100,000 crypto-draw simulation observed 24,711 wins (24.711%), sender
-return 9.5491%, and four 25× outcomes. Every tier was also deterministically tested.
+The retained 100,000 crypto-draw simulation observed 25,233 wins (25.233%), sender
+return 9.647%, and three 25× outcomes. Every tier was also deterministically tested.
 Weights are Master-only, validated, prospectively versioned and audited; each
 transaction stores its own immutable policy snapshot. Default activation is OFF.
 
@@ -91,10 +91,10 @@ Retried successful Lucky receipts retain their outcome without replaying effects
 
 ## Focused evidence
 
-- Flutter analysis: no issues. Focused tests cover controller lifecycle, 20 rapid
+- Flutter analysis: no issues. 26 focused tests cover controller lifecycle, 20 rapid
   taps, same-ID retry, Stop, inactivity, insufficient balance and existing Party /
   Face PK presentation, Inbox and LiveKit permission semantics.
-- Android native instrumentation: real decoder + exact PCM callback contract.
+- Android native instrumentation: two tests, including real AAC/M4A and stereo 44.1 kHz WAV decode, duration preservation through one resample, and the exact PCM callback contract.
 - Backend financial suite: four normal contexts 85/15, ALL, concurrent retries,
   rollback, month rollover, historical snapshots and existing manual PK reward.
 - New Lucky: 500 gross / 100 Diamonds / 400 allocation, eight concurrent identical
