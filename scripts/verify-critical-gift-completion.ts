@@ -64,7 +64,7 @@ async function main(){
  await pool.execute('UPDATE game_shared_rounds SET betting_ends_at=UTC_TIMESTAMP(3)-INTERVAL 3 SECOND,drawing_ends_at=UTC_TIMESTAMP(3)-INTERVAL 1 SECOND WHERE id=?',[pro.round.id]);
  await Promise.all([maintainSharedGameRounds(),...Array.from({length:6},()=>placeSharedGameBets(sender,input))]);
  const [settled]=await pool.query<mysql.RowDataPacket[]>('SELECT COUNT(*) n FROM game_shared_settlements WHERE round_id=? AND application_user_id=?',[pro.round.id,sender.userId]);assert.equal(Number(settled[0].n),1);
- 
+
  const report={frames:'PASS selection/restart/other-client cache/unequip/role denial/grant revoke',gifts:'PASS 85/15 normal, 20/80 Lucky, eight retries one transaction',history:'PASS durable after room end, own scope, IST boundary, unique records',pro:'PASS eight concurrent same-ID deliveries one 500 Coin debit',luckyEventId:event.id};
  console.log(JSON.stringify(report));await writeFile('/Users/aishwaryam/nazraa-release-evidence/20261103-completion/sql-results.json',JSON.stringify(report,null,2));
  }finally{await pool.end();}
