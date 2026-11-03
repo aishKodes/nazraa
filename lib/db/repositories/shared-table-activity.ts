@@ -19,7 +19,7 @@ export async function sharedTableActivity(c:PoolConnection,game:TableGame,roundI
  const round=rounds[0];if(!round||round.game_name!==game||Number(round.round_number)!==roundNumber)throw Error('Game round changed.');
  const [bets]=await c.query<RowDataPacket[]>(`SELECT b.target_id,u.public_id,u.full_name,u.avatar_url,a.updated_at avatar_updated_at,SUM(b.amount) amount,COUNT(*) accepted_lines
  FROM game_shared_bets b JOIN application_users u ON u.id=b.application_user_id LEFT JOIN application_user_avatars a ON a.application_user_id=u.id
- WHERE b.round_id=? AND b.game_name=? GROUP BY b.target_id,u.id,u.public_id,u.full_name,u.avatar_url,a.updated_at ORDER BY MIN(b.created_at),u.public_id`,[roundId,game]);
+ WHERE b.round_id=? AND b.game_name=? GROUP BY b.target_id,u.id,u.public_id,u.full_name,u.avatar_url,a.updated_at ORDER BY MAX(b.created_at) DESC,u.public_id`,[roundId,game]);
  const totals=Object.fromEntries(sides.map(k=>[k,0])),participants=Object.fromEntries(sides.map(k=>[k,[] as TablePlayer[]])),participantCounts=Object.fromEntries(sides.map(k=>[k,0]));let betVersion=0;
  for(const b of bets){const side=String(b.target_id);if(!(side in totals))continue;betVersion+=Number(b.accepted_lines);totals[side]+=Number(b.amount);participantCounts[side]++;if(participants[side].length<4)participants[side].push(player(b,Number(b.amount)));}
  const [recent]=await c.query<RowDataPacket[]>(`SELECT b.id,b.target_id,b.amount,b.created_at,u.public_id,u.full_name,u.avatar_url,a.updated_at avatar_updated_at
