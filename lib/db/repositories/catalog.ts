@@ -14,7 +14,12 @@ import {recordGameConfigVersion,requireGameEconomy} from './game-economy';
 export type MallCatalogType = "VIRTUAL_GIFT" | "ENTRY_FRAME" | "ENTRY_EFFECT" | "AVATAR_FRAME" | "PROFILE_EFFECT" | "CHAT_FRAME" | "MEDAL" | "BADGE";
 
 export type EffectAssetConfigInput = {
-  frameAnimationStyle?: "AUTO" | "GOLD_ROYAL" | "DIAMOND_BLUE" | "FIRE" | "NEON" | "DRAGON_VIP";
+  displayClass?: "NORMAL"|"PREMIUM"|"SUPER_PREMIUM"|"FULL_CINEMATIC";
+  displayRegion?: "LOWER_VIDEO"|"USABLE_VIDEO";
+  finishingStyle?: "GOLD"|"JEWEL"|"SWEEP"|"GLITTER"|"BLOOM"|"CROWN"|"DIAMOND"|"EMBER";
+  portraitScale?:number;
+  portraitOffsetY?:number;
+  frameAnimationStyle?: "SCULPTED"|"AUTO" | "GOLD_ROYAL" | "DIAMOND_BLUE" | "FIRE" | "NEON" | "DRAGON_VIP";
   width?: number;
   height?: number;
   durationMs: number;
@@ -570,4 +575,21 @@ export async function saveRoomFeatureSettings(input: {
       );
     },
   });
+}
+
+/** Install verified art into the existing catalogue. No price, status,
+ * entitlement, economy type, wallet or gift transaction field is written. */
+export async function installPremiumGiftVisual(input:{scope:Scope;id:string;sourceId:string;version:string;config:Record<string,unknown>;image?:PreparedPublicImage;animation?:PreparedPublicEffect}){
+ if(input.scope.account.role!=='MASTER')throw Error('Only Master may import a visual pack.');
+ return withTransaction(async connection=>{
+  const [rows]=await connection.query<RowDataPacket[]>('SELECT visual_url,animation_key,asset_config FROM gift_catalog WHERE id=? AND catalog_type=\'VIRTUAL_GIFT\' FOR UPDATE',[input.id]);if(!rows[0])throw Error('Existing virtual gift required.');
+  const row=rows[0];let previous:Record<string,unknown>={};try{previous=typeof row.asset_config==='string'?JSON.parse(row.asset_config):row.asset_config??{};}catch{}
+  const primary=input.animation??input.image;if(!primary)throw Error('Verified gift art required.');const checksum=assetChecksum(primary.data);
+  if(previous.visualPackVersion===input.version&&previous.visualPackSourceId===input.sourceId&&previous.assetChecksum===checksum&&Object.entries(input.config).every(([key,value])=>JSON.stringify(previous[key])===JSON.stringify(value)))return false;
+  async function store(asset:PreparedPublicImage|PreparedPublicEffect){const sha=assetChecksum(asset.data);const [same]=await connection.query<RowDataPacket[]>('SELECT id FROM gift_assets WHERE checksum_sha256=? AND mime_type=? LIMIT 1',[sha,asset.mimeType]);if(same[0])return assetUrl(String(same[0].id),'extension' in asset?asset.extension:undefined);const id=randomUUID();await connection.execute('INSERT INTO gift_assets(id,mime_type,image_data,byte_size,original_name,uploaded_by,checksum_sha256) VALUES(?,?,?,?,?,?,?)',[id,asset.mimeType,asset.data,asset.byteSize,asset.originalName,input.scope.account.id,sha]);return assetUrl(id,'extension' in asset?asset.extension:undefined);}
+  const imageUrl=input.image?await store(input.image):row.visual_url;const animationUrl=input.animation?await store(input.animation):null;
+  const config={...previous,...input.config,assetUrl:animationUrl??imageUrl,previewUrl:imageUrl,fallbackVisualUrl:imageUrl,assetType:input.animation?.assetType??'STATIC_IMAGE',assetVersion:checksum,assetChecksum:checksum,assetByteSize:primary.byteSize,previewChecksum:input.image?assetChecksum(input.image.data):previous.previewChecksum,...(input.animation?.assetType==='VIDEO'?{videoPresentation:'BOUNDED_CINEMATIC'}:{}),...(input.animation?.width?{width:input.animation.width,height:input.animation.height}:{}),...(input.animation?.durationMs?{durationMs:input.animation.durationMs}:{})};
+  await connection.execute('UPDATE gift_catalog SET visual_url=?,animation_key=?,asset_config=? WHERE id=?',[imageUrl,animationUrl,JSON.stringify(config),input.id]);
+  await connection.execute("INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason) VALUES(?,?,'MASTER','gift.visual_pack','gifts','gift',?,?,?,?)",[randomUUID(),input.scope.account.id,input.id,JSON.stringify(row),JSON.stringify({visualUrl:imageUrl,animationKey:animationUrl,config}),`Premium visual pack ${input.version}; financial configuration preserved`]);return true;
+ });
 }

@@ -53,9 +53,10 @@ export function dealChairRound(){
  * versions. V2 omits cards: old APKs index any non-null array. */
 export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
- if(outcome.rulesVersion==='PRINCESS_HIDDEN_FIXED_3X_V5'&&quote){
+ if(['PRINCESS_HIDDEN_FIXED_3X_V5','PRINCESS_HIDDEN_90_FEE_5_V6'].includes(String(outcome.rulesVersion))&&quote){
   const hands=outcome.hands as {cards:number[]}[];
   return {payoutVersion:outcome.rulesVersion,feeBps:quote.feeBps,
+   ...(outcome.rulesVersion==='PRINCESS_HIDDEN_90_FEE_5_V6'?{rulesVersion:outcome.rulesVersion,paytableQuoteId:outcome.commitment,profileId:quote.profileId,grossNumerator:quote.grossNumerator,grossDenominator:quote.grossDenominator,netMultiplierPpm:quote.netMultiplierPpm,rounding:quote.rounding}:{}),
    grossMultiplierPpm:quote.grossMultiplierPpm,targetRtpPpm:quote.targetRtpPpm,
    ...(bettingClosed?{cards:hands.map(h=>h.cards[0])}:{})};
  }

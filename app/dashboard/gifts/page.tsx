@@ -34,7 +34,7 @@ export default async function GiftsPage({ searchParams }: { searchParams: Promis
       description="Manage gifts and entitlement-driven cosmetics without an APK release. Prices, validity, VIP grants, order and uploaded artwork are server controlled."
       action={manage ? <a className="primary-button" href="#new-gift"><Plus size={16} />New item</a> : undefined}
     />
-    {scope.account.role==="MASTER"?<p><a href="/dashboard/lucky-gifts">Lucky Gift policy, weights and internal accounting</a></p>:null}
+    {scope.account.role==="MASTER"?<p><a href="/dashboard/role-visuals">Premium role frames and entries</a> · <a href="/dashboard/lucky-gifts">Lucky Gift policy, weights and internal accounting</a></p>:null}
     {success ? <Notice type="success">{success}</Notice> : null}
     {error ? <Notice type="error">{error}</Notice> : null}
     {manage ? <Card className="create-panel">

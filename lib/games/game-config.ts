@@ -46,6 +46,7 @@ export type GameRuntimeConfig = {
   princessPreviewQuotes?: boolean;
   /** Princess only; frozen per round. Missing historical values mean 3%. */
   princessServiceFeeBps?: number;
+  princessPayoutProfile?: "LEGACY_FIXED_3X" | "FAIR_90_FEE_5";
 };
 
 export type MobileGamesConfig = {
@@ -305,8 +306,9 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       poolMinimumForSpecial: integer(stored.poolMinimumForSpecial, fallback.poolMinimumForSpecial ?? 0, 0, 1_000_000_000),
       ...(id === 'teen_patti' ? {
         princessPreviewQuotes: stored.princessPreviewQuotes===true,
-        princessServiceFeeBps: integer(stored.princessServiceFeeBps,300,0,2500),
-        targetRtp: stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
+        princessPayoutProfile: stored.princessPayoutProfile==='FAIR_90_FEE_5'?'FAIR_90_FEE_5':'LEGACY_FIXED_3X',
+        princessServiceFeeBps: stored.princessPayoutProfile==='FAIR_90_FEE_5'?500:integer(stored.princessServiceFeeBps,300,0,2500),
+        targetRtp: stored.princessPayoutProfile==='FAIR_90_FEE_5'?.9:stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
         payoutScalePpm: 1_000_000,
         maximumPayoutMultiplier: 3,
         minimumBet: 100, denominations: [100,1000,10000,100000],

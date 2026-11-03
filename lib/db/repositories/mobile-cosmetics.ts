@@ -37,27 +37,24 @@ type EquippedCosmeticRow = EntitlementRow & {
 
 export type CosmeticLoadoutPayload = Record<string, ReturnType<typeof presentationPayload>>;
 
-// Cosmetic metadata only. ADMIN/BD share a mobile permission role with Country
-// Manager, so the client must never infer this decoration from that role.
-const countryManagerPresentation: ReturnType<typeof presentationPayload> = {
-  itemId: "role_country_manager", name: "Country Manager", type: "ROLE_PRESENTATION",
-  visualUrl: null, animationKey: null, accent: 0xffffc857, source: "ROLE",
-  effectConfig: { presentationRole: "COUNTRY_MANAGER" },
-};
-
-async function countryManagerPresentationIds(executor: PoolConnection | ReturnType<typeof db>, publicIds: readonly string[]) {
-  if (!publicIds.length) return new Set<string>();
-  const [rows] = await executor.query<RowDataPacket[]>(
-    `SELECT DISTINCT user.public_id FROM application_users user
-     INNER JOIN platform_accounts account ON account.status = 'ACTIVE'
-       AND account.role = 'COUNTRY_MANAGER'
-       AND (account.application_user_id = user.id
-         OR account.application_user_id = user.external_user_id
-         OR account.application_user_id = CAST(user.public_id AS CHAR))
-     WHERE user.account_status = 'ACTIVE'
-       AND user.public_id IN (${publicIds.map(() => "?").join(",")})`, [...publicIds],
-  );
-  return new Set(rows.map((row) => String(row.public_id)));
+// Presentation metadata only. BD/ADMIN/COUNTRY_MANAGER share an old mobile
+// permission alias; preserve the exact authoritative role for distinct art.
+// No new platform roles or permissions are created by this decoration.
+function rolePresentation(role:string):ReturnType<typeof presentationPayload>{
+ return {itemId:`role_${role.toLowerCase()}`,name:role.replaceAll('_',' '),type:'ROLE_PRESENTATION',visualUrl:null,animationKey:null,accent:0xffffc857,source:'ROLE',effectConfig:{presentationRole:role}};
+}
+async function rolePresentations(executor:PoolConnection|ReturnType<typeof db>,publicIds:readonly string[]){
+ const values=new Map<string,ReturnType<typeof presentationPayload>>();
+ if(!publicIds.length)return values;
+ const [rows]=await executor.query<RowDataPacket[]>(
+ `SELECT user.public_id,account.role FROM application_users user
+ INNER JOIN platform_accounts account ON account.status='ACTIVE' AND account.removed_at IS NULL
+ AND account.role IN ('MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS')
+ AND (account.application_user_id=user.id OR account.application_user_id=user.external_user_id OR account.application_user_id=CAST(user.public_id AS CHAR))
+ WHERE user.account_status='ACTIVE' AND user.public_id IN (${publicIds.map(()=>'?').join(',')})
+ ORDER BY FIELD(account.role,'MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS'),account.id`,[...publicIds]);
+ for(const row of rows){const id=String(row.public_id);if(!values.has(id))values.set(id,rolePresentation(String(row.role)));}
+ return values;
 }
 
 type CachedCosmeticLoadout = {
@@ -196,7 +193,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
 
   const placeholders = unresolvedIds.map(() => "?").join(",");
   const executor = connection ?? db();
-  const countryManagers = await countryManagerPresentationIds(executor, unresolvedIds);
+  const roles = await rolePresentations(executor, unresolvedIds);
   const [rows] = await executor.query<EquippedCosmeticRow[]>(
     `SELECT user.public_id,
             entitlement.id entitlement_id, entitlement.source, entitlement.acquired_at,
@@ -234,7 +231,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
   // cosmetic and repeatedly proving that fact was a measurable presence cost.
   for (const publicId of unresolvedIds) {
     const loadout = loadouts.get(publicId) ?? {};
-    if (countryManagers.has(publicId)) loadout.ROLE_PRESENTATION = countryManagerPresentation;
+    if (roles.has(publicId)) loadout.ROLE_PRESENTATION = roles.get(publicId)!;
     loadouts.set(publicId, loadout);
     cacheEquippedLoadout(publicId, loadout);
   }
@@ -276,8 +273,9 @@ async function snapshotOnConnection(connection: PoolConnection, userId: string) 
   const [owners] = await connection.query<RowDataPacket[]>(
     "SELECT public_id FROM application_users WHERE id = ? LIMIT 1", [userId],
   );
-  if (owners[0] && (await countryManagerPresentationIds(connection, [String(owners[0].public_id)])).size) {
-    loadout.ROLE_PRESENTATION = countryManagerPresentation;
+  if (owners[0]) {
+    const role=(await rolePresentations(connection,[String(owners[0].public_id)])).get(String(owners[0].public_id));
+    if(role)loadout.ROLE_PRESENTATION=role;
   }
   return {
     entitlements: rows.map(entitlementPayload),

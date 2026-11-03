@@ -21,7 +21,7 @@ export type PreparedPublicEffect = {
   byteSize: number;
   originalName: string;
   extension: "json" | "webp" | "mp4" | "webm" | "pag";
-  assetType: "LOTTIE" | "ANIMATED_WEBP" | "VIDEO" | "PAG";
+  assetType: "LOTTIE" | "ANIMATED_WEBP" | "STATIC_IMAGE" | "VIDEO" | "PAG";
   width?: number;
   height?: number;
   durationMs?: number;
@@ -201,7 +201,8 @@ export async function preparePublicEffect(
       byteSize: data.length,
       originalName: `${safeStem(file.name, "effect")}.webp`,
       extension: "webp",
-      assetType: "ANIMATED_WEBP",
+      assetType: (metadata.pages ?? 1)>1 ? "ANIMATED_WEBP" : "STATIC_IMAGE",
+      width:metadata.width,height:metadata.pageHeight??metadata.height,
     };
   }
 

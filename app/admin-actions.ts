@@ -800,7 +800,12 @@ function catalogArtworkOptions(catalogType: string) {
 }
 
 const effectFields = {
-  frameAnimationStyle: z.enum(["AUTO", "GOLD_ROYAL", "DIAMOND_BLUE", "FIRE", "NEON", "DRAGON_VIP"]).default("AUTO"),
+  displayClass: z.enum(["NORMAL","PREMIUM","SUPER_PREMIUM","FULL_CINEMATIC"]).default("NORMAL"),
+  displayRegion: z.enum(["LOWER_VIDEO","USABLE_VIDEO"]).default("LOWER_VIDEO"),
+  finishingStyle:z.enum(["GOLD","JEWEL","SWEEP","GLITTER","BLOOM","CROWN","DIAMOND","EMBER"]).default("GOLD"),
+  portraitScale:z.preprocess(v=>v===''?undefined:v,z.coerce.number().min(.15).max(1).optional()),
+  portraitOffsetY:z.preprocess(v=>v===''?undefined:v,z.coerce.number().min(-.3).max(.3).optional()),
+  frameAnimationStyle: z.enum(["SCULPTED","AUTO", "GOLD_ROYAL", "DIAMOND_BLUE", "FIRE", "NEON", "DRAGON_VIP"]).default("AUTO"),
   effectWidth: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.coerce.number().int().min(1).max(1920).optional(),
@@ -840,6 +845,9 @@ function effectConfigFrom(
   input: z.infer<z.ZodObject<typeof effectFields>>,
 ): EffectAssetConfigInput {
   return {
+    displayClass:input.displayClass,displayRegion:input.displayRegion,finishingStyle:input.finishingStyle,
+    ...(input.portraitScale!==undefined?{portraitScale:input.portraitScale}:{}),
+    ...(input.portraitOffsetY!==undefined?{portraitOffsetY:input.portraitOffsetY}:{}),
     frameAnimationStyle: input.frameAnimationStyle,
     width: input.effectWidth,
     height: input.effectHeight,

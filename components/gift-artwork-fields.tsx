@@ -80,7 +80,7 @@ export function GiftArtworkFields({
       {animationPreview ? <span className="effect-file-preview">
         {animationPreviewType === "VIDEO"
           ? <video src={animationPreview} controls muted playsInline preload="metadata" />
-          : animationPreviewType === "ANIMATED_WEBP"
+          : ["ANIMATED_WEBP","STATIC_IMAGE"].includes(animationPreviewType)
             ? <span role="img" aria-label="Animation preview" style={{ backgroundImage: `url(${JSON.stringify(animationPreview)})`, backgroundPosition: "center", backgroundRepeat: "no-repeat", backgroundSize: "contain", display: "block", minHeight: 180 }} />
             : <a href={animationPreview} target="_blank" rel="noreferrer">{animationPreviewType==='PAG'?'Download PAG for native preview (use artwork thumbnail above)':'Open validated Lottie preview file'}</a>}
       </span> : null}
@@ -88,9 +88,14 @@ export function GiftArtworkFields({
     {currentAnimationKey ? <label className="checkbox-row">
       <input name="removeAnimation" type="checkbox" value="true" /> Remove current animation
     </label> : null}
+    <label>Gift presentation class<select name="displayClass" defaultValue={configured("displayClass",String(config.presentationTier).toUpperCase()==="ULTRA"?"SUPER_PREMIUM":String(config.presentationTier).toUpperCase()==="PREMIUM"?"PREMIUM":"NORMAL")}><option value="NORMAL">Normal · lower video stage</option><option value="PREMIUM">Premium</option><option value="SUPER_PREMIUM">Super Premium</option><option value="FULL_CINEMATIC">Cinematic · larger bounded stage</option></select></label>
+    <label>Usable video region<select name="displayRegion" defaultValue={configured("displayRegion","LOWER_VIDEO")}><option value="LOWER_VIDEO">Lower video</option><option value="USABLE_VIDEO">Larger usable video · premium only</option></select><small>Game, PK and room panels always use compact notices. Party uses recipient spotlight.</small></label>
+    <label>Finishing effect<select name="finishingStyle" defaultValue={configured("finishingStyle","GOLD")}>{["GOLD","JEWEL","SWEEP","GLITTER","BLOOM","CROWN","DIAMOND","EMBER"].map(v=><option key={v} value={v}>{v.replaceAll("_"," ")}</option>)}</select></label>
+    <label>Portrait diameter · frame only<input name="portraitScale" type="number" min="0.15" max="1" step="0.001" defaultValue={configured("portraitScale", "")} placeholder="Use the supplied frame manifest" /></label>
+    <label>Portrait vertical offset · frame only<input name="portraitOffsetY" type="number" min="-0.3" max="0.3" step="0.0001" defaultValue={configured("portraitOffsetY", "")} placeholder="0 = center" /></label>
     <label>Frame motion style
       <select name="frameAnimationStyle" defaultValue={configured("frameAnimationStyle", "AUTO").toUpperCase()}>
-        <option value="AUTO">Automatic from equipped frame</option><option value="GOLD_ROYAL">Gold Royal</option><option value="DIAMOND_BLUE">Diamond Blue</option><option value="FIRE">Fire</option><option value="NEON">Neon</option><option value="DRAGON_VIP">Dragon / VIP</option>
+        <option value="AUTO">Automatic from equipped frame</option><option value="SCULPTED">Sculpted metal · crest/jewel glints</option><option value="GOLD_ROYAL">Gold Royal</option><option value="DIAMOND_BLUE">Diamond Blue</option><option value="FIRE">Fire</option><option value="NEON">Neon</option><option value="DRAGON_VIP">Dragon / VIP</option>
       </select>
       <small>Decorates entitled avatar frames only; does not grant an item or change roles.</small>
     </label>

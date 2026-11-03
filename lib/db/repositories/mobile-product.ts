@@ -32,7 +32,7 @@ import { mediaProviderFor } from "@/lib/services/media-provider";
 import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-reset";
 import { mobileGamesConfig,effectiveMobileGamesConfig,snapshotGameConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import {TEEN_PATTI_ID,dealChairRound,chairPreview,teenPattiChairs} from '@/lib/games/teen-patti';
-import {isPrincessQuotedRules,princessFixedQuoteRules,princessFixedQuote,princessHiddenConfigRules,princessHiddenQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
+import {isPrincessQuotedRules,requiresPrincessQuoteAcknowledgement,princessNinetyRules,princessNinetyQuote,princessFixedQuoteRules,princessFixedQuote,princessHiddenConfigRules,princessHiddenQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
@@ -1917,8 +1917,8 @@ async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundG
   if(game===TEEN_PATTI_ID){
     const dealt=dealChairRound();
     if(!config.princessPreviewQuotes){
-      const pricing=princessHiddenQuote(config.princessServiceFeeBps??300);
-      return {...dealt,rulesVersion:princessHiddenConfigRules,serviceFeePercent:pricing.feeBps/100,pricing,...commitPrincessQuote(dealt.hands,pricing)};
+      const pricing=config.princessPayoutProfile==='FAIR_90_FEE_5'?princessNinetyQuote():princessHiddenQuote(config.princessServiceFeeBps??300);
+      return {...dealt,rulesVersion:pricing.rulesVersion,serviceFeePercent:pricing.feeBps/100,pricing,...commitPrincessQuote(dealt.hands,pricing)};
     }
     const pricing=princessFixedQuote(dealt.hands.map(h=>h.cards[0]));
     return {...dealt,rulesVersion:princessFixedQuoteRules,multiplier:3,pricing,...commitPrincessQuote(dealt.hands,pricing)};
@@ -2565,7 +2565,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       if(game===TEEN_PATTI_ID){
         const [savedRounds]=await connection.query<RowDataPacket[]>('SELECT outcome_json FROM game_shared_rounds WHERE id=? LIMIT 1',[existingRows[0].round_id]);
         const saved=asObject(savedRounds[0]?.outcome_json);
-        if(isPrincessQuotedRules(saved.rulesVersion) && input.quoteId!==saved.commitment)throw new Error('This bet request ID was already used with another payout quote.');
+        if(requiresPrincessQuoteAcknowledgement(saved.rulesVersion) && input.quoteId!==saved.commitment)throw new Error('This bet request ID was already used with another payout quote.');
       }
       // A locking idempotency read can see a concurrent commit newer than
       // this transaction's REPEATABLE READ snapshot. Do not acknowledge from
@@ -2575,8 +2575,8 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     }
     if (round.id !== input.roundId || now >= new Date(round.betting_ends_at)) throw new Error("Betting has closed for this round.");
     const roundOutcome=asObject(round.outcome_json);
-    if(game===TEEN_PATTI_ID && isPrincessQuotedRules(roundOutcome.rulesVersion) && input.quoteId!==roundOutcome.commitment)
-      throw new Error("Use the latest Nazraa app to play Princess with visible cards and current payout quotes. No Coins were deducted.");
+    if(game===TEEN_PATTI_ID && requiresPrincessQuoteAcknowledgement(roundOutcome.rulesVersion) && input.quoteId!==roundOutcome.commitment)
+      throw new Error("Update Nazraa to accept the current Princess paytable. No Coins were deducted.");
     const checked = validateSharedBets(game, bets, config);
     if (checked.total <= 0) throw new Error("Choose a positive game bet.");
     const [roundWagerRows] = await connection.query<(RowDataPacket & { total: number })[]>(

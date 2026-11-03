@@ -4,6 +4,8 @@ import {evaluateChairHand,teenPattiChairs,teenPattiCard,chairSettlement} from '.
 export const princessQuoteRules='PRINCESS_PUBLIC_CARD_QUOTE_V3';
 export const princessFixedQuoteRules='PRINCESS_PUBLIC_CARD_FIXED_3X_V4';
 export const princessHiddenConfigRules='PRINCESS_HIDDEN_FIXED_3X_V5';
+export const princessNinetyRules='PRINCESS_HIDDEN_90_FEE_5_V6';
+export function requiresPrincessQuoteAcknowledgement(value:unknown){return isPrincessQuotedRules(value)||value===princessNinetyRules;}
 export function isPrincessQuotedRules(value:unknown){
   return value===princessQuoteRules || value===princessFixedQuoteRules;
 }
@@ -67,7 +69,7 @@ export function exactPrincessPreviewWins(publicCards:readonly number[]):readonly
   const immutable=Object.freeze(wins);cached.set(key,immutable);return immutable;
 }
 export type PrincessQuote={rulesVersion:string;publicCards:number[];winCompletions:number[];
-  totalCompletions:number;grossMultiplierPpm:number[];targetRtpPpm:number;feeBps:number;maximumMultiplier:number};
+  totalCompletions:number;grossMultiplierPpm:number[];targetRtpPpm:number;feeBps:number;maximumMultiplier:number;profileId?:string;grossNumerator?:number;grossDenominator?:number;netMultiplierPpm?:number;rounding?:string};
 export function princessQuote(publicCards:readonly number[],targetRtp=.97,maximumMultiplier=30):PrincessQuote {
   if(!Number.isFinite(targetRtp)||targetRtp<.5||targetRtp>1)throw new Error('Invalid Princess RTP.');
   if(!Number.isFinite(maximumMultiplier)||maximumMultiplier<1||maximumMultiplier>1000)throw new Error('Invalid Princess payout cap.');
@@ -94,6 +96,14 @@ export function princessHiddenQuote(feeBps:number):PrincessQuote {
     totalCompletions:0,grossMultiplierPpm:[3_000_000,3_000_000,3_000_000],
     targetRtpPpm:(10000-feeBps)*100,feeBps,maximumMultiplier:3};
 }
+/** Owner-approved lower payout, unchanged 5% fee. Existing chip unit is 100.
+ * ceil(54*w/19), followed by ceil(5% fee), returns exactly 2.70*w for
+ * every accepted 100-Coin increment. Integer rational math avoids ppm drift. */
+export function princessNinetyQuote():PrincessQuote {
+ return {rulesVersion:princessNinetyRules,profileId:'STANDARD_90_FEE_5',publicCards:[],winCompletions:[],totalCompletions:0,
+ grossMultiplierPpm:[2842105,2842105,2842105],grossNumerator:54,grossDenominator:19,netMultiplierPpm:2700000,
+ rounding:'GROSS_CEIL_FEE_CEIL',targetRtpPpm:900000,feeBps:500,maximumMultiplier:3};
+}
 export function commitPrincessQuote(hands:unknown,quote:PrincessQuote,nonce=randomBytes(32).toString('hex')){
   // MySQL JSON reorders object keys. Canonicalize recursively so the public
   // proof survives durable round trips without changing a single value.
@@ -109,20 +119,24 @@ export function quotedPrincessSettlement(bets:Record<string,number>,winner:strin
   const index=teenPattiChairs.indexOf(winner as typeof teenPattiChairs[number]);
   if(index<0)throw new Error('Invalid Princess winner.');
   const amount=bets[winner]??0;
-  const grossPayout=Number(BigInt(amount)*BigInt(quote.grossMultiplierPpm[index])/1_000_000n);
+  const grossPayout=quote.rulesVersion===princessNinetyRules
+    ? Number((BigInt(amount)*54n+18n)/19n)
+    : Number(BigInt(amount)*BigInt(quote.grossMultiplierPpm[index])/1_000_000n);
   const serviceFee=Number((BigInt(grossPayout)*BigInt(quote.feeBps)+9999n)/10_000n);
   if(!Number.isSafeInteger(grossPayout)||!Number.isSafeInteger(serviceFee))throw new Error('Princess payout is too large.');
   return {grossPayout,serviceFee,payout:grossPayout-serviceFee};
 }
 export function princessSettlement(bets:Record<string,number>,outcome:Record<string,unknown>){
  const validated=chairSettlement(bets,String(outcome.winner));
- const hidden=outcome.rulesVersion===princessHiddenConfigRules;
+ const ninety=outcome.rulesVersion===princessNinetyRules;
+ const hidden=outcome.rulesVersion===princessHiddenConfigRules||ninety;
  if(!hidden&&!isPrincessQuotedRules(outcome.rulesVersion))return validated;
  const quote=outcome.pricing as PrincessQuote;
  if(!quote || quote.rulesVersion!==outcome.rulesVersion || quote.grossMultiplierPpm?.length!==3 ||
    quote.grossMultiplierPpm.some(v=>!Number.isSafeInteger(v)||v<1||v>1_000_000_000) ||
    (hidden?(!Number.isSafeInteger(quote.feeBps)||quote.feeBps<0||quote.feeBps>2500||quote.publicCards.length!==0):quote.feeBps!==300) ||
-   ((hidden||outcome.rulesVersion===princessFixedQuoteRules) && (quote.maximumMultiplier!==3 || quote.grossMultiplierPpm.some(v=>v!==3_000_000))) ||
+   (ninety && (quote.maximumMultiplier!==3||quote.feeBps!==500||quote.profileId!=='STANDARD_90_FEE_5'||quote.grossNumerator!==54||quote.grossDenominator!==19||quote.netMultiplierPpm!==2700000||quote.targetRtpPpm!==900000||quote.rounding!=='GROSS_CEIL_FEE_CEIL'||quote.grossMultiplierPpm.some(v=>v!==2842105))) ||
+   ((!ninety&&hidden||outcome.rulesVersion===princessFixedQuoteRules) && (quote.maximumMultiplier!==3 || quote.grossMultiplierPpm.some(v=>v!==3_000_000))) ||
    typeof outcome.nonce!=='string' || commitPrincessQuote(outcome.hands,quote,outcome.nonce).commitment!==outcome.commitment)
    throw new Error('The Princess round commitment is invalid.');
  return {wager:validated.wager,...quotedPrincessSettlement(bets,String(outcome.winner),quote)};

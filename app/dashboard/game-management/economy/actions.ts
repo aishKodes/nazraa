@@ -11,6 +11,7 @@ function parse(form:FormData){
   if(!configurableGameIds.includes(game))throw new Error('Choose a supported game.');
   const draft:EconomyDraft={enabled:form.get('availability')!=='DISABLED',maintenance:form.get('availability')==='MAINTENANCE',minimumBet:Number(form.get('minimumBet')),maximumBet:Number(form.get('maximumBet')),maximumPayoutMultiplier:Number(form.get('maximumPayoutMultiplier')),payoutScalePpm:Number(form.get('payoutScalePpm'))};
   if(!['ACTIVE','MAINTENANCE','DISABLED'].includes(String(form.get('availability'))))throw new Error('Choose valid availability.');
+  if(form.has('princessPayoutProfile'))draft.princessPayoutProfile=String(form.get('princessPayoutProfile')) as EconomyDraft['princessPayoutProfile'];
   const weights=String(form.get('outcomeWeights')??'').trim();
   if(weights){if(weights.split(',').some(n=>!n.trim()))throw new Error('Choose valid outcome weights.');draft.outcomeWeights=weights.split(',').map(n=>Number(n.trim()));}
   for(const key of ['princessServiceFeeBps','sideBetPayoutScalePpm','saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const)if(form.has(key))draft[key]=Number(form.get(key));

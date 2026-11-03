@@ -5,6 +5,7 @@ import type { RowDataPacket } from "mysql2/promise";
 
 import { currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 import { db } from "@/lib/db/pool";
+import {premiumRoleManifestRows} from "./premium-role-visuals";
 
 type CatalogRow = RowDataPacket & {
   gift_key: string;
@@ -60,7 +61,8 @@ export async function mobileEffectManifest() {
       WHERE active = TRUE
       ORDER BY catalog_type, sort_order, coin_price, name`,
   );
-  const configRows = rows.map((row) => ({ row, config: object(row.asset_config) }));
+  const roleRows=await premiumRoleManifestRows();
+  const configRows = [...rows,...roleRows as unknown as CatalogRow[]].map((row) => ({ row, config: object(row.asset_config) }));
   const assetIds = new Set<string>();
   for (const { row, config } of configRows) {
     for (const value of [row.visual_url, row.animation_key, config.assetUrl, config.previewUrl, config.soundUrl]) {
@@ -98,6 +100,11 @@ export async function mobileEffectManifest() {
       updatedAt: row.updated_at,
       assetConfig: {
         ...config,
+        portraitScale:typeof config.portraitScale==='number'?config.portraitScale:null,
+        portraitOffsetY:typeof config.portraitOffsetY==='number'?config.portraitOffsetY:null,
+        enabled:typeof config.enabled==='boolean'?config.enabled:true,
+        displayClass:typeof config.displayClass==='string'?config.displayClass:null,
+        finishingStyle:typeof config.finishingStyle==='string'?config.finishingStyle:null,
         assetType: typeof config.assetType==='string'?config.assetType:null,
         // Only validated, Control-owned video blobs get this permission. The
         // mobile renderer keeps all opaque video inside a bounded surface.
