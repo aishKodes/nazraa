@@ -2338,44 +2338,62 @@ async function settleMaturedSharedRounds(
 export async function maintainSharedGameRounds() {
   const settlements: Partial<Record<SharedRoundGame, number>> = {};
   const realtime: SharedGameRealtimeState[] = [];
+  const failures: Array<{ game: SharedRoundGame; stage: string; code: string }> = [];
   const settledRounds: Array<{ game: SharedRoundGame; roundId: string }> = [];
   for (const game of sharedRoundGames) {
-    const result = await withTransaction(async (connection) => {
-      const [settings, liveRules] = await Promise.all([
-        gameSettings(connection),
-        loadFaceLiveRules(connection),
-      ]);
-      const settlement = await settleMaturedSharedRounds(
-        connection,
-        game,
-        "",
-        settings,
-        liveRules.timezone,
+    let stage = "settings";
+    try {
+      const result = await withTransaction(async (connection) => {
+        const [settings, liveRules] = await Promise.all([
+          gameSettings(connection),
+          loadFaceLiveRules(connection),
+        ]);
+        stage = "settlement";
+        const settlement = await settleMaturedSharedRounds(
+          connection,
+          game,
+          "",
+          settings,
+          liveRules.timezone,
+        );
+        const now = new Date();
+        // Pausing the new game must not abort maintenance of Pro or strand
+        // already accepted bets. Settle existing wagers, but open no new table.
+        const paused = !settings.games[game].enabled || settings.games[game].maintenance;
+        stage = "round";
+        const round = paused ? await activeSharedRound(connection,game,now) : await ensureSharedRound(connection, game, settings.games[game], now);
+        return {
+          settled: settlement.settledCount,
+          settledRoundIds: settlement.settledRoundIds,
+          realtime: round ? sharedGameRealtimeState(round, now) : null,
+        };
+      });
+      settlements[game] = result.settled;
+      settledRounds.push(
+        ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
       );
-      const now = new Date();
-      // Pausing the new game must not abort maintenance of Pro or strand
-      // already accepted bets. Settle existing wagers, but open no new table.
-      const paused = !settings.games[game].enabled || settings.games[game].maintenance;
-      const round = paused ? await activeSharedRound(connection,game,now) : await ensureSharedRound(connection, game, settings.games[game], now);
-      return {
-        settled: settlement.settledCount,
-        settledRoundIds: settlement.settledRoundIds,
-        realtime: round ? sharedGameRealtimeState(round, now) : null,
-      };
-    });
-    settlements[game] = result.settled;
-    settledRounds.push(
-      ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
-    );
-    if (result.realtime) {
-      if ((game === TEEN_PATTI_ID || game === "teen_patti_pro") && result.settled > 0) {
-        const activity=await readTableActivity(game as TableGame,result.realtime.round.id,result.realtime.round.number);
-        if(game===TEEN_PATTI_ID)result.realtime.princessActivity=activity;else result.realtime.tableActivity=activity;
+      if (result.realtime) {
+        if ((game === TEEN_PATTI_ID || game === "teen_patti_pro") && result.settled > 0) {
+          stage = "activity";
+          const activity = await readTableActivity(game as TableGame, result.realtime.round.id, result.realtime.round.number);
+          if (game === TEEN_PATTI_ID) result.realtime.princessActivity = activity;
+          else result.realtime.tableActivity = activity;
+        }
+        realtime.push(result.realtime);
       }
-      realtime.push(result.realtime);
+    } catch (error) {
+      // One unavailable table must not suppress every healthy table's phase.
+      // Failed settlement transactions roll back; never replay their commands.
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : error instanceof Error ? error.name : "UNKNOWN";
+      const failure = { game, stage, code };
+      failures.push(failure);
+      console.error("GAME_MAINTENANCE_FAILED", JSON.stringify(failure));
     }
   }
   return {
+    failures,
     settlements,
     settledRounds,
     realtime,

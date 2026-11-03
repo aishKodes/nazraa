@@ -31,7 +31,9 @@ export async function GET(request: Request) {
     return NextResponse.json({
       settlements: result.settlements,
       totalSettlements: result.totalSettlements,
+      failedGames: result.failures,
     }, {
+      status: result.failures.length ? 503 : 200,
       headers: { "Cache-Control": "no-store" },
     });
   } catch {
