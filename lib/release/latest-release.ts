@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.5.11";
-const releaseBuild = 7423;
+const releaseVersion = "2.5.12";
+const releaseBuild = 7424;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.11/Nazraa-Live-2.5.11-7423-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.12/Nazraa-Live-2.5.12-7424-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,12 +34,13 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 261_262_547,
-  sha256: "8d0d2193aa6707e363be8ab32aea691efa50cefd3ac1f5e50bcda6adb111a62e",
+  apkSizeBytes: 261_262_543,
+  sha256: "213e1f8bde41f6b8f55cc71cd2ab967d4fb2c2f4d5159b73eab132af3b513946",
   releaseDate: "2026-11-03",
   releaseNotes: [
     "Original premium role frames, sculpted tags and queued room entries.",
-    "Rich bounded gift effects and recipient spotlights that respect games and controls.",
+    "156 integrated gift visuals with verified remote playback, bounded effects and recipient spotlights.",
+    "Fixed remote video/Lottie loading fallback; games retain interaction priority.",
     "Transparent Princess 90% paytable with a 5% fee, applied to new rounds only.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
