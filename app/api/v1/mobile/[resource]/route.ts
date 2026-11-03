@@ -1735,7 +1735,7 @@ export async function POST(
           return errorResponse(new Error("Forbidden."), 403);
         const parsed = sharedBetCommandSchema.parse(body);
         const result = await placeSharedGameBets(identity, parsed);
-        after(() => publishSharedGameBetInvalidation(parsed.game));
+        after(() => publishSharedGameBetInvalidation(parsed.game,parsed.game==='teen_patti'?result.princessActivity:undefined));
         return NextResponse.json(result, {
           status: 201,
         });

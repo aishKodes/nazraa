@@ -1,3 +1,7 @@
+import {
+  princessChartActivity,
+  invalidatePrincessChartRanking,
+} from './princess-chart-activity';
 import "server-only";
 import {luckyPolicy,drawLucky,type LuckyPolicy} from "@/lib/policy/lucky-gifts";
 import {giftSettlementPolicy} from "@/lib/policy/gift-settlement-policy";
@@ -2363,7 +2367,15 @@ export async function maintainSharedGameRounds() {
     settledRounds.push(
       ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
     );
-    if (result.realtime) realtime.push(result.realtime);
+    if (result.realtime) {
+      if (game === TEEN_PATTI_ID && result.settled > 0) {
+        invalidatePrincessChartRanking();
+        result.realtime.princessActivity = await readPrincessActivity(
+          result.realtime.round.id, result.realtime.round.number,
+        );
+      }
+      realtime.push(result.realtime);
+    }
   }
   return {
     settlements,
@@ -2530,15 +2542,32 @@ async function sharedRoundStatePayload(
   };
 }
 
+// Read this optional display projection after the financial transaction commits.
+// Its failure must never turn a committed wager into an apparent failed command.
+async function readPrincessActivity(roundId: string, roundNumber: number) {
+  try {
+    return await withTransaction(c => princessChartActivity(c, roundId, roundNumber));
+  } catch {
+    console.warn('Princess public chart projection unavailable; financial acknowledgement preserved');
+    return undefined;
+  }
+}
+
 export async function gameSharedRoundState(identity: MobileIdentity, gameValue: string) {
   const game = sharedGame(gameValue);
-  return withTransaction(async (connection) => {
+  const response = await withTransaction(async (connection) => {
     const settings = await gameSettings(connection);
     const now = new Date();
     const round = await ensureSharedRound(connection, game, settings.games[game], now);
     const config=roundGameConfig(round,settings.games[game]);
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
+  return {
+    ...response,
+    ...(game === TEEN_PATTI_ID ? {
+      princessActivity: await readPrincessActivity(response.round.id, response.round.number),
+    } : {}),
+  };
 }
 
 export async function placeSharedGameBets(identity: MobileIdentity, input: {
@@ -2547,10 +2576,12 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
   const game = sharedGame(input.game);
   const bets = canonicalBets(input.bets);
   const transact = game === LION_VS_TIGER_ID || game===TEEN_PATTI_ID ? withIdempotentTransaction : withTransaction;
+  let princessSettled = 0;
   const response = await transact(async (connection) => {
     const settings = await gameSettings(connection);
     const { timezone } = await loadFaceLiveRules(connection);
-    await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
+    const settled = await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
+    if (game === TEEN_PATTI_ID) princessSettled = settled.settledCount;
     const now = new Date();
     const round = await ensureSharedRound(connection, game, settings.games[game], now);
     const config=roundGameConfig(round,settings.games[game]);
@@ -2643,7 +2674,14 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     }
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
-  return response ?? gameSharedRoundState(identity,game);
+  if (princessSettled > 0) invalidatePrincessChartRanking();
+  if (!response) return gameSharedRoundState(identity, game);
+  return {
+    ...response,
+    ...(game === TEEN_PATTI_ID ? {
+      princessActivity: await readPrincessActivity(response.round.id, response.round.number),
+    } : {}),
+  };
 }
 
 function gameRoundResponse(row: RowDataPacket) {

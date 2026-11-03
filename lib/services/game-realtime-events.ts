@@ -1,10 +1,19 @@
+import type { PrincessChartActivity } from "@/lib/db/repositories/princess-chart-activity";
 import { createClient, type RedisClientType } from "redis";
 
 /** Public shared-round state only. Personal bets, wallet balances and payout
  * details remain on authenticated SQL APIs. */
 export type SharedGameRealtimeState = {
-  game: "teen_patti" | "teen_patti_pro" | "luck77" | "greedy_lion" | "greedy_king" | "bounty_football" | "lion_vs_tiger";
-  publicPreview?: Record<string,unknown>&{cards?:number[]};
+  game:
+    | "teen_patti"
+    | "teen_patti_pro"
+    | "luck77"
+    | "greedy_lion"
+    | "greedy_king"
+    | "bounty_football"
+    | "lion_vs_tiger";
+  princessActivity?: PrincessChartActivity;
+  publicPreview?: Record<string, unknown> & { cards?: number[] };
   round: {
     id: string;
     number: number;
@@ -18,7 +27,7 @@ export type SharedGameRealtimeState = {
   };
   outcome: Record<string, unknown> | null;
   winningItemId?: string;
-  settlementStatus?: 'RESULT_COMMITTED';
+  settlementStatus?: "RESULT_COMMITTED";
 };
 
 let publisher: RedisClientType | undefined;
@@ -31,30 +40,60 @@ async function connectedPublisher(): Promise<RedisClientType | undefined> {
   if (!connecting) {
     const client = createClient({ url, socket: { connectTimeout: 1500 } });
     client.on("error", () => undefined);
-    connecting = client.connect().then(() => {
-      publisher = client as RedisClientType;
-      return publisher;
-    }).catch(async () => {
-      await client.disconnect().catch(() => undefined);
-      throw new Error("Game realtime publish unavailable");
-    }).finally(() => { connecting = undefined; });
+    connecting = client
+      .connect()
+      .then(() => {
+        publisher = client as RedisClientType;
+        return publisher;
+      })
+      .catch(async () => {
+        await client.disconnect().catch(() => undefined);
+        throw new Error("Game realtime publish unavailable");
+      })
+      .finally(() => {
+        connecting = undefined;
+      });
   }
   return connecting;
 }
 
 /** Cache the current public phase in Redis and publish only phase, result, or
  * round transitions. The Flutter countdown derives from phaseEndsAt locally. */
-export async function publishSharedGameRealtimeState(state: SharedGameRealtimeState): Promise<void> {
+export async function publishSharedGameRealtimeState(
+  state: SharedGameRealtimeState,
+): Promise<void> {
   try {
     const client = await connectedPublisher();
     if (!client) return;
+    if (state.game === "teen_patti") {
+      if (state.princessActivity)
+        await client.set(
+          "game:princess:activity",
+          JSON.stringify(state.princessActivity),
+          { EX: 120 },
+        );
+      else {
+        const cached = await client.get("game:princess:activity");
+        if (cached) {
+          const activity = JSON.parse(cached) as PrincessChartActivity;
+          if (activity.roundId === state.round.id)
+            state = { ...state, princessActivity: activity };
+        }
+      }
+    }
     const serialized = JSON.stringify(state);
     const key = `game:state:${state.game}`;
-    if (await client.get(key) === serialized) return;
+    if ((await client.get(key)) === serialized) return;
     await client.set(key, serialized, { EX: 120 });
     await client.publish(
       `game:${state.game}`,
-      JSON.stringify({ type: "GAME_CHANGED", game: state.game, reason: "ROUND", state, serverNow: Date.now() }),
+      JSON.stringify({
+        type: "GAME_CHANGED",
+        game: state.game,
+        reason: "ROUND",
+        state,
+        serverNow: Date.now(),
+      }),
     );
   } catch {
     // Realtime must not turn a durable settlement into an apparent failure.
@@ -62,13 +101,27 @@ export async function publishSharedGameRealtimeState(state: SharedGameRealtimeSt
 }
 
 /** A successful bet includes private state, so send an invalidation only. */
-export async function publishSharedGameBetInvalidation(game: SharedGameRealtimeState["game"]): Promise<void> {
+export async function publishSharedGameBetInvalidation(
+  game: SharedGameRealtimeState["game"],
+  activity?: PrincessChartActivity,
+): Promise<void> {
   try {
     const client = await connectedPublisher();
     if (!client) return;
     await client.publish(
       `game:${game}`,
-      JSON.stringify({ type: "GAME_CHANGED", game, reason: "BET", serverNow: Date.now() }),
+      JSON.stringify({
+        type: "GAME_CHANGED",
+        game,
+        reason: game === "teen_patti" && activity ? "PRINCESS_ACTIVITY" : "BET",
+        ...(game === "teen_patti" && activity
+          ? {
+              roundId: activity.roundId,
+              state: { game, princessActivity: activity },
+            }
+          : {}),
+        serverNow: Date.now(),
+      }),
     );
   } catch {
     // Private HTTP reconciliation remains the fallback.
