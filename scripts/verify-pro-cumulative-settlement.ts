@@ -64,6 +64,9 @@ async function main() {
       await c.execute("INSERT INTO game_shared_bets (id,request_id,round_id,application_user_id,target_id,amount,game_name) VALUES (?,?,?,?,'2',1000,'teen_patti_pro')",[randomUUID(),requestRowId,legacy.round.id,user.userId]);
       await c.commit();
     } catch(e) {await c.rollback();throw e;}
+    // Old binaries predate the nullable discriminator; the optimized lookup
+    // must retain their accepted wagers as well as current scoped rows.
+    await c.execute("UPDATE game_shared_bets SET game_name=NULL WHERE round_id=?",[legacy.round.id]);
     const beforeSettlement = await wallet();
     await mature(legacy.round.id);
     const [settled] = await c.query<mysql.RowDataPacket[]>("SELECT wager_total,gross_payout,payout_total FROM game_shared_settlements WHERE round_id=? AND application_user_id=?",[legacy.round.id,user.userId]);
@@ -73,7 +76,7 @@ async function main() {
     await maintainSharedGameRounds();await maintainSharedGameRounds();assert.equal(await wallet(),once);
     const [credits] = await c.query<mysql.RowDataPacket[]>("SELECT COUNT(*) n FROM ledger_transactions WHERE idempotency_key=?",[`SHARED_GAME:${legacy.round.id}:${user.userId}:CREDIT`]);
     assert.equal(Number(credits[0].n),1);
-    await writeFile('/tmp/nazraa-pro-cumulative-recovery.json',JSON.stringify({sequentialThirdHandRejected:true,rejectedDebit:0,crownIndependent:true,concurrentAccepted:2,concurrentRejected:1,legacyWager:3000,legacySettlements:settled.length,legacyCreditCount:Number(credits[0].n),phaseRecovered:true},null,2));
+    await writeFile('/tmp/nazraa-pro-cumulative-recovery.json',JSON.stringify({sequentialThirdHandRejected:true,rejectedDebit:0,crownIndependent:true,concurrentAccepted:2,concurrentRejected:1,legacyNullDiscriminator:true,legacyWager:3000,legacySettlements:settled.length,legacyCreditCount:Number(credits[0].n),phaseRecovered:true},null,2));
     console.log("PASS sequential and concurrent cumulative two-hand admission; no rejected debit; Crown preserved; legacy accepted three-hand wager settled exactly once at original round rules.");
   } finally {c.release();await pool.end();}
 }

@@ -29,3 +29,38 @@ The complete owner-supplied 90.73-second Pro video was inspected at one frame/se
 Evidence directory: `/Users/aishwaryam/nazraa-release-evidence/20261103-pro-music/`.
 
 Physical Bluetooth/headset and human listening are not claimed from emulator tests. Android AudioTrack render progress and separate decoded LiveKit RTP PCM are the actual audio evidence. Release recordings/artifact checks will be appended after verification.
+
+
+## Final release and production verification — November 4 IST
+
+- Signed release: **2.5.15+7427**, compiled mobile commit `871b06b3fe8d2df8c7ec4e41848ddda231cde03b`. APK package `com.nazraa.live`, min SDK 24, target SDK 36; permanent signing certificate unchanged.
+- APK SHA-256: `24b480a5267b03a337c3a3e7713e021e41fe665f7b531e26c1f81b1add517640`.
+- AAB SHA-256: `d92fee9450760b771c6e4fee1f65142bf062cb227f4fdf3d661bd6351425ecd9`.
+- Public page: https://nazralive.in/download. Published assets: https://github.com/aishKodes/Nazraa-Releases/releases/tag/v2.5.15. GitHub digests match; a full external download of the public APK was byte-count/hash verified. Exact signed APK installed and exercised on Android 36.
+- Latest app config points to 2.5.15 / build 7427. Existing minimum version 2.1.0 was preserved. No second APK was needed for the subsequent backend repair.
+
+### Production-only Pro failure found and corrected
+
+The final exact-APK production check caught missing result phases despite successful isolated-stack tests. The common maintenance endpoint had been returning 503: an October 31 accepted Pro wager covered all three hands (2,000 Coins total). Admission validated each separate request, whereas settlement re-applied the two-hand admission rule to their aggregate and threw. Because maintenance previously aborted its entire loop, that one unresolved record also suppressed publication of healthy phase states.
+
+Backend `e758e2e` fixes the actual mismatch. After acquiring the existing wallet lock, new Pro commands validate all previously accepted hands plus the new intent before any debit. Sequential and concurrent third-hand attempts are rejected without deduction; Crown remains independent. Previously accepted lines settle using their immutable original paytable, without retroactively rejecting admission. The stranded production record now has exactly one settlement (1,389 Coins payout under its existing outcome/rate). No outcome, rate, fee or wallet record was manually fabricated or rewritten. New financial retries and the old nullable game discriminator are covered by real disposable-SQL tests.
+
+Backend `c32abc3` isolates transactions/failure reporting per game, so one unavailable table cannot silence every healthy table. Private cron diagnostics contain only game/stage/error code. No SQL, raw responses or secrets enter mobile UI.
+
+### Measured phase-publishing delay
+
+The original maintenance pass also took 4,514 ms, longer than Pro's 2-second drawing window. Query plans showed each game scanning all 331,147 historical bet lines and latest-round lookup filesorting approximately 182,000 round rows. Backend `cb4af7f` plus additive migration `0116` provides the covering game/round/user lookup, preserves nullable legacy rows, tests settlement existence before historical round lookup, and uses indexed MAX(start time) with the original round-number tiebreak.
+
+Actual production samples: settlement lookup **451 → 60 ms**, latest-round lookup **531 → 1 ms**, whole seven-game maintenance **4,514 → 598 ms**. These are measured server samples, not invented percentile claims. No cadence/economy setting changed. All deployments checked fresh verified offsite backup, source rollback image/archive, unchanged protected settings and preservation of the other 14 container identities. Only API was restarted; LiveKit/media were untouched.
+
+A passive 46-second production Redis observer then recorded all three phases and authoritative result outcomes: Princess 11 events / 4 observed round IDs, Pro 10 events / 3 observed round IDs, each with five result lifecycle events. These include partial boundary rounds; they are not claims of four complete rounds in 46 seconds. Unrelated Lucky 77/Lion-vs-Tiger next-round creation occasionally logs retryable `ER_CHECKREAD`; the next worker pass recovers. Healthy-table phase publication remains isolated.
+
+### Final actual-app evidence
+
+- `exact-apk-production-pro-final.mp4`: exact published APK, real production state, complete betting/lock/sequential reveal/winner/reset. No production bets placed.
+- `exact-apk-production-princess-final.mp4`: exact published APK, real production opening card per chair, reveal/crown and next-round reset. No production bets placed.
+- `pro-full-app.mp4`, `princess-full-app.mp4`: actual full app with isolated real SQL/API/WS accepted wagers and three players, winner/podium/next-round reset. These are not mock screens or production wagering.
+- `production-scheduler-sql-before-after.png`, `production-phase-verification.png`, `production-pro-legacy-recovered.png` and `final-production-verification.json` retain the production results.
+- `music-audio-proof.json`, `room-music-rtp.json`, `android-monitor-actual-route.txt`: native monitor's actual speaker route and rendered frames; real separately decoded remote RTP (playing/resumed mean absolute PCM 448.5, pause 0 for 26.5 seconds), exactly one active Host audio publication. Three native tests pass.
+
+Final focused Flutter count is **49 passed**, not the earlier 44. Full-run comparison retains the same 22 pre-existing broad-suite failures; the additional deliberately changed Pro golden was visually reviewed and passes separately. No unrelated golden was blanket accepted. Physical headset/Bluetooth and human listening remain unverified; emulator AudioTrack and RTP evidence do not establish every physical route.
