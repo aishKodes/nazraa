@@ -32,3 +32,32 @@ Both owner videos were examined over their entire duration using timestamped she
 `green-winner.mp4`, `blue-winner.mp4`, `red-winner.mp4` are actual Flutter UI frame exports, using outcomes/projections from the controlled SQL test. They are not recordings of live production wagers. `flutter/*-top3-details.png` shows the actual detail sheet; `*-betting-before.png` versus `*-betting.png` shows accepted participation before the result; `*-reset.png` shows the next round empty while settled rankings remain. DP fallbacks are truthful where fixture accounts have no uploaded image. Real DP URL identity mapping is separately asserted.
 
 Physical multi-phone QA was not performed. Two real authenticated logical WebSocket clients and Android emulator release checks provide the available coverage. No claim is made that unrelated pre-existing full-suite failures are fixed.
+
+
+## Production release verification
+
+Published `2.5.13+7425` to the official website and existing GitHub release repository. The uploaded GitHub APK/AAB digests match the locally signed files. The permanent signing certificate is unchanged, package `com.nazraa.live`, targetSdk 36. The exact APK was installed on Android 16 and opened with an existing authenticated session. The 35-second production recording shows sequential reveals, correct chart winner presentation and subsequent clean rounds. Real production names and uploaded DPs are visible in per-chart Top 3; no production bet was placed to manufacture this smoke-test evidence. Android `gfxinfo` reported zero attributable Flutter frames, so its percentile fields cannot be used to claim a measured FPS or frame-time improvement.
+
+Backend deployment restarted only the API. All 14 other container identities/start times were preserved. The game worker calls that API; it did not require restarting. Protected game/media/economy settings were unchanged. The latest-version pointer is 2.5.13; minimum 2.1.0 and maintenance=false were preserved, with a SYSTEM audit. Exact artifact hashes and rollback pointers are in `release.json`.
+
+## Files/modules changed
+
+Flutter:
+- `lib/core/repositories/app_repository.dart`: optional public Princess activity field.
+- `lib/data/backend/backend_repository.dart`: parse that optional projection.
+- `lib/features/games/core/game_wallet_service.dart`: Princess-only version/round-safe display merge; no wallet mutations changed.
+- `lib/features/games/teen_patti_chairs/teen_patti_game.dart`: integrate the three chart effects, participant markers/ranks, responsive space and concise Rules disclosure.
+- `lib/features/games/teen_patti_chairs/princess_chart_widgets.dart`: reusable bounded winner painter, avatar rendering and independent Top 3/detail sheets.
+- `test/teen_patti_chairs_test.dart` and the two Princess goldens: focused coverage and visual evidence exporter.
+- `pubspec.yaml`, `lib/core/config/app_environment.dart`: version only.
+
+Backend:
+- `lib/db/repositories/princess-chart-activity.ts`: read-only projection over existing accepted bets/daily winnings, five-second bounded ranking cache.
+- `lib/db/repositories/mobile-product.ts`: append optional projection after commit and invalidate it after durable settlement.
+- `lib/services/game-realtime-events.ts`: public Princess participation delta over existing Redis/WS transport.
+- `app/api/v1/mobile/[resource]/route.ts`: publish the accepted public projection after a bet.
+- `lib/release/latest-release.ts`: public release URL/hash/notes.
+- `scripts/verify-princess-chart-activity.ts`, `scripts/verify-princess-chart-websocket.ts`: disposable SQL and actual two-client edge checks.
+- `scripts/deploy-princess-charts-20261103.py`, `scripts/publish-princess-release-2.5.13.cjs`: scoped guarded deployment and audited latest-version update.
+
+No new tables, migrations, economic configuration or paid services were created.
