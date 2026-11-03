@@ -9,9 +9,11 @@ const mysql=require('mysql2/promise');
    settlement:`SELECT bet.round_id,bet.application_user_id FROM game_shared_bets bet INNER JOIN game_shared_rounds round ON round.id=bet.round_id LEFT JOIN game_shared_settlements settlement ON settlement.round_id=bet.round_id AND settlement.application_user_id=bet.application_user_id WHERE round.game_name=? AND round.drawing_ends_at<=UTC_TIMESTAMP(3) AND settlement.id IS NULL GROUP BY bet.round_id,bet.application_user_id ORDER BY CASE WHEN bet.application_user_id=? THEN 0 ELSE 1 END,CASE WHEN bet.application_user_id=? THEN MAX(round.drawing_ends_at) END DESC,MAX(round.drawing_ends_at) ASC,bet.round_id LIMIT 24`,
    active:'SELECT id FROM game_shared_rounds WHERE game_name=? AND betting_starts_at<=UTC_TIMESTAMP(3) AND result_ends_at>UTC_TIMESTAMP(3) ORDER BY betting_starts_at DESC LIMIT 1',
    latest:'SELECT id FROM game_shared_rounds WHERE game_name=? ORDER BY betting_starts_at DESC,round_number DESC LIMIT 1',
+   optimizedLatest:'SELECT id FROM game_shared_rounds WHERE game_name=? AND betting_starts_at=(SELECT MAX(betting_starts_at) FROM game_shared_rounds WHERE game_name=?) ORDER BY round_number DESC LIMIT 1',
   };
+  queries.optimizedSettlement=queries.settlement.replace('SELECT bet.','SELECT STRAIGHT_JOIN bet.').replace('INNER JOIN game_shared_rounds round ON round.id=bet.round_id LEFT JOIN game_shared_settlements settlement ON settlement.round_id=bet.round_id AND settlement.application_user_id=bet.application_user_id','LEFT JOIN game_shared_settlements settlement ON settlement.round_id=bet.round_id AND settlement.application_user_id=bet.application_user_id INNER JOIN game_shared_rounds round ON round.id=bet.round_id').replace('WHERE round.game_name=?','WHERE (bet.game_name=? OR bet.game_name IS NULL) AND round.game_name=?');
   const timings={};for(const [name,sql] of Object.entries(queries)){
-   const params=name==='settlement'?['teen_patti_pro','','']:['teen_patti_pro'];
+   const params=name==='settlement'?['teen_patti_pro','','']:name==='optimizedSettlement'?['teen_patti_pro','teen_patti_pro','','']:name==='optimizedLatest'?['teen_patti_pro','teen_patti_pro']:['teen_patti_pro'];
    const [plan]=await c.query('EXPLAIN '+sql,params);const t=performance.now();const [rows]=await c.query(sql,params);
    timings[name]={milliseconds:Math.round(performance.now()-t),returnedRows:rows.length,plan:plan.map(r=>({table:r.table,type:r.type,key:r.key,rows:r.rows,extra:r.Extra}))};
   }

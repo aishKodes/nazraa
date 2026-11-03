@@ -2108,7 +2108,7 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
   if (totalSeconds < 1) throw new Error("This shared game has an invalid round duration.");
   const epochNumber = Math.floor(now.getTime() / (totalSeconds * 1000));
   const [latest]=await connection.query<SharedRoundRow[]>(
-    'SELECT * FROM game_shared_rounds WHERE game_name=? ORDER BY betting_starts_at DESC,round_number DESC LIMIT 1',[game]);
+    'SELECT * FROM game_shared_rounds WHERE game_name=? AND betting_starts_at=(SELECT MAX(betting_starts_at) FROM game_shared_rounds WHERE game_name=?) ORDER BY round_number DESC LIMIT 1',[game,game]);
   // A timing edit may place the epoch's nominal start inside the preceding
   // table. Start at that table's end and keep a monotonically unique round
   // number instead of reusing an ended round or overlapping betting windows.
@@ -2208,12 +2208,13 @@ async function settleMaturedSharedRounds(
   businessTimezone: string,
 ) {
   const [pairs] = await connection.query<(RowDataPacket & { round_id: string; application_user_id: string })[]>(
-    `SELECT bet.round_id, bet.application_user_id
+    `SELECT STRAIGHT_JOIN bet.round_id, bet.application_user_id
      FROM game_shared_bets bet
-     INNER JOIN game_shared_rounds round ON round.id = bet.round_id
      LEFT JOIN game_shared_settlements settlement
        ON settlement.round_id = bet.round_id AND settlement.application_user_id = bet.application_user_id
-     WHERE round.game_name = ? AND round.drawing_ends_at <= UTC_TIMESTAMP(3) AND settlement.id IS NULL
+     INNER JOIN game_shared_rounds round ON round.id = bet.round_id
+     WHERE (bet.game_name = ? OR bet.game_name IS NULL)
+       AND settlement.id IS NULL AND round.game_name = ? AND round.drawing_ends_at <= UTC_TIMESTAMP(3)
      GROUP BY bet.round_id, bet.application_user_id
      ORDER BY
        CASE WHEN bet.application_user_id = ? THEN 0 ELSE 1 END,
@@ -2221,7 +2222,7 @@ async function settleMaturedSharedRounds(
        MAX(round.drawing_ends_at) ASC,
        bet.round_id
      LIMIT 24`,
-    [game, priorityUserId, priorityUserId],
+    [game, game, priorityUserId, priorityUserId],
   );
   let settledCount = 0;
   // A settlement is private in SQL, but its committed round ID is safe to
