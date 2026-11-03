@@ -2055,7 +2055,13 @@ function validateSharedBets(game: SharedRoundGame, input: Record<string, number>
 }
 
 function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, number>, outcome: Record<string, unknown>, config: GameRuntimeConfig): ServerGameOutcome {
-  const checked = validateSharedBets(game, bets, config);
+  // Admission limits apply before a new debit, not retroactively to durable
+  // accepted lines. Older Pro clients could submit each hand separately:
+  // their three accepted lines must settle at the immutable round paytable,
+  // rather than poison every subsequent phase/settlement for this table.
+  const checked = game === teenPattiGame
+    ? checkedBets(bets, ["0", "1", "2", "crown"], config.denominations.reduce(greatestCommonDivisor), config.maximumBet)
+    : validateSharedBets(game, bets, config);
   if (game === LION_VS_TIGER_ID) return {outcome, ...settleLionTiger(checked.bets, String(outcome.winner))};
   if(game===TEEN_PATTI_ID){
     const result=princessSettlement(checked.bets,outcome);
@@ -2642,6 +2648,17 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       [identity.userId],
     );
     if (!walletRows[0] || Number(walletRows[0].available_balance) < checked.total) throw new Error("Not enough coins.");
+    if (game === teenPattiGame) {
+      // The locked wallet serializes this user's concurrent commands. Check
+      // all accepted hands plus this intent, not just this request's payload.
+      const [previous] = await connection.query<(RowDataPacket & { target_id: string; amount: number })[]>(
+        "SELECT target_id, amount FROM game_shared_bets WHERE round_id = ? AND application_user_id = ? FOR UPDATE",
+        [round.id, identity.userId],
+      );
+      const cumulative = { ...checked.bets };
+      for (const item of previous) cumulative[String(item.target_id)] = (cumulative[String(item.target_id)] ?? 0) + Number(item.amount);
+      validateSharedBets(game, cumulative, config);
+    }
     if (game === LION_VS_TIGER_ID) {
       const [previous] = await connection.query<(RowDataPacket & {target_id:string; amount:number})[]>(
         'SELECT target_id,amount FROM game_shared_bets WHERE round_id=? AND application_user_id=? FOR UPDATE',
