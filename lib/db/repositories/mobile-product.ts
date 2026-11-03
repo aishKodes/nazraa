@@ -680,7 +680,7 @@ async function mobileBootstrapOnce(identity: MobileIdentity) {
       vip: Number(row.vip_tier), followers: Number(row.followers ?? 0), following: Number(row.following ?? 0), role: productRole(row.platform_role, row.is_host),
       cosmetics: cosmeticLoadouts.get(String(row.public_id)) ?? {} })),
     gifts: giftCatalog.gifts,
-    mallCatalog: giftCatalog.mallCatalog,
+    mallCatalog: [...giftCatalog.mallCatalog,...cosmetics.roleCatalog],
     cosmeticEntitlements: cosmetics.entitlements,
     banners: bannerRows[0].map((row) => ({ id: String(row.id), image: currentPublicAssetUrl(String(row.image_url)), title: row.title, subtitle: row.subtitle, actionType: String(row.action_type).toLowerCase(), actionTarget: row.action_target, placement: String(row.placement).toLowerCase(), priority: Number(row.priority), startAt: row.starts_at ?? new Date(0).toISOString(), endAt: row.ends_at ?? "2999-12-31T23:59:59.000Z", isActive: true })),
     announcements: [...platformNotificationRows[0], ...mobileNotificationRows[0]].map((row, index) => ({
@@ -1294,7 +1294,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       rocket,
       event: {
         id: eventId, batchId:fee.batchId, giftContext, giftEconomyType:isLucky?'LUCKY':'NORMAL', ...(isLucky?{lucky,platformFee:undefined,platformFeeBps:undefined}:{lucky:undefined,platformFee,platformFeeBps}), policyVersion, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
-        gift: { id: input.giftId, name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
+        gift: { id: input.giftId, cost:Number(gift.coin_price), economyType:isLucky?'LUCKY':'NORMAL', name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
@@ -1552,6 +1552,7 @@ function canonicalSharedRetryBets(game: string, bets: Record<string, number>) {
   // These two games store all allowed areas, including zero wagers. A sparse
   // immutable retry must compare equal to that durable expanded receipt.
   // Keep unknown keys/changed values so they still fail the equality check.
+  if (game === "teen_patti_pro") return canonicalBets({"0":0,"1":0,"2":0,crown:0,...bets});
   if (game === "luck77") return canonicalBets({watermelon: 0, seven: 0, plum: 0, ...bets});
   if (game === TEEN_PATTI_ID) return canonicalBets({green: 0, blue: 0, red: 0, ...bets});
   if (game === LION_VS_TIGER_ID) return canonicalBets({tiger: 0, draw: 0, lion: 0, ...bets});
@@ -2229,7 +2230,7 @@ async function settleMaturedSharedRounds(
       [pair.round_id, pair.application_user_id],
     );
     const [alreadyRows] = await connection.query<RowDataPacket[]>(
-      "SELECT id FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1",
+      "SELECT id FROM game_shared_settlements WHERE round_id = ? AND application_user_id = ? LIMIT 1 FOR UPDATE",
       [pair.round_id, pair.application_user_id],
     );
     if (alreadyRows[0]) continue;
@@ -2575,7 +2576,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
 }) {
   const game = sharedGame(input.game);
   const bets = canonicalBets(input.bets);
-  const transact = game === LION_VS_TIGER_ID || game===TEEN_PATTI_ID ? withIdempotentTransaction : withTransaction;
+  const transact = game === LION_VS_TIGER_ID || game === TEEN_PATTI_ID || game === "teen_patti_pro" ? withIdempotentTransaction : withTransaction;
   let princessSettled = 0;
   const response = await transact(async (connection) => {
     const settings = await gameSettings(connection);

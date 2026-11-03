@@ -2676,7 +2676,7 @@ export async function refreshRoomPresence(
       [rows[0].id, rows[0].id, reconnectGrace],
     );
     const [giftEvents] = await connection.query<RowDataPacket[]>(
-      `SELECT event.id, event.quantity, event.coin_value, event.diamond_value, event.created_at,
+      `SELECT event.id, event.quantity, event.coin_value, event.diamond_value, event.created_at, event.gift_economy_type, lucky.won lucky_won,lucky.multiplier_bps lucky_multiplier_bps,lucky.reward_coins lucky_payout_coins,
               gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
               gift.animation_key gift_animation_key, gift.asset_config gift_asset_config,
               sender.public_id sender_public_id, sender.full_name sender_name, sender.vip_tier sender_vip,
@@ -2694,6 +2694,7 @@ export async function refreshRoomPresence(
                 THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/', receiver.public_id, '?v=', FLOOR(UNIX_TIMESTAMP(receiver_avatar.updated_at) * 1000))
                 ELSE receiver.avatar_url END receiver_avatar_url
        FROM live_room_gift_events event
+       LEFT JOIN lucky_gift_results lucky ON lucky.gift_event_id=event.id
        INNER JOIN gift_catalog gift ON gift.id = event.gift_catalog_id
        INNER JOIN application_users sender ON sender.id = event.sender_application_user_id
        INNER JOIN application_users receiver ON receiver.id = event.receiver_application_user_id
@@ -3132,12 +3133,15 @@ export async function refreshRoomPresence(
       })),
       giftEvents: giftEvents.reverse().map((event) => ({
         id: String(event.id),
+        giftEconomyType:event.gift_economy_type,
+        ...(event.gift_economy_type==='LUCKY'?{lucky:{won:Boolean(event.lucky_won),multiplierBps:Number(event.lucky_multiplier_bps??0),payoutCoins:Number(event.lucky_payout_coins??0)}}:{}),
         quantity: Number(event.quantity),
         value: Number(event.coin_value),
         diamondValue: Number(event.diamond_value),
         createdAt: event.created_at,
         gift: {
           id: String(event.gift_key),
+          economyType:event.gift_economy_type,
           name: String(event.gift_name),
           symbol: event.gift_emoji ?? "🎁",
           imageUrl: event.gift_visual_url,

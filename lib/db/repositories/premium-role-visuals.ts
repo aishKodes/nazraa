@@ -1,6 +1,6 @@
 import 'server-only';
 import {createHash,randomUUID} from 'node:crypto';
-import type {RowDataPacket} from 'mysql2/promise';
+import type {PoolConnection,RowDataPacket} from 'mysql2/promise';
 import {db} from '@/lib/db/pool';
 import {withTransaction} from '@/lib/db/transaction';
 import {publicAssetOrigin} from '@/lib/config/public-api-origin';
@@ -9,7 +9,7 @@ import type {PreparedPublicImage} from '@/lib/security/public-images';
 export const premiumRoleFamilies=['owner','admin','super_admin','official','agency','cs','bd','country_manager','country_super_admin','coin_seller','manager','global_manager','host_royal','host_diamond','host_neon_luxe','host_fire'] as const;
 type Visual={assetUrl:string;assetChecksum:string;portraitScale:number;portraitOffsetY:number;entryDurationMs:number;enabled:boolean};
 function parse(v:unknown):Record<string,Visual>{try{return typeof v==='string'?JSON.parse(v):v&&typeof v==='object'?v as Record<string,Visual>:{};}catch{return {};}}
-export async function premiumRoleVisualSettings(){const [rows]=await db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.role_visuals.v6'");return parse(rows[0]?.setting_value);}
+export async function premiumRoleVisualSettings(executor:PoolConnection|ReturnType<typeof db>=db()){const [rows]=await executor.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.role_visuals.v6'");return parse(rows[0]?.setting_value);}
 export async function savePremiumRoleVisual(input:{scope:Scope;family:string;image?:PreparedPublicImage;portraitScale:number;portraitOffsetY:number;entryDurationMs:number;enabled:boolean;reason:string}){
  if(input.scope.account.role!=='MASTER')throw Error('Only Master may manage role artwork.');
  if(!premiumRoleFamilies.includes(input.family as never)||!Number.isFinite(input.portraitScale)||input.portraitScale<.15||input.portraitScale>1||!Number.isFinite(input.portraitOffsetY)||Math.abs(input.portraitOffsetY)>.3||!Number.isInteger(input.entryDurationMs)||input.entryDurationMs<2000||input.entryDurationMs>5000||input.reason.trim().length<5||input.reason.length>500)throw Error('Choose valid artwork settings and a change reason.');

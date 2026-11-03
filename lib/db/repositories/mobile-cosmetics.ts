@@ -3,6 +3,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from "mysql2/promise";
 import type { MobileIdentity } from "@/lib/auth/mobile-session";
+import {roleFrameStates,roleFrameOptions,roleFramePresentation} from "./role-frame-selection";
 import { db } from "@/lib/db/pool";
 import { withIdempotentTransaction, withTransaction } from "@/lib/db/transaction";
 
@@ -193,7 +194,7 @@ export async function equippedCosmeticLoadoutsByPublicId(
 
   const placeholders = unresolvedIds.map(() => "?").join(",");
   const executor = connection ?? db();
-  const roles = await rolePresentations(executor, unresolvedIds);
+  const [roles,frameStates]=await Promise.all([rolePresentations(executor, unresolvedIds),roleFrameStates(executor,unresolvedIds)]);
   const [rows] = await executor.query<EquippedCosmeticRow[]>(
     `SELECT user.public_id,
             entitlement.id entitlement_id, entitlement.source, entitlement.acquired_at,
@@ -232,6 +233,9 @@ export async function equippedCosmeticLoadoutsByPublicId(
   for (const publicId of unresolvedIds) {
     const loadout = loadouts.get(publicId) ?? {};
     if (roles.has(publicId)) loadout.ROLE_PRESENTATION = roles.get(publicId)!;
+    const frameState=frameStates.get(publicId);
+    if(frameState?.disabled) loadout.ROLE_PRESENTATION={...(loadout.ROLE_PRESENTATION??rolePresentation('')),effectConfig:{...(loadout.ROLE_PRESENTATION?.effectConfig??{}),roleFrameDisabled:true}};
+    if(frameState?.selected&&frameState.allowed.includes(frameState.selected))loadout.AVATAR_FRAME=await roleFramePresentation(frameState.selected,executor);
     loadouts.set(publicId, loadout);
     cacheEquippedLoadout(publicId, loadout);
   }
@@ -273,12 +277,16 @@ async function snapshotOnConnection(connection: PoolConnection, userId: string) 
   const [owners] = await connection.query<RowDataPacket[]>(
     "SELECT public_id FROM application_users WHERE id = ? LIMIT 1", [userId],
   );
+  let roleOptions:Awaited<ReturnType<typeof roleFrameOptions>>|null=null;
   if (owners[0]) {
+    const frames=(await roleFrameStates(connection,[String(owners[0].public_id)])).get(String(owners[0].public_id));
+    if(frames){roleOptions=await roleFrameOptions(frames,connection);if(roleOptions.selected)loadout.AVATAR_FRAME=roleOptions.selected;if(frames.disabled)loadout.ROLE_PRESENTATION={...rolePresentation(''),effectConfig:{roleFrameDisabled:true}};}
     const role=(await rolePresentations(connection,[String(owners[0].public_id)])).get(String(owners[0].public_id));
-    if(role)loadout.ROLE_PRESENTATION=role;
+    if(role)loadout.ROLE_PRESENTATION={...role,effectConfig:{...role.effectConfig,...loadout.ROLE_PRESENTATION?.effectConfig}};
   }
   return {
-    entitlements: rows.map(entitlementPayload),
+    entitlements: [...rows.map(entitlementPayload),...(roleOptions?.entitlements??[])],
+    roleCatalog:roleOptions?.catalog??[],
     loadout,
   };
 }
@@ -525,7 +533,17 @@ export async function setCosmeticEquipped(
   identity: MobileIdentity,
   input: { entitlementId: string; equipped: boolean },
 ) {
-  return withTransaction(async (connection) => {
+  const result=await withTransaction(async (connection) => {
+    // Serialize all frame choices per account, including virtual role grants.
+    await connection.query('SELECT id FROM application_users WHERE id=? FOR UPDATE',[identity.userId]);
+    if(input.entitlementId.startsWith('role-frame:')){
+      const family=input.entitlementId.slice('role-frame:'.length);
+      const state=(await roleFrameStates(connection,[identity.publicId])).get(identity.publicId);
+      if(!state?.allowed.includes(family))throw Error('This frame is not available for your account.');
+      await connection.execute('UPDATE application_users SET equipped_role_frame=? WHERE id=?',[input.equipped?family:'NONE',identity.userId]);
+      if(input.equipped)await connection.execute("UPDATE user_cosmetic_entitlements e JOIN gift_catalog g ON g.id=e.gift_catalog_id SET e.equipped_at=NULL WHERE e.application_user_id=? AND g.catalog_type='AVATAR_FRAME'",[identity.userId]);
+      return snapshotOnConnection(connection,identity.userId);
+    }
     const [rows] = await connection.query<EntitlementRow[]>(
       `SELECT entitlement.id entitlement_id, entitlement.source, entitlement.acquired_at,
               entitlement.expires_at, entitlement.equipped_at, entitlement.manually_unequipped_at,
@@ -558,6 +576,7 @@ export async function setCosmeticEquipped(
         }
       }
       const type = presentationType(String(selected.catalog_type));
+      if(type==='AVATAR_FRAME')await connection.execute('UPDATE application_users SET equipped_role_frame=NULL WHERE id=?',[identity.userId]);
       await connection.execute(
         `UPDATE user_cosmetic_entitlements entitlement
          INNER JOIN gift_catalog catalog ON catalog.id = entitlement.gift_catalog_id
@@ -578,4 +597,6 @@ export async function setCosmeticEquipped(
     }
     return snapshotOnConnection(connection, identity.userId);
   });
+  equippedLoadoutCache.delete(identity.publicId);
+  return result;
 }

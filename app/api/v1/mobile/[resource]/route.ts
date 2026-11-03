@@ -146,6 +146,9 @@ import {
 } from "@/lib/db/repositories/mobile-safety";
 
 export const dynamic = "force-dynamic";
+import { db } from "@/lib/db/pool";
+import type { RowDataPacket } from "mysql2/promise";
+import { giftHistory } from "@/lib/db/repositories/gift-history";
 import { ownerRoomProfile, roomPresentation } from "@/lib/db/repositories/room-profile";
 import { publishRoomConfigEvent } from "@/lib/services/room-realtime-events";
 import { audioPkSnapshot,audioPkCandidates,audioPkInvite,audioPkAction,authorizeAudioPkBridge } from "@/lib/db/repositories/audio-party-pk";
@@ -894,9 +897,12 @@ export async function POST(
       }
       if (resource === "mall-equip") {
         const parsed = z
-          .object({ entitlementId: z.string().uuid(), equipped: z.boolean() })
+          .object({ entitlementId: z.string().uuid().or(z.string().regex(/^role-frame:[a-z_]{2,30}$/)), equipped: z.boolean() })
           .parse(body);
-        return NextResponse.json(await setCosmeticEquipped(identity, parsed));
+        const result=await setCosmeticEquipped(identity,parsed);
+        const [rooms]=await db().query<RowDataPacket[]>("SELECT room.room_code FROM live_room_members member JOIN live_rooms room ON room.id=member.room_id WHERE member.application_user_id=? AND member.left_at IS NULL AND room.status IN ('ACTIVE','LOCKED')",[identity.userId]);
+        for(const room of rooms)notifyRoom(String(room.room_code),'presence');
+        return NextResponse.json(result);
       }
       if (resource === "notifications-read") {
         return NextResponse.json(await markMobileNotificationsRead(identity));
@@ -1362,7 +1368,14 @@ export async function POST(
         }
         return NextResponse.json(result);
       }
-      if (resource === "room-profile") return NextResponse.json(await ownerRoomProfile(identity));
+      if (resource === "gift-history") {
+        const parsed=z.object({scope:z.enum(['sent','received','room']),period:z.enum(['all','monthly']).default('all'),roomCode:z.string().trim().min(3).max(80).optional(),before:z.string().max(256).optional()}).parse(body);
+        return NextResponse.json(await giftHistory(identity,parsed),{headers:{'Cache-Control':'private, no-store'}});
+      }
+      if (resource === "room-profile") {
+        const parsed = z.object({roomKind:z.enum(['PARTY','FACE']).default('PARTY')}).parse(body);
+        return NextResponse.json(await ownerRoomProfile(identity, parsed.roomKind));
+      }
       if (resource === "room-config") {
         const parsed = z.object({roomCode: z.string().trim().min(3).max(80)}).parse(body);
         return NextResponse.json(await roomPresentation(identity, parsed.roomCode));
