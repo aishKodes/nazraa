@@ -51,14 +51,14 @@ export function dealChairRound(){
 }
 /** Committed visible-card rounds preserve their presentation across pricing
  * versions. V2 omits cards: old APKs index any non-null array. */
-export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false):Record<string,unknown>&{cards?:number[]}{
+export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false,startingCardVisible=outcome.publicStartingCard===true):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
  if(['PRINCESS_HIDDEN_FIXED_3X_V5','PRINCESS_HIDDEN_90_FEE_5_V6'].includes(String(outcome.rulesVersion))&&quote){
   const hands=outcome.hands as {cards:number[]}[];
   return {payoutVersion:outcome.rulesVersion,feeBps:quote.feeBps,
    ...(outcome.rulesVersion==='PRINCESS_HIDDEN_90_FEE_5_V6'?{rulesVersion:outcome.rulesVersion,paytableQuoteId:outcome.commitment,profileId:quote.profileId,grossNumerator:quote.grossNumerator,grossDenominator:quote.grossDenominator,netMultiplierPpm:quote.netMultiplierPpm,rounding:quote.rounding}:{}),
    grossMultiplierPpm:quote.grossMultiplierPpm,targetRtpPpm:quote.targetRtpPpm,
-   ...(bettingClosed?{cards:hands.map(h=>h.cards[0])}:{})};
+   ...((bettingClosed||startingCardVisible)?{cards:hands.map(h=>h.cards[0]),startingCardVisible:true}:{})};
  }
  if(quote && ['PRINCESS_PUBLIC_CARD_QUOTE_V3','PRINCESS_PUBLIC_CARD_FIXED_3X_V4'].includes(String(outcome.rulesVersion)) && quote.rulesVersion===outcome.rulesVersion){
   // Keep the preview protocol understood by installed V3 APKs. The separate
@@ -67,7 +67,7 @@ export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false)
    grossMultiplierPpm:quote.grossMultiplierPpm,feeBps:quote.feeBps,
    ...(outcome.rulesVersion==='PRINCESS_PUBLIC_CARD_QUOTE_V3'?{targetRtpPpm:quote.targetRtpPpm}:{})};
  }
- if(!bettingClosed)return {};
+ if(!bettingClosed&&!startingCardVisible)return {};
  const hands=outcome.hands as {cards:number[]}[];
  if(!Array.isArray(hands)||hands.length!==3)throw new Error('TeenPatti round is unavailable.');
  return {cards:hands.map(hand=>hand.cards[0])};

@@ -24,6 +24,7 @@ async function main() {
     timezone: "Z",
     connectionLimit: 6,
   });
+  pool.on("connection", c => { void c.query("SET time_zone='+00:00'"); });
   global.nazraaPool = pool;
   global.nazraaInstrumentedPool = pool;
   Object.assign(process.env, {
@@ -32,7 +33,7 @@ async function main() {
     DB_USER: "root",
     DB_PASSWORD: "",
     DB_SSL: "false",
-    REDIS_URL: "redis://127.0.0.1:6391",
+    REDIS_URL: "redis://127.0.0.1:56379",
   });
   const c = await pool.getConnection();
   let previous: unknown;
@@ -44,7 +45,7 @@ async function main() {
       ),
       { dealChairRound } = await import("../lib/games/teen-patti"),
       { effectiveMobileGamesConfig } = await import("../lib/games/game-config"),
-      { princessChartActivity, invalidatePrincessChartRanking } = await import(
+      { princessChartActivity } = await import(
         "../lib/db/repositories/princess-chart-activity"
       );
     const [settings] = await c.query<mysql.RowDataPacket[]>(
@@ -131,7 +132,7 @@ async function main() {
         );
         await product.maintainSharedGameRounds();
         await product.maintainSharedGameRounds();
-        invalidatePrincessChartRanking();
+
         const activity = await princessChartActivity(
             c,
             roundId,
@@ -190,8 +191,8 @@ async function main() {
         );
         assert.equal(
           next.princessActivity!.top3[chair].length,
-          3,
-          "Reset keeps settled ranking",
+          0,
+          "New round never inherits earlier round winners",
         );
       }
       // Canonical identity, not display name, must select the correct DP.
@@ -209,7 +210,7 @@ async function main() {
               u.userId,
             ],
           );
-        invalidatePrincessChartRanking();
+
         const mapped = await princessChartActivity(
           c,
           renderFixtures[2].roundId,
@@ -230,7 +231,7 @@ async function main() {
             "UPDATE application_users SET full_name=?,avatar_url=? WHERE id=?",
             [p.full_name, p.avatar_url, p.id],
           );
-        invalidatePrincessChartRanking();
+
       }
       // Real two logical clients receive one committed Princess public projection.
       const { createClient } = await import("redis"),
@@ -253,7 +254,7 @@ async function main() {
           setTimeout(() => r(Error("Redis event timeout")), 2000),
         ),
       ])) as any;
-      assert.equal(packet.reason, "PRINCESS_ACTIVITY");
+      assert.equal(packet.reason, "TABLE_ACTIVITY");
       assert.equal(packet.state.princessActivity.roundId, state.round.id);
       assert.equal(packet.state.walletBalance, undefined);
       assert.equal(packet.state.myBets, undefined);
@@ -268,7 +269,7 @@ async function main() {
         JSON.stringify(renderFixtures, null, 2),
       );
       console.log(
-        "PASS three authoritative chairs; 3 actual winners/chair ordered by settled net Coins; canonical profile mapping; repeat bet/settlement once; 2 logical Redis clients receive public accepted participation before result; new round clears all pots/participants and retains chart rankings.",
+        "PASS three authoritative chairs; 3 actual winners/chair ordered by settled net Coins; canonical profile mapping; repeat bet/settlement once; 2 logical Redis clients receive public accepted participation before result; new round clears all pots/participants and removes all previous-round winners.",
       );
     } finally {
       for (const r of oldDates)

@@ -1,7 +1,4 @@
-import {
-  princessChartActivity,
-  invalidatePrincessChartRanking,
-} from './princess-chart-activity';
+import {sharedTableActivity,type TableGame} from './shared-table-activity';
 import "server-only";
 import {luckyPolicy,drawLucky,type LuckyPolicy} from "@/lib/policy/lucky-gifts";
 import {giftSettlementPolicy} from "@/lib/policy/gift-settlement-policy";
@@ -2125,11 +2122,13 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
     [game, roundNumber],
   );
   if (existingRows[0]) return existingRows[0];
+  const committedOutcome: Record<string, unknown>=await sharedRoundOutcome(connection,game,config);
+  if(game===TEEN_PATTI_ID)committedOutcome.publicStartingCard=true;
   const [insertResult] = await connection.execute<ResultSetHeader>(
     `INSERT IGNORE INTO game_shared_rounds
       (id, game_name, round_number, betting_starts_at, betting_ends_at, drawing_ends_at, result_committed_at, result_ends_at, result_version, outcome_json,config_version,config_json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?,?,?)`,
-    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(await sharedRoundOutcome(connection, game, config)),config.economyVersion??0,JSON.stringify({...config,runtimeSnapshotVersion:1})],
+    [randomUUID(), game, roundNumber, startsAt, bettingEndsAt, drawingEndsAt, drawingEndsAt, resultEndsAt, JSON.stringify(committedOutcome),config.economyVersion??0,JSON.stringify({...config,runtimeSnapshotVersion:1})],
   );
   const [rows] = await connection.query<SharedRoundRow[]>(
     // A locking read sees a concurrently inserted winner even when this
@@ -2369,11 +2368,9 @@ export async function maintainSharedGameRounds() {
       ...result.settledRoundIds.map((roundId) => ({ game, roundId })),
     );
     if (result.realtime) {
-      if (game === TEEN_PATTI_ID && result.settled > 0) {
-        invalidatePrincessChartRanking();
-        result.realtime.princessActivity = await readPrincessActivity(
-          result.realtime.round.id, result.realtime.round.number,
-        );
+      if ((game === TEEN_PATTI_ID || game === "teen_patti_pro") && result.settled > 0) {
+        const activity=await readTableActivity(game as TableGame,result.realtime.round.id,result.realtime.round.number);
+        if(game===TEEN_PATTI_ID)result.realtime.princessActivity=activity;else result.realtime.tableActivity=activity;
       }
       realtime.push(result.realtime);
     }
@@ -2545,11 +2542,11 @@ async function sharedRoundStatePayload(
 
 // Read this optional display projection after the financial transaction commits.
 // Its failure must never turn a committed wager into an apparent failed command.
-async function readPrincessActivity(roundId: string, roundNumber: number) {
+async function readTableActivity(game:TableGame,roundId: string, roundNumber: number) {
   try {
-    return await withTransaction(c => princessChartActivity(c, roundId, roundNumber));
+    return await withTransaction(c => sharedTableActivity(c, game, roundId, roundNumber));
   } catch {
-    console.warn('Princess public chart projection unavailable; financial acknowledgement preserved');
+    console.warn('Table activity projection unavailable; financial acknowledgement preserved');
     return undefined;
   }
 }
@@ -2565,9 +2562,8 @@ export async function gameSharedRoundState(identity: MobileIdentity, gameValue: 
   });
   return {
     ...response,
-    ...(game === TEEN_PATTI_ID ? {
-      princessActivity: await readPrincessActivity(response.round.id, response.round.number),
-    } : {}),
+    princessActivity:game===TEEN_PATTI_ID?await readTableActivity(game,response.round.id,response.round.number):undefined,
+    tableActivity:game==='teen_patti_pro'?await readTableActivity(game,response.round.id,response.round.number):undefined,
   };
 }
 
@@ -2577,12 +2573,10 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
   const game = sharedGame(input.game);
   const bets = canonicalBets(input.bets);
   const transact = game === LION_VS_TIGER_ID || game === TEEN_PATTI_ID || game === "teen_patti_pro" ? withIdempotentTransaction : withTransaction;
-  let princessSettled = 0;
   const response = await transact(async (connection) => {
     const settings = await gameSettings(connection);
     const { timezone } = await loadFaceLiveRules(connection);
-    const settled = await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
-    if (game === TEEN_PATTI_ID) princessSettled = settled.settledCount;
+    await settleMaturedSharedRounds(connection, game, identity.userId, settings, timezone);
     const now = new Date();
     const round = await ensureSharedRound(connection, game, settings.games[game], now);
     const config=roundGameConfig(round,settings.games[game]);
@@ -2675,13 +2669,11 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
     }
     return sharedRoundStatePayload(connection, identity, round, config, now);
   });
-  if (princessSettled > 0) invalidatePrincessChartRanking();
   if (!response) return gameSharedRoundState(identity, game);
   return {
     ...response,
-    ...(game === TEEN_PATTI_ID ? {
-      princessActivity: await readPrincessActivity(response.round.id, response.round.number),
-    } : {}),
+    princessActivity:game===TEEN_PATTI_ID?await readTableActivity(game,response.round.id,response.round.number):undefined,
+    tableActivity:game==='teen_patti_pro'?await readTableActivity(game,response.round.id,response.round.number):undefined,
   };
 }
 

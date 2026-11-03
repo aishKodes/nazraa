@@ -615,7 +615,7 @@ export async function POST(
       }
       const body = await request.json();
       if(resource==='party-music') {
-        const parsed=z.object({roomCode:z.string().min(3).max(80),action:z.enum(['state','search','play','local-start','pause','resume','stop','heartbeat']),trackId:z.string().max(40).optional(),query:z.string().max(120).optional(),fileName:z.string().trim().min(1).max(128).optional(),generation:z.number().int().nonnegative().optional()}).parse(body);
+        const parsed=z.object({roomCode:z.string().min(3).max(80),action:z.enum(['state','search','play','local-start','local-prepare','local-resume','local-ready','local-buffering','pause','resume','stop','heartbeat']),trackId:z.string().max(40).optional(),query:z.string().max(120).optional(),fileName:z.string().trim().min(1).max(128).optional(),generation:z.number().int().nonnegative().optional()}).parse(body);
         const result=await partyMusic(identity,parsed);
         if(!['state','search','heartbeat'].includes(parsed.action))notifyRoom(parsed.roomCode,'settings');
         return NextResponse.json(result,{headers:{'Cache-Control':'private, no-store'}});
@@ -1748,7 +1748,13 @@ export async function POST(
           return errorResponse(new Error("Forbidden."), 403);
         const parsed = sharedBetCommandSchema.parse(body);
         const result = await placeSharedGameBets(identity, parsed);
-        after(() => publishSharedGameBetInvalidation(parsed.game,parsed.game==='teen_patti'?result.princessActivity:undefined));
+        const publication=publishSharedGameBetInvalidation(parsed.game,parsed.game==='teen_patti'?result.princessActivity:parsed.game==='teen_patti_pro'?result.tableActivity:undefined);
+        after(()=>publication);
+        // Warm Redis normally publishes before the HTTP acknowledgement. A slow
+        // notification must never strand a committed financial command.
+        let timer:ReturnType<typeof setTimeout>|undefined;
+        await Promise.race([publication,new Promise<void>(resolve=>{timer=setTimeout(resolve,40);})]);
+        if(timer)clearTimeout(timer);
         return NextResponse.json(result, {
           status: 201,
         });

@@ -13,6 +13,7 @@ export type SharedGameRealtimeState = {
     | "bounty_football"
     | "lion_vs_tiger";
   princessActivity?: PrincessChartActivity;
+  tableActivity?: PrincessChartActivity;
   publicPreview?: Record<string, unknown> & { cards?: number[] };
   round: {
     id: string;
@@ -57,6 +58,19 @@ async function connectedPublisher(): Promise<RedisClientType | undefined> {
   return connecting;
 }
 
+function tableActivityField(game:SharedGameRealtimeState['game']):'princessActivity'|'tableActivity'|undefined{return game==='teen_patti'?'princessActivity':game==='teen_patti_pro'?'tableActivity':undefined;}
+const cacheActivityScript=`
+ local old=redis.call('GET',KEYS[1]);local next=cjson.decode(ARGV[1]);
+ if old then local prior=cjson.decode(old);
+  if prior.roundNumber>next.roundNumber then return 0 end;
+  if prior.roundNumber==next.roundNumber then
+   if prior.roundId~=next.roundId or prior.betVersion>next.betVersion or prior.rankingVersion>next.rankingVersion then return 0 end;
+   if prior.betVersion==next.betVersion and prior.rankingVersion==next.rankingVersion then return 0 end;
+  end;
+ end;
+ redis.call('SET',KEYS[1],ARGV[1],'EX',120);return 1;`;
+async function cacheTableActivity(client:RedisClientType,game:string,activity:PrincessChartActivity){return Number(await client.eval(cacheActivityScript,{keys:[`game:activity:${game}`],arguments:[JSON.stringify(activity)]}))===1;}
+
 /** Cache the current public phase in Redis and publish only phase, result, or
  * round transitions. The Flutter countdown derives from phaseEndsAt locally. */
 export async function publishSharedGameRealtimeState(
@@ -65,21 +79,12 @@ export async function publishSharedGameRealtimeState(
   try {
     const client = await connectedPublisher();
     if (!client) return;
-    if (state.game === "teen_patti") {
-      if (state.princessActivity)
-        await client.set(
-          "game:princess:activity",
-          JSON.stringify(state.princessActivity),
-          { EX: 120 },
-        );
-      else {
-        const cached = await client.get("game:princess:activity");
-        if (cached) {
-          const activity = JSON.parse(cached) as PrincessChartActivity;
-          if (activity.roundId === state.round.id)
-            state = { ...state, princessActivity: activity };
-        }
-      }
+    const field=tableActivityField(state.game);
+    if(field){
+      const supplied=state[field];
+      if(supplied)await cacheTableActivity(client,state.game,supplied);
+      const raw=await client.get(`game:activity:${state.game}`);
+      if(raw){const cached=JSON.parse(raw) as PrincessChartActivity;if(cached.roundId===state.round.id&&cached.roundNumber===state.round.number)state={...state,[field]:cached};}
     }
     const serialized = JSON.stringify(state);
     const key = `game:state:${state.game}`;
@@ -108,21 +113,11 @@ export async function publishSharedGameBetInvalidation(
   try {
     const client = await connectedPublisher();
     if (!client) return;
-    await client.publish(
-      `game:${game}`,
-      JSON.stringify({
-        type: "GAME_CHANGED",
-        game,
-        reason: game === "teen_patti" && activity ? "PRINCESS_ACTIVITY" : "BET",
-        ...(game === "teen_patti" && activity
-          ? {
-              roundId: activity.roundId,
-              state: { game, princessActivity: activity },
-            }
-          : {}),
-        serverNow: Date.now(),
-      }),
-    );
+    const field=tableActivityField(game);
+    if(field&&activity){
+      if(!await cacheTableActivity(client,game,activity))return;
+      await client.publish(`game:${game}`,JSON.stringify({type:'GAME_CHANGED',game,reason:'TABLE_ACTIVITY',roundId:activity.roundId,eventSequence:activity.betVersion,state:{game,[field]:activity},serverNow:Date.now()}));
+    }else await client.publish(`game:${game}`,JSON.stringify({type:'GAME_CHANGED',game,reason:'BET',serverNow:Date.now()}));
   } catch {
     // Private HTTP reconciliation remains the fallback.
   }
