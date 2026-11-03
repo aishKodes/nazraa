@@ -16,7 +16,7 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 const releaseVersion = "2.5.14";
 const releaseBuild = 7426;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.13/Nazraa-Live-2.5.13-7426-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.14/Nazraa-Live-2.5.14-7426-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
