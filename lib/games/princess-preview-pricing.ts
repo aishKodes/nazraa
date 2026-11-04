@@ -1,11 +1,13 @@
 import {createHash,randomBytes} from 'node:crypto';
-import {evaluateChairHand,teenPattiChairs,teenPattiCard,chairSettlement} from './teen-patti';
+import {evaluateChairHand,compareChairHands,teenPattiChairs,teenPattiCard,chairSettlement} from './teen-patti';
+import {princessPrecommittedRules,princessPrecommittedProfile,princessPrecommittedPaytable,princessNetReturn,princessMultiplierPpm} from './princess-precommitted';
+import type {GameRuntimeConfig} from './game-config';
 
 export const princessQuoteRules='PRINCESS_PUBLIC_CARD_QUOTE_V3';
 export const princessFixedQuoteRules='PRINCESS_PUBLIC_CARD_FIXED_3X_V4';
 export const princessHiddenConfigRules='PRINCESS_HIDDEN_FIXED_3X_V5';
 export const princessNinetyRules='PRINCESS_HIDDEN_90_FEE_5_V6';
-export function requiresPrincessQuoteAcknowledgement(value:unknown){return isPrincessQuotedRules(value)||value===princessNinetyRules;}
+export function requiresPrincessQuoteAcknowledgement(value:unknown){return isPrincessQuotedRules(value)||value===princessNinetyRules||value===princessPrecommittedRules;}
 export function isPrincessQuotedRules(value:unknown){
   return value===princessQuoteRules || value===princessFixedQuoteRules;
 }
@@ -126,8 +128,26 @@ export function quotedPrincessSettlement(bets:Record<string,number>,winner:strin
   if(!Number.isSafeInteger(grossPayout)||!Number.isSafeInteger(serviceFee))throw new Error('Princess payout is too large.');
   return {grossPayout,serviceFee,payout:grossPayout-serviceFee};
 }
-export function princessSettlement(bets:Record<string,number>,outcome:Record<string,unknown>){
+export function princessSettlement(bets:Record<string,number>,outcome:Record<string,unknown>,config?:GameRuntimeConfig){
  const validated=chairSettlement(bets,String(outcome.winner));
+ if(outcome.rulesVersion===princessPrecommittedRules){
+   const q=outcome.pricing as Record<string,unknown>;
+   if(!q||q.rulesVersion!==princessPrecommittedRules||q.profileId!==princessPrecommittedProfile||q.selectionModel!=='PRECOMMITTED_CHAIR_WEIGHTS'||q.feeBps!==500||q.rounding!=='NET_FLOOR_GROSS_CEIL_FEE_DIFFERENCE'||typeof outcome.nonce!=='string')throw Error('The Princess round commitment is invalid.');
+   const weights=q.probabilityWeights as number[];
+   if(!Array.isArray(weights)||weights.length!==3)throw Error('The Princess round commitment is invalid.');
+   const table=princessPrecommittedPaytable({targetRtp:Number(q.targetRtpPpm)/1_000_000,outcomeWeights:weights,princessServiceFeeBps:500,maximumPayoutMultiplier:Number(q.maximumMultiplier)});
+   for(const [key,expected]of Object.entries({grossNumerators:table.areas.map(a=>a.grossNumerator),grossDenominators:table.areas.map(a=>a.grossDenominator),netNumerators:table.areas.map(a=>a.netNumerator),netDenominators:table.areas.map(a=>a.netDenominator),grossMultiplierPpm:table.areas.map(a=>princessMultiplierPpm(a.grossNumerator,a.grossDenominator))}))if(JSON.stringify(q[key])!==JSON.stringify(expected))throw Error('The Princess round commitment is invalid.');
+   const hands=outcome.hands as {cards:number[]}[];
+   if(!Array.isArray(hands)||hands.length!==3||hands.flatMap(h=>h.cards).length!==9||new Set(hands.flatMap(h=>h.cards)).size!==9||JSON.stringify(q.publicCards)!==JSON.stringify(hands.map(h=>h.cards[0]))||commitPrincessQuote(hands,q as unknown as PrincessQuote,outcome.nonce).commitment!==outcome.commitment)throw Error('The Princess round commitment is invalid.');
+   if(config&&(Number(q.maximumMultiplier)!==config.maximumPayoutMultiplier||config.princessPayoutProfile!==princessPrecommittedProfile||Number(q.configVersion)!==(config.economyVersion??0)||Number(q.targetRtpPpm)!==Math.round(config.targetRtp*1_000_000)||JSON.stringify(weights)!==JSON.stringify(config.outcomeWeights??[1,1,1])||Number(q.maximumBet)!==config.maximumBet||Number(q.maximumSingleRoundPayout)!==config.maximumSingleRoundPayout||Number(q.maximumRoundExposure)!==config.maximumRoundExposure))throw Error('The Princess round configuration is invalid.');
+   const index=teenPattiChairs.indexOf(String(outcome.winner) as typeof teenPattiChairs[number]);
+   if(hands.some(h=>compareChairHands(hands[index].cards,h.cards)<0))throw Error('The Princess hand result is invalid.');
+   const area=table.areas[index],amount=bets[String(outcome.winner)]??0;
+   const payout=princessNetReturn(amount,area.netNumerator,area.netDenominator);
+   const grossPayout=Number((BigInt(payout)*10000n+9499n)/9500n),serviceFee=grossPayout-payout;
+   if(config&&payout>Number(config.maximumSingleRoundPayout))throw Error('The accepted Princess payout requires review.');
+   return {wager:validated.wager,grossPayout,serviceFee,payout};
+ }
  const ninety=outcome.rulesVersion===princessNinetyRules;
  const hidden=outcome.rulesVersion===princessHiddenConfigRules||ninety;
  if(!hidden&&!isPrincessQuotedRules(outcome.rulesVersion))return validated;

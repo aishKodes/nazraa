@@ -53,6 +53,18 @@ export function dealChairRound(){
  * versions. V2 omits cards: old APKs index any non-null array. */
 export function chairPreview(outcome:Record<string,unknown>,bettingClosed=false,startingCardVisible=outcome.publicStartingCard===true):Record<string,unknown>&{cards?:number[]}{
  const quote=outcome.pricing as Record<string,unknown>|undefined;
+ if(outcome.rulesVersion==='PRINCESS_PRECOMMITTED_RTP_V7'&&quote){
+  const hands=outcome.hands as {cards:number[]}[];
+  return {rulesVersion:outcome.rulesVersion,payoutVersion:outcome.rulesVersion,profileId:quote.profileId,
+   // Deliberately separate acknowledgement key: older APKs must update rather
+   // than accept a new economic model while displaying legacy rules.
+   termsQuoteId:outcome.commitment,selectionModel:quote.selectionModel,
+   probabilityWeights:quote.probabilityWeights,feeBps:quote.feeBps,targetRtpPpm:quote.targetRtpPpm,
+   grossMultiplierPpm:quote.grossMultiplierPpm,netNumerators:quote.netNumerators,netDenominators:quote.netDenominators,
+   grossNumerators:quote.grossNumerators,grossDenominators:quote.grossDenominators,
+   maximumBet:quote.maximumBet,maximumSingleRoundPayout:quote.maximumSingleRoundPayout,maximumRoundExposure:quote.maximumRoundExposure,
+   configVersion:quote.configVersion,rounding:quote.rounding,cards:hands.map(h=>h.cards[0]),startingCardVisible:true};
+ }
  if(['PRINCESS_HIDDEN_FIXED_3X_V5','PRINCESS_HIDDEN_90_FEE_5_V6'].includes(String(outcome.rulesVersion))&&quote){
   const hands=outcome.hands as {cards:number[]}[];
   return {payoutVersion:outcome.rulesVersion,feeBps:quote.feeBps,

@@ -359,6 +359,7 @@ export async function savePrincessPricing(input:{scope:Scope;mode:'HIDDEN_FIXED_
     const [rows]=await connection.query<(RowDataPacket&{setting_value:unknown})[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
     const current=effectiveMobileGamesConfig(rows[0]?.setting_value);
     const previous=current.games.teen_patti;
+    if(previous.princessPayoutProfile==='PRECOMMITTED_WEIGHTED_RTP')throw new Error('Use Game Management → Game Economy / RTP to change the precommitted Princess profile.');
     current.games.teen_patti={...current.games.teen_patti,princessPreviewQuotes:input.mode==='PUBLIC_QUOTE_V3',targetRtp:input.targetRtp,maximumPayoutMultiplier:3};
     await recordGameConfigVersion(connection,input.scope,'teen_patti',current,previous,input.reason);
   });
@@ -399,7 +400,7 @@ export async function saveGameSettings(input: {
     input.minimumBet !== 100 || input.autoPlay || input.maximumPayoutMultiplier !== 3 ||
     [...new Set(input.denominations)].sort((a,b)=>a-b).join(',') !== '100,500,1000,5000' ||
     (input.outcomeWeights?.length ?? 0) > 0
-  )) throw new Error('Princess retains the 3% fee and 100 / 500 / 1,000 / 5,000 chips. Weighted outcomes and Auto Play are not supported. Pricing is managed separately by Master.');
+  )) throw new Error('Use Game Management → Game Economy / RTP to preview and publish Princess pricing, weights, timing and limits.');
   if (input.targetWinRate < 0 || input.targetWinRate > 1) throw new Error("Target win rate must be between 0 and 1.");
   if (input.maximumPayoutMultiplier < 1 || input.maximumPayoutMultiplier > 1000) throw new Error("Maximum payout multiplier must be between 1 and 1,000.");
   if (input.maximumBet < input.minimumBet) throw new Error("Maximum bet must be at least the minimum bet.");
@@ -432,6 +433,7 @@ export async function saveGameSettings(input: {
       );
       const current = effectiveMobileGamesConfig(rows[0]?.setting_value);
       const previous = current.games[input.game];
+      if(input.game==='teen_patti'&&previous.princessPayoutProfile==='PRECOMMITTED_WEIGHTED_RTP')throw new Error('Use Game Management → Game Economy / RTP to change the precommitted Princess profile.');
       if(input.minimumBet!==previous.minimumBet||input.maximumBet!==previous.maximumBet||input.maximumPayoutMultiplier!==previous.maximumPayoutMultiplier || (input.outcomeWeights&&JSON.stringify(input.outcomeWeights)!==JSON.stringify(previous.outcomeWeights)) ||
         (['saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const).some(key=>input[key]!==undefined&&input[key]!==previous[key]))
         throw new Error('Use Game Management → Game Economy / RTP to preview and confirm paytable or probability changes.');

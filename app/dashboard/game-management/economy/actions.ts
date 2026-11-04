@@ -12,6 +12,11 @@ function parse(form:FormData){
   const draft:EconomyDraft={enabled:form.get('availability')!=='DISABLED',maintenance:form.get('availability')==='MAINTENANCE',minimumBet:Number(form.get('minimumBet')),maximumBet:Number(form.get('maximumBet')),maximumPayoutMultiplier:Number(form.get('maximumPayoutMultiplier')),payoutScalePpm:Number(form.get('payoutScalePpm'))};
   if(!['ACTIVE','MAINTENANCE','DISABLED'].includes(String(form.get('availability'))))throw new Error('Choose valid availability.');
   if(form.has('princessPayoutProfile'))draft.princessPayoutProfile=String(form.get('princessPayoutProfile')) as EconomyDraft['princessPayoutProfile'];
+  if(game==='teen_patti'){
+    if(form.has('targetRtpPercent'))draft.targetRtp=Number(form.get('targetRtpPercent'))/100;
+    if(form.has('greenWeight'))draft.outcomeWeights=['greenWeight','blueWeight','redWeight'].map(key=>Number(form.get(key)));
+    for(const key of ['maximumSingleRoundPayout','maximumRoundExposure','bigWinThreshold','bettingSeconds','resultSeconds'] as const)if(form.has(key))draft[key]=Number(form.get(key));
+  }
   const weights=String(form.get('outcomeWeights')??'').trim();
   if(weights){if(weights.split(',').some(n=>!n.trim()))throw new Error('Choose valid outcome weights.');draft.outcomeWeights=weights.split(',').map(n=>Number(n.trim()));}
   for(const key of ['princessServiceFeeBps','sideBetPayoutScalePpm','saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const)if(form.has(key))draft[key]=Number(form.get(key));
@@ -28,9 +33,10 @@ export async function economyAction(_previous:EconomyActionState,form:FormData):
       revalidatePath('/dashboard/game-management/economy');revalidatePath('/dashboard/settings');
       return {success:`Published version ${version}. Effective for new rounds only.`};
     }
-    if(intent==='simulate'){
+    if(intent==='simulate'||intent==='simulate-preview'){
       const {settings}=await currentGameEconomy(scope);
-      return {simulation:await simulateEconomy(game,settings.games[game],Number(form.get('rounds')))};
+      const proposed=intent==='simulate-preview'?await previewGameEconomy(scope,game,draft):undefined;
+      return {..._previous,...(proposed?{preview:proposed}:{}),simulation:await simulateEconomy(game,proposed?.proposed??settings.games[game],Number(form.get('rounds')))};
     }
     return {preview:await previewGameEconomy(scope,game,draft)};
   }catch(e){return {error:safeError(e)};}

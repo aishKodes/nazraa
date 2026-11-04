@@ -1,3 +1,5 @@
+import {princessDefaultSinglePayout,princessSettlementCeiling} from './princess-contract';
+
 export const configurableGameIds = [
   "teen_patti",
   "teen_patti_pro",
@@ -34,6 +36,9 @@ export type GameRuntimeConfig = {
   denominations: number[];
   historyLength: number;
   bigWinThreshold: number;
+  /** Prospective admission limits; never truncate an accepted payout. */
+  maximumSingleRoundPayout?: number;
+  maximumRoundExposure?: number;
   repeatBet: boolean;
   autoPlay: boolean;
   outcomeWeights?: number[];
@@ -46,7 +51,7 @@ export type GameRuntimeConfig = {
   princessPreviewQuotes?: boolean;
   /** Princess only; frozen per round. Missing historical values mean 3%. */
   princessServiceFeeBps?: number;
-  princessPayoutProfile?: "LEGACY_FIXED_3X" | "FAIR_90_FEE_5";
+  princessPayoutProfile?: "LEGACY_FIXED_3X" | "FAIR_90_FEE_5" | "PRECOMMITTED_WEIGHTED_RTP";
 };
 
 export type MobileGamesConfig = {
@@ -234,8 +239,9 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
   const games = Object.fromEntries(configurableGameIds.map((id) => {
     const fallback = defaultMobileGamesConfig.games[id];
     const stored = object(storedGames[id]);
+    const princessWeighted = id === 'teen_patti' && stored.princessPayoutProfile === 'PRECOMMITTED_WEIGHTED_RTP';
     const timing = resolvedTiming(id, stored, fallback);
-    const outcomeLength = id === "teen_patti_pro" || id === "luck77"
+    const outcomeLength = id === "teen_patti_pro" || id === "luck77" || princessWeighted
       ? 3
       : id === "bounty_football"
         ? 10
@@ -289,6 +295,10 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       })(),
       historyLength: integer(stored.historyLength, fallback.historyLength, 1, 50),
       bigWinThreshold: integer(stored.bigWinThreshold, fallback.bigWinThreshold, 1, 1_000_000_000),
+      ...(princessWeighted ? {
+        maximumSingleRoundPayout: integer(stored.maximumSingleRoundPayout, princessDefaultSinglePayout, 100, princessSettlementCeiling),
+        maximumRoundExposure: integer(stored.maximumRoundExposure, princessSettlementCeiling, 100, princessSettlementCeiling),
+      } : {}),
       repeatBet: typeof stored.repeatBet === "boolean" ? stored.repeatBet : fallback.repeatBet,
       autoPlay: typeof stored.autoPlay === "boolean" ? stored.autoPlay : fallback.autoPlay,
       outcomeWeights: outcomeLength == null
@@ -306,13 +316,13 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
       poolMinimumForSpecial: integer(stored.poolMinimumForSpecial, fallback.poolMinimumForSpecial ?? 0, 0, 1_000_000_000),
       ...(id === 'teen_patti' ? {
         princessPreviewQuotes: stored.princessPreviewQuotes===true,
-        princessPayoutProfile: stored.princessPayoutProfile==='FAIR_90_FEE_5'?'FAIR_90_FEE_5':'LEGACY_FIXED_3X',
-        princessServiceFeeBps: stored.princessPayoutProfile==='FAIR_90_FEE_5'?500:integer(stored.princessServiceFeeBps,300,0,2500),
-        targetRtp: stored.princessPayoutProfile==='FAIR_90_FEE_5'?.9:stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
+        princessPayoutProfile: princessWeighted?'PRECOMMITTED_WEIGHTED_RTP':stored.princessPayoutProfile==='FAIR_90_FEE_5'?'FAIR_90_FEE_5':'LEGACY_FIXED_3X',
+        princessServiceFeeBps: princessWeighted||stored.princessPayoutProfile==='FAIR_90_FEE_5'?500:integer(stored.princessServiceFeeBps,300,0,2500),
+        targetRtp: princessWeighted?decimal(stored.targetRtp,.8,.5,.99):stored.princessPayoutProfile==='FAIR_90_FEE_5'?.9:stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
         payoutScalePpm: 1_000_000,
-        maximumPayoutMultiplier: 3,
+        maximumPayoutMultiplier: princessWeighted?decimal(stored.maximumPayoutMultiplier,3,1,1000):3,
         minimumBet: 100, denominations: [100,1000,10000,100000],
-        outcomeWeights: undefined, autoPlay: false,
+        outcomeWeights: princessWeighted?numberArray(stored.outcomeWeights,[1,1,1],3):undefined, autoPlay: false,
       } : {}),
       ...(id === 'lion_vs_tiger' ? {
         bettingSeconds: 15, drawingSeconds: 5, resultSeconds: 4,

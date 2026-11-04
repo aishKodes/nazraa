@@ -34,6 +34,7 @@ import { runMonthlyHostEarningsReset } from "@/lib/db/repositories/monthly-host-
 import { mobileGamesConfig,effectiveMobileGamesConfig,snapshotGameConfig, type ConfigurableGameId, type GameRuntimeConfig, type MobileGamesConfig } from "@/lib/games/game-config";
 import {TEEN_PATTI_ID,dealChairRound,chairPreview,teenPattiChairs} from '@/lib/games/teen-patti';
 import {isPrincessQuotedRules,requiresPrincessQuoteAcknowledgement,princessNinetyRules,princessNinetyQuote,princessFixedQuoteRules,princessFixedQuote,princessHiddenConfigRules,princessHiddenQuote,commitPrincessQuote,princessSettlement} from '@/lib/games/princess-preview-pricing';
+import {princessPrecommittedRules,princessPrecommittedProfile,dealPrecommittedPrincess,princessPrecommittedQuote,assertPrincessExposure} from '@/lib/games/princess-precommitted';
 import { LION_VS_TIGER_ID, lionTigerAreas, dealLionTigerOutcome, validateLionTigerBets, settleLionTiger, assertLionTigerWalletSafety } from '@/lib/games/lion-vs-tiger';
 import { captureWithdrawalHierarchy, loadWithdrawalEconomy } from "@/lib/db/repositories/withdrawal-economy";
 import { assertCreatorCashWithdrawalsEnabled } from "@/lib/services/mobile-feature-policy";
@@ -1903,9 +1904,9 @@ type SharedRoundRow = RowDataPacket & {
 function roundGameConfig(round:SharedRoundRow,fallback:GameRuntimeConfig):GameRuntimeConfig {
   return snapshotGameConfig(round.game_name,round.config_json,fallback);
 }
-async function activeSharedRound(connection:PoolConnection,game:SharedRoundGame,now:Date){
+async function activeSharedRound(connection:PoolConnection,game:SharedRoundGame,now:Date,locking=false){
   const [rows]=await connection.query<SharedRoundRow[]>(
-    'SELECT * FROM game_shared_rounds WHERE game_name=? AND betting_starts_at<=? AND result_ends_at>? ORDER BY betting_starts_at DESC LIMIT 1',[game,now,now]);
+    'SELECT * FROM game_shared_rounds WHERE game_name=? AND betting_starts_at<=? AND result_ends_at>? ORDER BY betting_starts_at DESC LIMIT 1'+(locking?' FOR UPDATE':''),[game,now,now]);
   return rows[0]??null;
 }
 
@@ -1917,6 +1918,12 @@ function sharedGame(value: string): SharedRoundGame {
 async function sharedRoundOutcome(connection: PoolConnection, game: SharedRoundGame, config: GameRuntimeConfig) {
   if (game === LION_VS_TIGER_ID) return dealLionTigerOutcome();
   if(game===TEEN_PATTI_ID){
+    if(config.princessPayoutProfile===princessPrecommittedProfile){
+      const dealt=dealPrecommittedPrincess(config.outcomeWeights??[1,1,1]);
+      const pricing=princessPrecommittedQuote(dealt.hands.map(h=>h.cards[0]),config);
+      const i=teenPattiChairs.indexOf(dealt.winner);
+      return {...dealt,rulesVersion:princessPrecommittedRules,multiplier:pricing.grossNumerators[i]/pricing.grossDenominators[i],serviceFeePercent:5,pricing,...commitPrincessQuote(dealt.hands,pricing)};
+    }
     const dealt=dealChairRound();
     if(!config.princessPreviewQuotes){
       const pricing=config.princessPayoutProfile==='FAIR_90_FEE_5'?princessNinetyQuote():princessHiddenQuote(config.princessServiceFeeBps??300);
@@ -2064,7 +2071,7 @@ function sharedRoundSettlement(game: SharedRoundGame, bets: Record<string, numbe
     : validateSharedBets(game, bets, config);
   if (game === LION_VS_TIGER_ID) return {outcome, ...settleLionTiger(checked.bets, String(outcome.winner))};
   if(game===TEEN_PATTI_ID){
-    const result=princessSettlement(checked.bets,outcome);
+    const result=princessSettlement(checked.bets,outcome,config);
     return {outcome,wager:result.wager,payout:result.grossPayout,commissionablePayout:result.grossPayout};
   }
   if (game === teenPattiGame) {
@@ -2101,6 +2108,14 @@ async function ensureSharedRound(connection: PoolConnection, game: SharedRoundGa
   // already opened table keeps its original timing and immutable snapshot.
   const active=await activeSharedRound(connection,game,now);
   if(active)return active;
+  if(game===TEEN_PATTI_ID){
+    // Round creation and Master publication share this brief configuration
+    // lock. A stale cached/read snapshot cannot open a new economic version.
+    const [rows]=await connection.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
+    config=effectiveMobileGamesConfig(rows[0]?.setting_value).games[game];
+    now=new Date();
+    const opened=await activeSharedRound(connection,game,now,true);if(opened)return opened;
+  }
   if (!config.enabled) throw new Error("This game is currently disabled.");
   if (config.maintenance) throw new Error("This game is temporarily under maintenance.");
   const timing = { betting: config.bettingSeconds, drawing: config.drawingSeconds, result: config.resultSeconds };
@@ -2262,7 +2277,7 @@ async function settleMaturedSharedRounds(
     const grossPayout = result.payout;
     const deductionBase = result.commissionablePayout ?? grossPayout;
     const deduction = game===TEEN_PATTI_ID
-      ? princessSettlement(bets,finalizedOutcome).serviceFee
+      ? princessSettlement(bets,finalizedOutcome,gameConfig).serviceFee
       : grossPayout > result.wager && deductionRate > 0 ? Math.floor(deductionBase * deductionRate) : 0;
     const payout = grossPayout - deduction;
     await connection.execute(
@@ -2630,7 +2645,18 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       throw new Error("Update Nazraa to accept the current Princess paytable. No Coins were deducted.");
     const checked = validateSharedBets(game, bets, config);
     if (checked.total <= 0) throw new Error("Choose a positive game bet.");
-    const [roundWagerRows] = await connection.query<(RowDataPacket & { total: number })[]>(
+    let currentPrincessWager:number|undefined;
+    if(game===TEEN_PATTI_ID && roundOutcome.rulesVersion===princessPrecommittedRules){
+      // Serialize liability admission on the existing round, then use current
+      // locking reads (not this transaction's earlier RR snapshot). Every
+      // possible chair is checked; the committed winner is never consulted.
+      await connection.query('SELECT id FROM game_shared_rounds WHERE id=? FOR UPDATE',[round.id]);
+      if(new Date()>=new Date(round.betting_ends_at))throw Error('Betting has closed for this round.');
+      const [accepted]=await connection.query<(RowDataPacket & {application_user_id:string;target_id:string;amount:number})[]>(
+        'SELECT application_user_id,target_id,amount FROM game_shared_bets WHERE round_id=? FOR UPDATE',[round.id]);
+      currentPrincessWager=assertPrincessExposure(config,accepted,identity.userId,checked.bets);
+    }
+    const [roundWagerRows] = currentPrincessWager!==undefined ? [[{total:currentPrincessWager}]] : await connection.query<(RowDataPacket & { total: number })[]>(
       `SELECT COALESCE(SUM(wager_total), 0) total
        FROM game_shared_bet_requests
        WHERE round_id = ? AND application_user_id = ?`,
@@ -2670,6 +2696,7 @@ export async function placeSharedGameBets(identity: MobileIdentity, input: {
       validateLionTigerBets(cumulative);
       assertLionTigerWalletSafety(cumulative, Number(walletRows[0].available_balance)-checked.total);
     }
+    if(game===TEEN_PATTI_ID && roundOutcome.rulesVersion===princessPrecommittedRules && new Date()>=new Date(round.betting_ends_at))throw Error('Betting has closed for this round.');
     await connection.execute("UPDATE wallet_balances SET available_balance = available_balance - ? WHERE id = ?", [checked.total, walletRows[0].id]);
     const ledgerId = randomUUID();
     await connection.execute(
