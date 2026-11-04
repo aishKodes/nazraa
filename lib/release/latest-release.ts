@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.5.17";
-const releaseBuild = 7429;
+const releaseVersion = "2.5.18";
+const releaseBuild = 7430;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.17/Nazraa-Live-2.5.17-7429-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.18/Nazraa-Live-2.5.18-7430-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,14 +34,15 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 262067498,
-  sha256: "6ab71ceec4fce3e24ae6fae01ab15f2b2f848917d630ae4915fd0bbb31682ef5",
+  apkSizeBytes: 262067482,
+  sha256: "04ed822d185b5c2a1e636cf5ab13fed4a54c6160937c8cf35bb84b552c41c652",
   releaseDate: "2026-11-04",
   releaseNotes: [
-    "Princess: premium winning-chart effects and temporary Top 3 with larger profile photos.",
-    "Pro: clearer cards, accepted-chip motion and visible player participation.",
-    "Winning Coins flow from the pot toward players, with current-round winner celebrations.",
-    "Existing game rules, payouts, betting, settlement and live-room media are preserved.",
+    "Princess: disclosed precommitted weighted deals, fixed returns and an 80% theoretical RTP profile.",
+    "Master controls for future-round limits, published probabilities and auditable configuration history.",
+    "Princess betting and result visibility each gain one second; existing accepted rounds keep their rules.",
+    "Pro: refined dealing, original minted Coins, pot-to-player trails and a compact win notice.",
+    "Princess normal artwork, Pro betting reliability and live-room media are preserved.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
