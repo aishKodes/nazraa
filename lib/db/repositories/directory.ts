@@ -69,7 +69,7 @@ export async function listUsers(scope: Scope, search?: string, limit = 100) {
 
 export async function listUsersPage(scope: Scope, input: PageRequest = {}): Promise<PageResult<DirectoryUser>> {
   const { page, pageSize, offset, search } = pageInput(input);
-  const scoped = scopeWhere(scope, "u.agency_account_id");
+  const scoped = scopeWhere(scope, "u.agency_account_id", "u.country_code");
   const filters = [scoped.clause];
   const values: unknown[] = [...scoped.values];
   if (search) {
@@ -101,7 +101,7 @@ export async function searchCoinTransferRecipients(scope: Scope, search: string,
   if (!can(scope.account.role, "coins.transfer")) return [];
   const query = search.trim().slice(0, 120);
   if (!query) return [];
-  const scoped = { clause: "1=1", values: [] as string[] };
+  const scoped = scope.globalManagerId?scopeWhere({...scope,accountIds:scope.globalManagerAccountIds??scope.accountIds},"u.agency_account_id","u.country_code"):{ clause: "1=1", values: [] as string[] };
   const filters = [scoped.clause, "u.account_status = 'ACTIVE'"];
   const values: unknown[] = [...scoped.values];
   if (/^\d{1,12}$/.test(query)) {
@@ -135,7 +135,7 @@ export async function listHosts(scope: Scope, limit = 100) {
 
 export async function listHostsPage(scope: Scope, input: PageRequest = {}): Promise<PageResult<ReturnType<typeof mapHost>>> {
   const { page, pageSize, offset, search } = pageInput(input);
-  const scoped = scopeWhere(scope, "h.agency_account_id");
+  const scoped = scopeWhere(scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   const filters = [scoped.clause];
   const values: unknown[] = [...scoped.values];
   if (search) {
@@ -214,33 +214,31 @@ export async function listAgenciesPage(scope: Scope, input: PageRequest = {}): P
               AND creation.logo_data IS NOT NULL ORDER BY creation.reviewed_at DESC LIMIT 1) logo_application_id
      FROM platform_accounts agency
      LEFT JOIN platform_accounts owner ON owner.id = agency.parent_account_id
-     LEFT JOIN (SELECT agency_account_id, COUNT(*) host_count FROM host_profiles GROUP BY agency_account_id) hosts
+     LEFT JOIN (SELECT agency_account_id, COUNT(*) host_count FROM host_profiles WHERE ${scope.globalManagerId?`EXISTS(SELECT 1 FROM application_users gm_user WHERE gm_user.id=host_profiles.application_user_id AND gm_user.country_code IN (${(scope.countryCodes??[]).map(()=>'?').join(',')||"NULL"}))`:'1=1'} GROUP BY agency_account_id) hosts
        ON hosts.agency_account_id = agency.id
      WHERE ${filters.join(" AND ")} ORDER BY agency.created_at DESC LIMIT ? OFFSET ?`,
-    [...values, pageSize + 1, offset],
+    [...(scope.globalManagerId?scope.countryCodes??[]:[]),...values, pageSize + 1, offset],
   );
   return { items: rows.slice(0, pageSize).map(mapAgency), page, pageSize, hasNext: rows.length > pageSize };
 }
 
 export async function hierarchy(scope: Scope) {
-  const accountWhere = scope.isGlobal ? "1=1" : `id IN (${scope.accountIds.map(() => "?").join(",")})`;
-  const hostWhere = scope.isGlobal
-    ? "1=1"
-    : scope.accountIds.length
-      ? `h.agency_account_id IN (${scope.accountIds.map(() => "?").join(",")})`
-      : "1=0";
+  const accounts=scopeWhere(scope,'id');
+  const accountWhere=accounts.clause;
+  const hosts=scopeWhere(scope,'h.agency_account_id','(SELECT country_code FROM application_users gm_user WHERE gm_user.id=h.application_user_id)');
+  const hostWhere=hosts.clause;
   const [accountRows, hostRows] = await Promise.all([
     db().query<(RowDataPacket & { id: string; public_id: number; role: Role; full_name: string; parent_account_id: string | null; status: string })[]>(
       `SELECT id, public_id, role, full_name, parent_account_id, status
        FROM platform_accounts WHERE removed_at IS NULL AND ${accountWhere} ORDER BY created_at`,
-      scope.isGlobal ? [] : scope.accountIds,
+      accounts.values,
     ),
     db().query<(RowDataPacket & { agency_account_id: string; host_count: number; live_minutes: number; sessions: number; gift_value: number })[]>(
       `SELECT h.agency_account_id, COUNT(*) host_count, SUM(h.live_minutes_30d) live_minutes,
               SUM(h.sessions_30d) sessions, SUM(h.gifts_value_30d) gift_value
        FROM host_profiles h WHERE h.agency_account_id IS NOT NULL AND ${hostWhere}
        GROUP BY h.agency_account_id`,
-      scope.isGlobal ? [] : scope.accountIds,
+      hosts.values,
     ),
   ]);
 

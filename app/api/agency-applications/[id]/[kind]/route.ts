@@ -10,6 +10,7 @@ import { decryptPrivateDocument, decryptPrivateText } from "@/lib/security/docum
 export const dynamic = "force-dynamic";
 
 type KycRow = RowDataPacket & {
+  country_code:string|null;
   parent_account_id: string | null;
   aadhaar_encrypted: Buffer | null;
   aadhaar_iv: Buffer | null;
@@ -37,18 +38,19 @@ function protectedImageResponse(request: Request, plain: Buffer, mimeType: strin
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string; kind: string }> }) {
   const account = await getSession();
-  if (!account || !can(account.role, "documents.read") || !["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(account.role)) return new NextResponse("Unauthorized", { status: 401 });
+  if (!account || !can(account.role, "documents.read") || !["MASTER", "GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(account.role)) return new NextResponse("Unauthorized", { status: 401 });
   const scope = await scopeFor(account);
   const { id, kind } = await params;
   if (!["aadhaar", "document", "document-1", "document-2", "document-3"].includes(kind)) return new NextResponse("Not found", { status: 404 });
   const [rows] = await db().query<KycRow[]>(
-    `SELECT parent_account_id, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
+    `SELECT country_code,parent_account_id, aadhaar_encrypted, aadhaar_iv, aadhaar_tag,
             document_original_name, document_mime_type, document_encrypted_data, document_encryption_iv, document_encryption_tag
      FROM agency_creation_applications WHERE id = ? LIMIT 1`, [id],
   );
   const application = rows[0];
   if (!application) return new NextResponse("Not found", { status: 404 });
   if (!scope.isGlobal && (!application.parent_account_id || !scope.accountIds.includes(application.parent_account_id))) return new NextResponse("Forbidden", { status: 403 });
+  if(account.role==="GLOBAL_MANAGER"&&!(scope.countryCodes??[]).includes(String(application.country_code)))return new NextResponse("Not found",{status:404});
   if (kind.startsWith("document-")) {
     const [documents] = await db().query<RowDataPacket[]>("SELECT original_name, mime_type, encrypted_data, encryption_iv, encryption_tag FROM agency_application_documents WHERE application_id = ? AND slot = ? LIMIT 1", [id, Number(kind.slice(-1))]);
     const document = documents[0];

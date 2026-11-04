@@ -1517,6 +1517,7 @@ function applyFixedRtpScale(
     result.commissionablePayout = result.payout;
     result.outcome = {
       ...result.outcome,
+      configVersion: config.economyVersion??0,
       rawNormalPayout: result.outcome.normalPayout,
       rawCrownPayout: result.outcome.crownPayout,
       normalPayout,
@@ -1535,6 +1536,7 @@ function applyFixedRtpScale(
   }
   result.outcome = {
     ...result.outcome,
+    configVersion: config.economyVersion??0,
     rawPayout,
     payoutScalePpm: config.payoutScalePpm,
     targetRtp: config.targetRtp,

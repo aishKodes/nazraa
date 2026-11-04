@@ -50,7 +50,7 @@ export async function hostOperationalActivity(scope: Scope, requestedIds: string
   if (!can(scope.account.role, "hosts.read")) throw new Error("Host access is not permitted.");
   const ids = [...new Set(requestedIds)].slice(0, 50);
   if (!ids.length) return [];
-  const scoped = (scope.account.role==='MONITORING_CS'?monitoringScopeWhere:scopeWhere)(scope, "COALESCE(h.agency_account_id,u.agency_account_id)");
+  const scoped = (scope.account.role==='MONITORING_CS'?monitoringScopeWhere:scopeWhere)(scope, "COALESCE(h.agency_account_id,u.agency_account_id)", "u.country_code");
   const [users] = await db().query<RowDataPacket[]>(
     `SELECT u.id, u.public_id, u.full_name, u.avatar_url, h.status,
        a.public_id agency_id,a.full_name agency_name,p.public_id admin_id,p.full_name admin_name,

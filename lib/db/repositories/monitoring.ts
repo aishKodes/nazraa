@@ -3,7 +3,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
-import { monitoringScopeWhere } from "@/lib/db/repositories/accounts";
+import { monitoringScopeWhere,scopeWhere } from "@/lib/db/repositories/accounts";
 import { withTransaction } from "@/lib/db/transaction";
 import type { Scope } from "@/types/platform";
 import { can } from "@/lib/auth/permissions";
@@ -12,7 +12,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
   if (!can(scope.account.role,'monitoring.read')) throw new Error('Monitoring access is not permitted.');
   const search = query.trim().slice(0, 120);
   if (!search) return [];
-  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id", "u.country_code");
   const exactId = /^\d{1,12}$/.test(search);
   const cs = scope.account.role==='MONITORING_CS';
   const condition = cs ? (exactId ? '(u.public_id=? OR u.external_user_id=?)' : 'u.full_name LIKE ?') : exactId
@@ -86,7 +86,7 @@ export async function searchMonitoring(scope: Scope, query: string) {
 
 export async function listModerationHistory(scope: Scope, userIds: string[]) {
   if (!userIds.length) return [];
-  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id", "u.country_code");
   const placeholders = userIds.map(() => "?").join(",");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; application_user_id: string; full_name: string; restriction_type: string; reason: string;
@@ -112,7 +112,8 @@ export async function listModerationHistory(scope: Scope, userIds: string[]) {
 
 export async function listUserDevices(scope: Scope, applicationUserId: string) {
   if(!can(scope.account.role,'devices.read')) throw new Error('Device access is not permitted.');
-  const scoped = monitoringScopeWhere(scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(scope, "u.agency_account_id", "u.country_code");
+  const matches=scope.globalManagerId?scopeWhere(scope,'gm_user.agency_account_id','gm_user.country_code'):{clause:'1=1',values:[] as string[]};
   const [rows] = await db().query<(RowDataPacket & {
     id: string; device_label: string | null; device_id_hash: string | null; device_identity_kind: string | null;
     last_used_at: string; expires_at: string; revoked_at: string | null;
@@ -127,7 +128,7 @@ export async function listUserDevices(scope: Scope, applicationUserId: string) {
             global_block.banned_at global_blocked_at,
             (SELECT COUNT(DISTINCT matching_session.application_user_id)
              FROM mobile_sessions matching_session
-             WHERE matching_session.device_id_hash = session.device_id_hash) matching_accounts
+             WHERE matching_session.device_id_hash = session.device_id_hash AND EXISTS(SELECT 1 FROM application_users gm_user WHERE gm_user.id=matching_session.application_user_id AND ${matches.clause})) matching_accounts
      FROM mobile_sessions session
      INNER JOIN application_users u ON u.id = session.application_user_id
      LEFT JOIN mobile_device_blocks block
@@ -141,7 +142,7 @@ export async function listUserDevices(scope: Scope, applicationUserId: string) {
       AND global_block.status = 'BANNED'
      WHERE session.application_user_id = ? AND ${scoped.clause}
      ORDER BY session.last_used_at DESC LIMIT 20`,
-    [applicationUserId, ...scoped.values],
+    [...matches.values,applicationUserId, ...scoped.values],
   );
   return rows.map((row) => ({
     id: row.id, label: row.device_label ?? "Unknown device", persistentDevice: Boolean(row.device_id_hash),
@@ -234,9 +235,9 @@ export async function unbanDeviceAcrossAccounts(input: { scope: Scope; banId: st
 }
 
 export async function blockUserDevice(input: { scope: Scope; sessionId: string; reason: string }) {
-  if (!['MASTER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can block a device.");
+  if (!['MASTER', 'GLOBAL_MANAGER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can block a device.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear device block reason.");
-  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id", "u.country_code");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; device_id_hash: string | null; device_label: string | null })[]>(
       `SELECT session.id, session.application_user_id, session.device_id_hash, session.device_label
@@ -278,9 +279,9 @@ export async function blockUserDevice(input: { scope: Scope; sessionId: string; 
 }
 
 export async function unblockUserDevice(input: { scope: Scope; blockId: string; reason: string }) {
-  if (!['MASTER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can unblock a device.");
+  if (!['MASTER', 'GLOBAL_MANAGER', 'COUNTRY_MANAGER','MONITORING_CS'].includes(input.scope.account.role)) throw new Error("Only authorized monitoring staff can unblock a device.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear unblock reason.");
-  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id");
+  const scoped = monitoringScopeWhere(input.scope, "u.agency_account_id", "u.country_code");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; mobile_session_id: string | null; application_user_id: string })[]>(
       `SELECT block.id, block.mobile_session_id, block.application_user_id FROM mobile_device_blocks block

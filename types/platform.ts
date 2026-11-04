@@ -1,5 +1,6 @@
 export const roles = [
   "MASTER",
+  "GLOBAL_MANAGER",
   "COUNTRY_MANAGER",
   "SUPER_ADMIN",
   "ADMIN",
@@ -33,6 +34,11 @@ export type Scope = {
   isGlobal: boolean;
   /** Defense in depth for Country Manager branches, including legacy bad links. */
   countryCode?: string | null;
+  /** Global Manager: intersection of dynamically assigned countries and descendant team. */
+  countryCodes?: string[];
+  globalManagerId?:string;
+  globalManagerAccountIds?:string[];
+  gameReportsEnabled?: boolean;
 };
 
 export type PageResult<T> = {

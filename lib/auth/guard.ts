@@ -13,5 +13,7 @@ export async function requireSession() {
 export async function requirePermission(permission: Permission) {
   const account = await requireSession();
   if (!can(account.role, permission)) redirect("/dashboard?error=forbidden");
-  return scopeFor(account);
+  const scope=await scopeFor(account);
+  if(permission==="games.read" && scope.gameReportsEnabled===false) redirect("/dashboard?error=forbidden");
+  return scope;
 }

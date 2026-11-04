@@ -9,8 +9,9 @@ import type { Scope } from "@/types/platform";
 import { canReadPrivateHostIdentity } from "@/lib/auth/permissions";
 
 export async function createHostApplication(input: { scope: Scope; applicationUserId: string; legalName: string; countryCode: string; agencyAccountId?: string; governmentIdType: string; governmentIdLast4: string; documents: PreparedDocument[] }) {
+  if(input.scope.globalManagerId&&!(input.scope.countryCodes??[]).includes(input.countryCode))throw Error('The Host country is outside your assigned scope.');
   const hostId = randomUUID();
-  const userScope = scopeWhere(input.scope, "u.agency_account_id");
+  const userScope = scopeWhere(input.scope, "u.agency_account_id", "u.country_code");
   await withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { id: string; full_name: string; agency_account_id: string | null })[]>(
       `SELECT u.id, u.full_name, u.agency_account_id FROM application_users u WHERE u.id = ? AND ${userScope.clause} LIMIT 1 FOR UPDATE`, [input.applicationUserId, ...userScope.values],
@@ -44,7 +45,7 @@ export async function createHostApplication(input: { scope: Scope; applicationUs
 }
 
 export async function uploadHostDocument(input: { scope: Scope; hostId: string; document: PreparedDocument }) {
-  const hostScope = scopeWhere(input.scope, "h.agency_account_id");
+  const hostScope = scopeWhere(input.scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   const [hosts] = await db().query<RowDataPacket[]>(`SELECT h.id FROM host_profiles h WHERE h.id = ? AND ${hostScope.clause} LIMIT 1`, [input.hostId, ...hostScope.values]);
   if (!hosts[0]) throw new Error("Host application was not found in your scope.");
   await db().execute(
@@ -55,7 +56,7 @@ export async function uploadHostDocument(input: { scope: Scope; hostId: string; 
 }
 
 export async function reviewHostApplication(input: { scope: Scope; hostId: string; decision: "APPROVED" | "REJECTED"; agencyAccountId?: string; reason: string }) {
-  const hostScope = scopeWhere(input.scope, "h.agency_account_id");
+  const hostScope = scopeWhere(input.scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   await withTransaction(async (connection) => {
     const [hosts] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; status: string; agency_account_id: string | null })[]>(
       `SELECT h.id, h.application_user_id, h.status, h.agency_account_id FROM host_profiles h WHERE h.id = ? AND ${hostScope.clause} LIMIT 1 FOR UPDATE`,
@@ -86,7 +87,7 @@ export async function reviewHostApplication(input: { scope: Scope; hostId: strin
 
 export async function updateHostStatus(input: { scope: Scope; hostId: string; status: "ACTIVE" | "INACTIVE" | "SUSPENDED"; reason: string }) {
   if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a reason of 5 to 500 characters for the host status change.");
-  const hostScope = scopeWhere(input.scope, "h.agency_account_id");
+  const hostScope = scopeWhere(input.scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   await withTransaction(async (connection) => {
     const [hosts] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; status: string })[]>(
       `SELECT h.id, h.application_user_id, h.status FROM host_profiles h WHERE h.id = ? AND ${hostScope.clause} LIMIT 1 FOR UPDATE`,
@@ -108,7 +109,7 @@ export async function updateHostStatus(input: { scope: Scope; hostId: string; st
 }
 
 export async function getHostDetail(scope: Scope, hostId: string) {
-  const hostScope = scopeWhere(scope, "h.agency_account_id");
+  const hostScope = scopeWhere(scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   const [rows] = await db().query<(RowDataPacket & { id: string; application_user_id: string; legal_name: string | null; full_name: string; public_id: number; external_user_id: string; avatar_url: string | null; date_of_birth: string | null; gender: string | null; whatsapp_e164: string | null; email: string | null; account_status: string; face_verification_status: string; country_code: string | null; status: string; verification_status: string; government_id_type: string | null; government_id_last4: string | null; agency_account_id: string | null; agency_name: string | null; applied_at: string; reviewed_at: string | null; review_reason: string | null; live_minutes_30d: number; session_count_30d: number; current_eligible_seconds: number | null; current_publishing_seconds: number | null; current_reconnect_state: string | null; current_accounting_accuracy: string | null; current_reward_units: number | null })[]>(
     `SELECT h.id, h.application_user_id, h.legal_name, u.full_name, u.public_id, u.external_user_id,
             CASE WHEN avatar.updated_at IS NOT NULL
@@ -163,7 +164,7 @@ export async function getHostDetail(scope: Scope, hostId: string) {
 export async function updateHostGender(input: { scope: Scope; hostId: string; gender: "FEMALE" | "MALE" | "NON_BINARY" | "PREFER_NOT_TO_SAY"; reason: string }) {
   if (!canReadPrivateHostIdentity(input.scope.account.role)) throw new Error("Identity correction is not permitted for this role.");
   if (input.reason.trim().length < 5 || input.reason.trim().length > 500) throw new Error("Provide a clear audit reason.");
-  const hostScope = scopeWhere(input.scope, "h.agency_account_id");
+  const hostScope = scopeWhere(input.scope, "h.agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=h.application_user_id)");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { application_user_id: string; gender: string | null })[]>(
       `SELECT h.application_user_id, u.gender FROM host_profiles h

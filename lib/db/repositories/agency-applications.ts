@@ -30,7 +30,7 @@ export type AgencyReviewApplication = {
 };
 
 export async function listAgencyApplications(scope: Scope): Promise<AgencyReviewApplication[]> {
-  const agencyScope = scopeWhere(scope, "application.agency_account_id");
+  const agencyScope = scopeWhere(scope, "application.agency_account_id", "(SELECT country_code FROM application_users gm_user WHERE gm_user.id=application.application_user_id)");
   try {
     const [joins] = await db().query<(RowDataPacket & { id: string; full_name: string; public_id: number; agency_name: string; agency_public_id: number; status: string; created_at: string })[]>(
       `SELECT application.id, user.full_name, user.public_id, agency.full_name agency_name,
@@ -43,8 +43,8 @@ export async function listAgencyApplications(scope: Scope): Promise<AgencyReview
       agencyScope.values,
     );
     let creations: (RowDataPacket & { id: string; full_name: string; public_id: number; agency_name: string; owner_name: string | null; country_code: string; business_whatsapp_e164: string; parent_name: string | null; parent_public_id: number | null; parent_role: string | null; aadhaar_last4: string | null; document_byte_size: number | null; status: string; created_at: string })[] = [];
-    if (["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(scope.account.role)) {
-      const creationScope = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "application.parent_account_id");
+    if (["MASTER", "GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"].includes(scope.account.role)) {
+      const creationScope = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "application.parent_account_id", "application.country_code");
       const [rows] = await db().query<typeof creations>(
         `SELECT application.id, user.full_name, user.public_id, application.agency_name,
                 application.owner_name, application.country_code, application.business_whatsapp_e164,
@@ -73,7 +73,7 @@ export async function listAgencyApplications(scope: Scope): Promise<AgencyReview
 
 export async function reviewAgencyJoin(input: { scope: Scope; applicationId: string; decision: "APPROVED" | "REJECTED"; reason: string }) {
   await withTransaction(async (connection) => {
-    const scoped = scopeWhere(input.scope, "application.agency_account_id");
+    const scoped = scopeWhere(input.scope, "application.agency_account_id", "(SELECT country_code FROM application_users gm_user WHERE gm_user.id=application.application_user_id)");
     const [reference] = await connection.query<RowDataPacket[]>(
       `SELECT application.application_user_id FROM agency_membership_applications application
        WHERE application.id=? AND ${scoped.clause} LIMIT 1`,[input.applicationId,...scoped.values]);

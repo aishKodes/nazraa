@@ -39,7 +39,7 @@ function orderScope(scope: Scope) {
   if (scope.account.role === "COIN_SELLER" || scope.account.role === "AGENCY") {
     return { clause: "request.seller_account_id = ?", values: [scope.account.id] };
   }
-  return scopeWhere(scope, "request.seller_account_id");
+  return scopeWhere(scope, "request.seller_account_id", "(SELECT country_code FROM application_users gm_buyer WHERE gm_buyer.id=request.application_user_id)");
 }
 
 export async function listCoinCommerce(scope: Scope, page = 1) {
@@ -215,7 +215,7 @@ export async function transitionCoinOrder(input: { scope: Scope; orderId: string
 }
 
 export async function listFaceVerificationRequests(scope: Scope, page = 1, view: "review" | "verified" = "review", search = "") {
-  const filter = scopeWhere(scope, "user.agency_account_id");
+  const filter = scopeWhere(scope, "user.agency_account_id", "user.country_code");
   const query = search.trim().slice(0, 12);
   if (query && !/^\d{1,12}$/.test(query)) throw new Error("Enter a valid User ID.");
   const searchFilter = query ? " AND (user.public_id = ? OR user.external_user_id = ?)" : "";
@@ -252,7 +252,7 @@ export async function listFaceVerificationRequests(scope: Scope, page = 1, view:
 }
 
 export async function listPayoutMethodReviews(scope: Scope) {
-  const filter = scopeWhere(scope, "user.agency_account_id");
+  const filter = scopeWhere(scope, "user.agency_account_id", "user.country_code");
   const [rows] = await db().query<(RowDataPacket & { id: string; user_public_id: number; full_name: string; method_type: string; display_name: string; masked_destination: string; verified: number; active: number; created_at: string })[]>(
     `SELECT method.id, user.public_id user_public_id, user.full_name, method.method_type,
             method.display_name, method.masked_destination, method.verified, method.active, method.created_at
@@ -264,7 +264,7 @@ export async function listPayoutMethodReviews(scope: Scope) {
 }
 
 export async function reviewPayoutMethod(input: { scope: Scope; methodId: string; decision: "VERIFIED" | "REJECTED"; reason: string }) {
-  const filter = scopeWhere(input.scope, "user.agency_account_id");
+  const filter = scopeWhere(input.scope, "user.agency_account_id", "user.country_code");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; verified: number; active: number })[]>(
       `SELECT method.id, method.application_user_id, method.verified, method.active
@@ -282,7 +282,7 @@ export async function reviewPayoutMethod(input: { scope: Scope; methodId: string
 
 export async function reviewFaceVerification(input: { scope: Scope; requestId: string; decision: "VERIFIED" | "REJECTED"; reason: string }) {
   if (!can(input.scope.account.role, "face_verification.manage")) throw new Error("Your role cannot review Face Verification.");
-  const filter = scopeWhere(input.scope, "user.agency_account_id");
+  const filter = scopeWhere(input.scope, "user.agency_account_id", "user.country_code");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; application_user_id: string; selfie_document_id: string | null; status: string; user_status: string; host_verification_status: string | null; agency_authorized: number; super_admin_authorized: number })[]>(
       `SELECT request.id, request.application_user_id, request.selfie_document_id, request.status,

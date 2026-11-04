@@ -15,6 +15,8 @@ export type ConfigurableGameId = typeof configurableGameIds[number];
 
 export type GameRuntimeConfig = {
   economyVersion?: number;
+  minimumTargetRtp?:number;
+  maximumTargetRtp?:number;
   /** Frozen alongside the paytable when a round is opened. */
   settlementDeductionRate?: number;
   enabled: boolean;
@@ -250,6 +252,8 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
           : undefined;
     return [id, {
       ...fallback,
+      minimumTargetRtp: decimal(stored.minimumTargetRtp,.5,.5,.99),
+      maximumTargetRtp: decimal(stored.maximumTargetRtp,.99,.5,.99),
       economyVersion: integer(stored.economyVersion, 0, 0, Number.MAX_SAFE_INTEGER),
       settlementDeductionRate: decimal(stored.settlementDeductionRate ?? root.winnings_deduction_rate ?? root.winningsDeductionRate, .01, 0, .25),
       enabled: typeof stored.enabled === "boolean" ? stored.enabled : fallback.enabled,

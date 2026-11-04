@@ -11,7 +11,9 @@ import {
   encryptPrivateText,
   decryptPrivateText,
 } from "@/lib/security/documents";
-import type { SessionAccount } from "@/types/platform";
+import {scopeFor,scopeWhere} from "./accounts";
+import {can} from "@/lib/auth/permissions";
+import type { Scope,SessionAccount } from "@/types/platform";
 
 export class PayoutError extends Error {}
 const fail = (message: string): never => {
@@ -254,7 +256,7 @@ export async function requestHostPayout(
     return { id, requestId: code, status: "APPROVED", alreadyExisted: false };
   });
 }
-export type PayoutViewer = { userId: string } | { account: SessionAccount };
+export type PayoutViewer = { userId: string } | { account: SessionAccount; scope?:Scope };
 export type PayoutFilters = {
   search?: string;
   agency?: string;
@@ -273,8 +275,12 @@ export function hostPayoutFilter(viewer: PayoutViewer, filters: PayoutFilters = 
   } else if (viewer.account.role === "AGENCY") {
     clauses.push("s.agency_account_id=?");
     values.push(viewer.account.id);
+  } else if (viewer.scope?.globalManagerId&&can(viewer.account.role,"withdrawals.read")) {
+    if(!viewer.scope||viewer.scope.account.id!==viewer.account.id||viewer.scope.isGlobal)fail('Global Manager payout scope is required.');
+    const permitted=scopeWhere(viewer.scope!,"s.agency_account_id","s.country_code");clauses.push(permitted.clause);values.push(...permitted.values);
   } else if (viewer.account.role !== "MASTER")
     fail("This payout module is limited to Hosts, their Agency and Master.");
+  if("account" in viewer&&viewer.account.role==="AGENCY"&&viewer.scope?.globalManagerId){const permitted=scopeWhere(viewer.scope,"s.agency_account_id","s.country_code");clauses.push(permitted.clause);values.push(...permitted.values);}
   if(filters.agencyGroup){
     if(filters.agencyGroup==='INDEPENDENT') clauses.push('s.agency_account_id IS NULL');
     else {clauses.push('s.agency_account_id=?');values.push(filters.agencyGroup);}
@@ -321,6 +327,7 @@ export async function listHostPayouts(
   connection?: PoolConnection,
   exportCursor?: {cutoff: Date; before?: {requestedAt: Date; id: string}},
 ) {
+  if("account" in viewer)viewer={account:viewer.account,scope:await scopeFor(viewer.account)};
   const f = hostPayoutFilter(viewer, filters);
   if(exportCursor) {
     f.where += ' AND w.requested_at <= ?';
@@ -350,6 +357,7 @@ export async function hostPayoutSummary(
   viewer: PayoutViewer,
   filters: PayoutFilters = {},
 ) {
+  if("account" in viewer)viewer={account:viewer.account,scope:await scopeFor(viewer.account)};
   const f = hostPayoutFilter(viewer, filters);
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT COUNT(*) requests,COALESCE(SUM(s.host_usd),0) requestedUsd,

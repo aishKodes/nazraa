@@ -12,6 +12,21 @@ export const panelCountries = [
   { code: "CN", name: "China" },
   { code: "SA", name: "Saudi Arabia" },
   { code: "AE", name: "United Arab Emirates" },
+  { code: "QA", name: "Qatar" },
+  { code: "KW", name: "Kuwait" },
+  { code: "BH", name: "Bahrain" },
+  { code: "OM", name: "Oman" },
+  { code: "YE", name: "Yemen" },
+  { code: "IQ", name: "Iraq" },
+  { code: "IR", name: "Iran" },
+  { code: "JO", name: "Jordan" },
+  { code: "LB", name: "Lebanon" },
+  { code: "SY", name: "Syria" },
+  { code: "PS", name: "Palestine" },
+  { code: "IL", name: "Israel" },
+  { code: "TR", name: "Turkey" },
+  { code: "EG", name: "Egypt" },
+  { code: "CY", name: "Cyprus" },
   { code: "NG", name: "Nigeria" },
   { code: "DZ", name: "Algeria" },
   { code: "MA", name: "Morocco" },
@@ -25,7 +40,7 @@ export function canonicalCountryCode(value: string) {
     "UNITED ARAB EMIRATES": "AE", UAE: "AE", DUBAI: "AE", "UAE / DUBAI": "AE",
     NEPAL: "NP", NIGERIA: "NG", ALGERIA: "DZ", MOROCCO: "MA",
   };
-  return aliases[normalized] ?? normalized;
+  return aliases[normalized] ?? panelCountries.find(c=>c.name.toUpperCase()===normalized)?.code ?? normalized;
 }
 
 export function isPanelCountry(code: string) {

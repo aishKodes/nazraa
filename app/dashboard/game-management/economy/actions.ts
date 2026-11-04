@@ -12,6 +12,7 @@ function parse(form:FormData){
   const draft:EconomyDraft={enabled:form.get('availability')!=='DISABLED',maintenance:form.get('availability')==='MAINTENANCE',minimumBet:Number(form.get('minimumBet')),maximumBet:Number(form.get('maximumBet')),maximumPayoutMultiplier:Number(form.get('maximumPayoutMultiplier')),payoutScalePpm:Number(form.get('payoutScalePpm'))};
   if(!['ACTIVE','MAINTENANCE','DISABLED'].includes(String(form.get('availability'))))throw new Error('Choose valid availability.');
   if(form.has('princessPayoutProfile'))draft.princessPayoutProfile=String(form.get('princessPayoutProfile')) as EconomyDraft['princessPayoutProfile'];
+  if(form.get('controlMode')==='TARGET_RTP'){draft.controlMode='TARGET_RTP';draft.targetRtp=Number(form.get('targetRtpPercent'))/100;draft.denominations=String(form.get('denominations')??'').split(',').map(n=>Number(n.trim()));}
   if(game==='teen_patti'){
     if(form.has('targetRtpPercent'))draft.targetRtp=Number(form.get('targetRtpPercent'))/100;
     if(form.has('greenWeight'))draft.outcomeWeights=['greenWeight','blueWeight','redWeight'].map(key=>Number(form.get(key)));
@@ -22,7 +23,7 @@ function parse(form:FormData){
   for(const key of ['princessServiceFeeBps','sideBetPayoutScalePpm','saladWeight','pizzaWeight','poolContributionBps','poolMinimumForSpecial'] as const)if(form.has(key))draft[key]=Number(form.get(key));
   return {game,draft};
 }
-function safeError(e:unknown){const message=e instanceof Error?e.message:'';return /^(Choose |Princess |Lion Vs Tiger |Maximum bet |Enter a change |Configuration changed|Only Master|Game settings|Multi-payline|Stateful|No verified)/.test(message)?message:'The game configuration could not be processed. Please retry.';}
+function safeError(e:unknown){const message=e instanceof Error?e.message:'';return /^(Choose |Princess |Lion Vs Tiger |Maximum bet |Enter a change |Configuration changed|Only Master|Game settings|Multi-payline|Stateful|No verified|TARGET NOT ACHIEVABLE)/.test(message)?message:'The game configuration could not be processed. Please retry.';}
 export async function economyAction(_previous:EconomyActionState,form:FormData):Promise<EconomyActionState>{
   const scope=await requirePermission('settings.manage');
   try{
@@ -30,8 +31,9 @@ export async function economyAction(_previous:EconomyActionState,form:FormData):
     if(intent==='publish'){
       if(form.get('confirmed')!=='yes')throw new Error('Choose confirmation after reviewing the preview.');
       const version=await publishGameEconomy(scope,game,draft,Number(form.get('expectedVersion')),String(form.get('reason')??''));
-      revalidatePath('/dashboard/game-management/economy');revalidatePath('/dashboard/settings');
-      return {success:`Published version ${version}. Effective for new rounds only.`};
+      revalidatePath('/dashboard/game-management/economy');revalidatePath('/dashboard/game-management');revalidatePath('/dashboard/settings');
+      const {settings}=await currentGameEconomy(scope);const active=settings.games[game];
+      return {success:`Active config v${version} · target ${(active.targetRtp*100).toFixed(4)}% · effective for future rounds only. Existing rounds retain their snapshot.`};
     }
     if(intent==='simulate'||intent==='simulate-preview'){
       const {settings}=await currentGameEconomy(scope);

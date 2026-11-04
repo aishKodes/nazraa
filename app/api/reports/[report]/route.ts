@@ -62,6 +62,7 @@ export async function GET(request: Request, context: { params: Promise<{ report:
   }
   if (urlFormat(request) === "xlsx" && !can(account.role, "reports.export")) return NextResponse.json({ error: "Forbidden." }, { status: 403, headers: { "Cache-Control": "no-store" } });
   const scope = await scopeFor(account);
+  if(report==="games"&&scope.gameReportsEnabled===false)return NextResponse.json({error:"Forbidden."},{status:403});
   const url = new URL(request.url);
   const input = inputFrom(url);
   const exportXlsx = url.searchParams.get("format") === "xlsx";

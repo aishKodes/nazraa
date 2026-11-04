@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import {scopeFor} from "@/lib/db/repositories/accounts";
+import {can} from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { assertPortalOrigin } from "@/lib/auth/host-payout-session";
 import { loadHostPayoutRule } from "@/lib/db/repositories/host-payout-rule";
@@ -53,7 +55,8 @@ const filterSchema = z.object({
 export async function GET(request: Request) {
   const account = await getSession();
   if (!account) return reply({ message: "Sign in to Control." }, 401);
-  if (!["MASTER", "AGENCY"].includes(account.role))
+  const scope=await scopeFor(account);
+  if (!can(account.role,"withdrawals.read")||(!["MASTER", "GLOBAL_MANAGER", "AGENCY"].includes(account.role)&&!scope.globalManagerId))
     return reply({ message: "Your role cannot view this payout module." }, 403);
   try {
     const url = new URL(request.url),

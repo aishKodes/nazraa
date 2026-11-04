@@ -12,12 +12,12 @@ export type SafetyReportStatus = "NEW" | "UNDER_REVIEW" | "ACTIONED" | "DISMISSE
 
 export async function listSafetyReports(scope: Scope, input: { status: SafetyReportStatus; page: number }) {
   if (!can(scope.account.role, "risk.read")) throw new Error("Your role cannot view safety reports.");
-  const targetScope = monitoringScopeWhere(scope, "target_user.agency_account_id");
-  const reporterScope = monitoringScopeWhere(scope, "reporter.agency_account_id");
-  const scopedClause = scope.isGlobal || scope.account.role === "MONITORING_CS"
+  const targetScope = monitoringScopeWhere(scope, "target_user.agency_account_id", "target_user.country_code");
+  const reporterScope = monitoringScopeWhere(scope, "reporter.agency_account_id", "reporter.country_code");
+  const scopedClause = scope.isGlobal || (scope.account.role === "MONITORING_CS"&&!scope.globalManagerId)
     ? "1=1"
-    : `((${targetScope.clause}) OR (${reporterScope.clause}))`;
-  const scopedValues = scope.isGlobal || scope.account.role === "MONITORING_CS"
+    : `((${targetScope.clause}) ${scope.globalManagerId?'AND':'OR'} (${reporterScope.clause}))`;
+  const scopedValues = scope.isGlobal || (scope.account.role === "MONITORING_CS"&&!scope.globalManagerId)
     ? []
     : [...targetScope.values, ...reporterScope.values];
   const offset = (Math.max(1, input.page) - 1) * 25;
@@ -69,12 +69,12 @@ export async function updateSafetyReport(input: {
   note: string;
 }) {
   if (!can(input.scope.account.role, "risk.manage")) throw new Error("Your role cannot manage safety reports.");
-  const targetScope = monitoringScopeWhere(input.scope, "target_user.agency_account_id");
-  const reporterScope = monitoringScopeWhere(input.scope, "reporter.agency_account_id");
-  const scopedClause = input.scope.isGlobal || input.scope.account.role === "MONITORING_CS"
+  const targetScope = monitoringScopeWhere(input.scope, "target_user.agency_account_id", "target_user.country_code");
+  const reporterScope = monitoringScopeWhere(input.scope, "reporter.agency_account_id", "reporter.country_code");
+  const scopedClause = input.scope.isGlobal || (input.scope.account.role === "MONITORING_CS"&&!input.scope.globalManagerId)
     ? "1=1"
-    : `((${targetScope.clause}) OR (${reporterScope.clause}))`;
-  const scopedValues = input.scope.isGlobal || input.scope.account.role === "MONITORING_CS"
+    : `((${targetScope.clause}) ${input.scope.globalManagerId?'AND':'OR'} (${reporterScope.clause}))`;
+  const scopedValues = input.scope.isGlobal || (input.scope.account.role === "MONITORING_CS"&&!input.scope.globalManagerId)
     ? []
     : [...targetScope.values, ...reporterScope.values];
   return withTransaction(async (connection) => {

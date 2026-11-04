@@ -22,6 +22,7 @@ const common = {
   hosts: { href: "/dashboard/hosts", label: "Hosts", icon: Activity },
   agencies: { href: "/dashboard/agencies", label: "Agencies", icon: Building2 },
   hierarchy: { href: "/dashboard/hierarchy", label: "Hierarchy", icon: Network },
+  globalManagers: {href:"/dashboard/global-managers",label:"Global Managers",icon:Network},
   countries: { href: "/dashboard/countries", label: "Country Management", icon: Network },
   monitoring: { href: "/dashboard/monitoring", label: "Monitoring", icon: Radio },
   moderation: { href: "/dashboard/moderation", label: "Moderation", icon: ShieldAlert },
@@ -49,7 +50,8 @@ const common = {
 } satisfies Record<string, NavItem>;
 
 const navigationByRole: Record<Role, NavItem[]> = {
-  MASTER: [common.overview, common.hierarchy, common.hierarchyReport, common.accounts, common.users, common.hosts, common.agencies, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.commerce, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support, common.gifts, common.banners, common.notifications, common.levels, common.settings],
+  GLOBAL_MANAGER: [common.overview,{...common.hierarchy,label:"Hierarchy Team"},common.users,common.hosts,common.agencies,{...common.wallet,label:"Wallet & Coins"},{...common.commerce,label:"Coin Orders & Transactions"},common.coinTransfers,{...common.withdrawals,label:"Withdrawals & Payouts"},common.monitoring,{...common.rooms,label:"Live Rooms"},common.face,{...common.risk,label:"Risks & Restrictions"},{...common.support,label:"Support & Reports"},{...common.agencyReport,label:"Agency Reports"},{...common.hierarchyReport,label:"Hiring Reports"},{...common.liveRewards,label:"Live Reports"},{...common.gameManagement,label:"Games Management"}],
+  MASTER: [common.overview,common.globalManagers, common.hierarchy, common.hierarchyReport, common.accounts, common.users, common.hosts, common.agencies, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.commerce, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support, common.gifts, common.banners, common.notifications, common.levels, common.settings],
   COUNTRY_MANAGER: [common.overview, common.accounts, common.hierarchy, common.hierarchyReport, common.users, common.hosts, common.agencies, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.commerce, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support],
   SUPER_ADMIN: [common.overview, common.accounts, common.hierarchy, common.hierarchyReport, common.agencies, common.hosts, common.users, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.audit, common.risk, common.support],
   ADMIN: [common.overview, common.agencies, common.hosts, common.users, common.accounts, common.agencyReport, common.monitoring, common.moderation, common.wallet, common.transactions, common.coinTransfers, common.withdrawals, common.rooms, common.face, common.reports, common.liveRewards, common.gameManagement, common.risk, common.support],
@@ -69,7 +71,7 @@ const navigationPermissions: Partial<Record<Route, Permission>> = {
 };
 
 const navigationGroups = [
-  { label: "Core", items: [common.overview, common.countries, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
+  { label: "Core", items: [common.overview, common.globalManagers, common.countries, common.hierarchy, common.accounts, common.users, common.hosts, common.agencies] },
   { label: "Money", items: [common.wallet, common.commerce, common.transactions, common.coinTransfers, common.withdrawals, common.hostPayouts] },
   { label: "Safety", items: [common.monitoring, common.moderation, common.rooms, common.face, common.risk, common.support, common.audit] },
   { label: "Platform", items: [common.reports, common.agencyReport, common.hierarchyReport, common.liveRewards, common.gameManagement, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
@@ -83,11 +85,12 @@ export function AppShell({ account, children }: { account: SessionAccount; child
     .concat(['MASTER','COUNTRY_MANAGER'].includes(account.role)?[common.countries]:[])
     .concat(['MASTER','AGENCY'].includes(account.role) ? [common.hostPayouts] : [])
     .filter(item => !navigationPermissions[item.href] || can(account.role, navigationPermissions[item.href]!))
+    .map(item => account.role === "MASTER" && item.href === "/dashboard/game-management" ? {...item,href:"/dashboard/game-management/economy" as Route} : item)
     .map(item => account.role === "AGENCY" && item.href === "/dashboard/live-rewards"
       ? { ...item, label: "Live Report" } : item);
   const visibleHrefs = new Set(visibleItems.map((item) => item.href));
-  const visibleGroups = navigationGroups
-    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)).map(item => visibleItems.find(visible => visible.href === item.href)!) }))
+  const visibleGroups = account.role==="GLOBAL_MANAGER" ? [{label:"Global Manager",items:visibleItems}] : navigationGroups
+    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)||(account.role==="MASTER"&&item.href==="/dashboard/game-management")).map(item => visibleItems.find(visible => visible.href === item.href||(account.role==="MASTER"&&item.href==="/dashboard/game-management"&&visible.href==="/dashboard/game-management/economy"))!) }))
     .filter((group) => group.items.length);
   const quickSearchTarget = account.role === "COIN_SELLER"
     ? "/dashboard/wallet"

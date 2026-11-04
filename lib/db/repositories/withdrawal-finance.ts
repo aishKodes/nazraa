@@ -3,7 +3,7 @@ import { publicApiOrigin } from "@/lib/config/public-api-origin";
 
 import type { RowDataPacket } from "mysql2/promise";
 import { db } from "@/lib/db/pool";
-import { scopeWhere } from "@/lib/db/repositories/accounts";
+import { scopeWhere,managementCountrySql } from "@/lib/db/repositories/accounts";
 import type { Scope } from "@/types/platform";
 import { loadWithdrawalEconomy,expectedWithdrawalUsd } from "@/lib/db/repositories/withdrawal-economy";
 import {REPORT_EXPORT_LIMIT,formatIst as exportRowDate} from '@/lib/db/repositories/owner-reports';
@@ -31,7 +31,7 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
             COALESCE(finance.admin_usd,0) admin_usd,COALESCE(finance.bd_usd,0) bd_usd,
             COALESCE(finance.country_manager_usd,0) country_manager_usd,COALESCE(finance.company_usd,0) company_usd
      FROM platform_accounts agency
-     LEFT JOIN application_users host ON host.agency_account_id = agency.id AND host.account_status != 'BANNED'
+     LEFT JOIN application_users host ON host.agency_account_id = agency.id AND host.account_status != 'BANNED' AND ${managementCountrySql(scope,'host.country_code')}
      LEFT JOIN wallet_balances wallet
        ON wallet.owner_type = 'APPLICATION_USER' AND wallet.owner_id = host.id AND wallet.asset_type = 'DIAMOND'
      LEFT JOIN wallet_balances coin_wallet ON coin_wallet.owner_type='APPLICATION_USER' AND coin_wallet.owner_id=host.id AND coin_wallet.asset_type='COIN'
@@ -51,6 +51,7 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
        FROM withdrawal_distribution_snapshots distribution
        INNER JOIN withdrawal_hierarchy_snapshots hierarchy ON hierarchy.withdrawal_id = distribution.withdrawal_id
        INNER JOIN withdrawal_requests request ON request.id = distribution.withdrawal_id AND request.status = 'COMPLETED'
+       WHERE ${managementCountrySql(scope,'(SELECT country_code FROM application_users gm_user WHERE gm_user.id=request.application_user_id)')}
        GROUP BY hierarchy.agency_account_id
      ) finance ON finance.agency_account_id = agency.id
      WHERE agency.role = 'AGENCY' AND agency.removed_at IS NULL AND ${scopedAgencies.clause}${selectedFilter}
@@ -68,11 +69,11 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
     SUM(FLOOR(COALESCE(w.available_balance,0)/?))*? eligible_diamonds
     FROM application_users u LEFT JOIN wallet_balances w ON w.owner_type='APPLICATION_USER' AND w.owner_id=u.id AND w.asset_type='DIAMOND'
     JOIN platform_accounts agency ON agency.id=u.agency_account_id
-    WHERE u.account_status<>'BANNED' AND ${scopedAgencies.clause} GROUP BY u.agency_account_id`,[economy.slabDiamonds,economy.slabDiamonds,...scopedAgencies.values]);
+    WHERE u.account_status<>'BANNED' AND ${scopedAgencies.clause} AND ${managementCountrySql(scope,'u.country_code')} GROUP BY u.agency_account_id`,[economy.slabDiamonds,economy.slabDiamonds,...scopedAgencies.values]);
   const [states]=await db().query<RowDataPacket[]>(`SELECT COALESCE(h.agency_account_id,w.agency_account_id) agency_id,w.status,SUM(w.amount) diamonds,COUNT(*) requests,SUM(MOD(w.amount,?)<>0) invalid_slabs
     FROM withdrawal_requests w LEFT JOIN withdrawal_hierarchy_snapshots h ON h.withdrawal_id=w.id
     JOIN platform_accounts agency ON agency.id=COALESCE(h.agency_account_id,w.agency_account_id)
-    WHERE ${scopedAgencies.clause} GROUP BY COALESCE(h.agency_account_id,w.agency_account_id),w.status`,[economy.slabDiamonds,...scopedAgencies.values]);
+    WHERE ${scopedAgencies.clause} AND ${managementCountrySql(scope,'(SELECT country_code FROM application_users gm_user WHERE gm_user.id=w.application_user_id)')} GROUP BY COALESCE(h.agency_account_id,w.agency_account_id),w.status`,[economy.slabDiamonds,...scopedAgencies.values]);
   const agencies = agencyRows.map((row) => ({
     id: String(row.id), publicId: String(row.public_id), name: String(row.full_name),
     hostCount: Number(row.host_count), availableDiamonds: Number(row.available_diamonds),
@@ -118,10 +119,10 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
          FROM withdrawal_distribution_snapshots distribution
          INNER JOIN withdrawal_hierarchy_snapshots hierarchy ON hierarchy.withdrawal_id = distribution.withdrawal_id
          INNER JOIN withdrawal_requests request ON request.id = distribution.withdrawal_id AND request.status = 'COMPLETED'
-         WHERE hierarchy.agency_account_id = ?
+         WHERE hierarchy.agency_account_id = ? AND ${managementCountrySql(scope,'(SELECT country_code FROM application_users gm_user WHERE gm_user.id=request.application_user_id)')}
          GROUP BY hierarchy.host_application_user_id
        ) finance ON finance.host_application_user_id = host.id
-       WHERE host.agency_account_id = ? AND host.account_status != 'BANNED'
+       WHERE host.agency_account_id = ? AND host.account_status != 'BANNED' AND ${managementCountrySql(scope,'host.country_code')}
        ORDER BY host.full_name, host.public_id LIMIT ${exportAll?REPORT_EXPORT_LIMIT+1:500}`,
       [selectedAgency.id, selectedAgency.id],
     ),
@@ -145,7 +146,7 @@ export async function withdrawalFinance(scope: Scope, requestedAgencyId?: string
        LEFT JOIN withdrawal_distribution_snapshots distribution ON distribution.withdrawal_id = request.id
        LEFT JOIN (SELECT withdrawal_id,MIN(IF(to_status='APPROVED',created_at,NULL)) approved_at,
          MIN(IF(to_status='PROCESSING',created_at,NULL)) processing_at FROM withdrawal_status_history GROUP BY withdrawal_id) status_dates ON status_dates.withdrawal_id=request.id
-       WHERE hierarchy.agency_account_id = ?
+       WHERE hierarchy.agency_account_id = ? AND ${managementCountrySql(scope,'(SELECT country_code FROM application_users gm_user WHERE gm_user.id=request.application_user_id)')}
        ORDER BY request.requested_at DESC,request.id LIMIT ${exportAll?REPORT_EXPORT_LIMIT+1:1000}`,
       [selectedAgency.id],
     ),

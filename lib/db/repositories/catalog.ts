@@ -251,7 +251,7 @@ export async function createNotification(input: { scope: Scope; title: string; m
 }
 
 export async function listSupportTickets(scope: Scope, page = 1) {
-  const filter = scopeWhere(scope, "u.agency_account_id");
+  const filter = scopeWhere(scope, "u.agency_account_id", "u.country_code");
   const [rows] = await db().query<(RowDataPacket & { id: string; ticket_code: string; subject: string; category: string; priority: string; status: string; full_name: string | null; external_user_id: string | null; assignee: string | null; updated_at: string })[]>(
     `SELECT t.id, t.ticket_code, t.subject, t.category, t.priority, t.status, u.full_name, u.external_user_id, a.full_name assignee, t.updated_at
      FROM support_tickets t LEFT JOIN application_users u ON u.id = t.application_user_id LEFT JOIN platform_accounts a ON a.id = t.assigned_to
@@ -275,7 +275,7 @@ export async function listSupportTickets(scope: Scope, page = 1) {
 }
 
 export async function updateSupportTicket(input: { scope: Scope; ticketId: string; status: string; message: string; internalNote: boolean }) {
-  const filter = scopeWhere(input.scope, "u.agency_account_id");
+  const filter = scopeWhere(input.scope, "u.agency_account_id", "u.country_code");
   await withTransaction(async (connection) => {
     const [tickets] = await connection.query<RowDataPacket[]>(
       `SELECT t.id FROM support_tickets t LEFT JOIN application_users u ON u.id = t.application_user_id WHERE t.id = ? AND ${filter.clause} LIMIT 1 FOR UPDATE`,

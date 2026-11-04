@@ -22,7 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   let permitted = false;
   if (document.owner_type === "HOST_APPLICATION") permitted = canReadPrivateHostIdentity(account.role) && Boolean(await getHostDetail(scope, document.owner_id));
   else if (document.owner_type === "FACE_VERIFICATION" && can(account.role, "face_verification.read")) {
-    const filter = scopeWhere(scope, "user.agency_account_id");
+    const filter = scopeWhere(scope, "user.agency_account_id", "user.country_code");
     const [requests] = await db().query<RowDataPacket[]>(
       `SELECT request.id FROM face_verification_requests request
        INNER JOIN application_users user ON user.id = request.application_user_id

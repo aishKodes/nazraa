@@ -1,11 +1,12 @@
 import 'server-only';
 import type {RowDataPacket} from 'mysql2/promise';
 import {db} from '@/lib/db/pool';
-import {scopeWhere} from '@/lib/db/repositories/accounts';
+import {scopeWhere,globalManagerLedgerBoundary} from '@/lib/db/repositories/accounts';
 import type {Scope} from '@/types/platform';
 export async function ledgerExportPage(scope:Scope,cursor?:{createdAt:string|Date;id:string}) {
   const scopes=['l.actor_account_id','src_account.id','dest_account.id','src_user.agency_account_id','dest_user.agency_account_id'].map(column=>scopeWhere(scope,column));
   const filter=scope.isGlobal?{clause:'1=1',values:[] as string[]}:{clause:`(${scopes.map(item=>item.clause).join(' OR ')})`,values:scopes.flatMap(item=>item.values)};
+  const boundary=globalManagerLedgerBoundary(scope);filter.clause=`(${filter.clause}) AND ${boundary.clause}`;filter.values.push(...boundary.values);
   const next=cursor?' AND (l.created_at<? OR (l.created_at=? AND l.id<?))':'';
   const [rows]=await db().query<RowDataPacket[]>(`SELECT l.id,l.transaction_code,l.asset_type,l.transaction_type,l.source_type,l.destination_type,
     COALESCE(src_account.public_id,src_user.public_id) source_public_id,COALESCE(src_account.full_name,src_user.full_name) source_name,

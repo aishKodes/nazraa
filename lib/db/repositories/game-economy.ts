@@ -87,12 +87,12 @@ export async function gameEconomyDashboard(scope:Scope,period='today',from?:stri
     'SUM(CASE WHEN t.config_version=? THEN r.payout_total ELSE 0 END) current_paid',
     'COUNT(DISTINCT CASE WHEN t.config_version=? THEN t.id END) current_rounds');
   const version=settings.games.teen_patti.economyVersion??0;values.push(version,version,version,economyRange('30d',undefined,undefined,now).start,now);
-  const [windowRows]=await db().query<RowDataPacket[]>(`SELECT ${fields.join(',')}
+  const [windowRows]=await db().query<RowDataPacket[]>(`SELECT r.game_name,${fields.join(',')}
     FROM game_round_results r LEFT JOIN game_shared_settlements s ON s.result_record_id=r.id
     LEFT JOIN game_shared_rounds t ON t.id=s.round_id
-    WHERE r.game_name='teen_patti' AND r.wager_total>0 AND r.created_at>=? AND r.created_at<?`,values);
-  const windowRow=windowRows[0]??{};
-  const metric=(prefix:string)=>{const staked=Number(windowRow[`${prefix}_staked`]??0),paid=Number(windowRow[`${prefix}_paid`]??0);return {staked,paid,net:staked-paid,observed:staked?paid/staked:null,rounds:Number(windowRow[`${prefix}_rounds`]??0)};};
+    WHERE r.wager_total>0 AND r.created_at>=? AND r.created_at<? GROUP BY r.game_name`,values);
+  const windowRow=windowRows.find(r=>r.game_name==='teen_patti')??{};
+  const metric=(prefix:string,row:Record<string,unknown>=windowRow)=>{const staked=Number(row[`${prefix}_staked`]??0),paid=Number(row[`${prefix}_paid`]??0);return {staked,paid,net:staked-paid,observed:staked?paid/staked:null,rounds:Number(row[`${prefix}_rounds`]??0)};};
   const princessWindows=windows.map(([key,label])=>({label,...metric(key==='today'?'today':key==='7d'?'days7':'days30')}));
   const princessCurrent={version,...metric('current')};
   const [rows]=await db().query<RowDataPacket[]>(`SELECT r.game_name,COUNT(*) player_rounds,
@@ -103,7 +103,7 @@ export async function gameEconomyDashboard(scope:Scope,period='today',from?:stri
     WHERE r.created_at>=? AND r.created_at<? AND r.wager_total>0 GROUP BY r.game_name`,[range.start,range.end]);
   return {history,settings,range,princessWindows,princessCurrent,games:configurableGameIds.map(game=>{
     const r=rows.find(r=>r.game_name===game),config=settings.games[game],staked=Number(r?.staked??0),paid=Number(r?.paid??0),rounds=Number(r?.rounds??0),model=economyModel(game,config);
-    return {game,config,model,staked,paid,net:staked-paid,observed:staked?paid/staked:null,rounds,players:Number(r?.players??0),playerRounds:Number(r?.player_rounds??0),averageBet:Number(r?.average_bet??0),largestBet:Number(r?.largest_bet??0),largestPayout:Number(r?.largest_payout??0),recentPlayers:Number(r?.recent_players??0),
+    return {windows:windows.map(([key,label])=>({label,...metric(key==='today'?'today':key==='7d'?'days7':'days30',windowRows.find(r=>r.game_name===game)??{})})),game,config,model,staked,paid,net:staked-paid,observed:staked?paid/staked:null,rounds,players:Number(r?.players??0),playerRounds:Number(r?.player_rounds??0),averageBet:Number(r?.average_bet??0),largestBet:Number(r?.largest_bet??0),largestPayout:Number(r?.largest_payout??0),recentPlayers:Number(r?.recent_players??0),
       alert:game==='teen_patti'?(princessCurrent.rounds<1000||princessCurrent.staked<100000?'Small current-version sample: at least 1,000 settled rounds and 100,000 wagered Coins are required for the RTP alert.':princessCurrent.observed!=null&&princessCurrent.observed>config.targetRtp+.05?'RTP ABOVE TARGET — current-version observed return is over 5 percentage points above target. This is a descriptive operator alert, not a significance test; no round is modified.':null):rounds<1000?'Small sample: variance can dominate; no economy action is implied.':staked&&model.average!=null&&paid/staked>model.average+.10?'RTP ABOVE EXPECTED: observed return exceeds the current modeled equal-area return by more than 10 percentage points. Check historical versions, selection mix and concentration; this is not a statistical significance test.':paid>staked?'INVESTIGATE: net payout exceeds stakes. Review large wins and historical versions; outcomes are never manipulated.':null};
   })};
 }

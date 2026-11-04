@@ -107,6 +107,7 @@ const branchAdmin: Permission[] = [
 
 const grants: Record<Role, Permission[]> = {
   MASTER: master,
+  GLOBAL_MANAGER: [...countryManager.filter(p=>p!=="audit.read"), "games.read", "live_reports.read"],
   COUNTRY_MANAGER: countryManager,
   SUPER_ADMIN: superAdmin,
   ADMIN: branchAdmin,
@@ -143,11 +144,11 @@ grants.AGENCY.push("live_reports.read");
 grants.MONITORING_CS.push("devices.read", "devices.manage");
 
 export function canReadPrivateHostIdentity(role: Role) {
-  return role === "MASTER" || role === "COUNTRY_MANAGER" || role === "SUPER_ADMIN" || role === "BD";
+  return role === "MASTER" || role === "GLOBAL_MANAGER" || role === "COUNTRY_MANAGER" || role === "SUPER_ADMIN" || role === "BD";
 }
 
 export function can(role: Role, permission: Permission) {
-  return grants[role].includes(permission);
+  return grants[role]?.includes(permission) ?? false;
 }
 
 export function permissionsFor(role: Role) {

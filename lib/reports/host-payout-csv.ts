@@ -1,4 +1,6 @@
 import 'server-only';
+import {scopeFor} from '@/lib/db/repositories/accounts';
+import {can} from '@/lib/auth/permissions';
 import type {SessionAccount} from '@/types/platform';
 import {agencyPayoutGroups} from '@/lib/db/repositories/agency-payout-groups';
 import {listHostPayouts,PayoutError,type PayoutFilters} from '@/lib/db/repositories/host-payouts';
@@ -24,7 +26,8 @@ const headers=(name:string)=>({'Content-Type':'text/csv; charset=utf-8','Content
 
 /** Masked read-only ledger export; no decrypted payout destinations. */
 export async function hostPayoutCsv(account:SessionAccount,filters:PayoutFilters,kind:'agencies'|'details') {
-  if(!['MASTER','AGENCY'].includes(account.role)) throw new PayoutError('Your role cannot export payouts.');
+  const scope=await scopeFor(account);
+  if(!can(account.role,'withdrawals.read')||(!['MASTER','GLOBAL_MANAGER','AGENCY'].includes(account.role)&&!scope.globalManagerId)) throw new PayoutError('Your role cannot export payouts.');
   if(kind==='agencies') {
     if(account.role!=='MASTER') throw new PayoutError('Only Master may export the global Agency payout list.');
     const {groups}=await agencyPayoutGroups(account,filters,1,true);

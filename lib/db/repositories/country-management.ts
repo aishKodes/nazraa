@@ -18,7 +18,7 @@ export function requireCountryAccess(scope:Scope, requested?:string) {
 export async function countryManagement(scope:Scope, requested?:string) {
   const code = requireCountryAccess(scope,requested);
   const branch = scopeWhere(scope,'a.id');
-  const userBranch = scopeWhere(scope,'u.agency_account_id');
+  const userBranch = scopeWhere(scope,'u.agency_account_id', "u.country_code");
   const [accounts, users, rooms, payouts] = await Promise.all([
     db().query<RowDataPacket[]>(`SELECT a.country_code,a.role,COUNT(*) n FROM platform_accounts a
       WHERE a.removed_at IS NULL AND ${branch.clause} ${code?'AND a.country_code=?':''} GROUP BY a.country_code,a.role`, [...branch.values,...(code?[code]:[])]),

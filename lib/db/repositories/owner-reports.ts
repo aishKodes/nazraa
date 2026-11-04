@@ -100,7 +100,7 @@ function noTargetFields<T extends Record<string, unknown>>(row: T) {
 export async function agencyHostReport(scope: Scope, input: ReportPageInput = {}, all = false, agencyIds?: string[]) {
   const { page, pageSize, offset } = pageArgs(input);
   const q = queryText(input);
-  const scoped = scopeWhere(scope, "COALESCE(h.agency_account_id, u.agency_account_id)");
+  const scoped = scopeWhere(scope, "COALESCE(h.agency_account_id, u.agency_account_id)", "u.country_code");
   const where = [scoped.clause];
   const values: BindValue[] = [...scoped.values];
   if (agencyIds !== undefined) {
@@ -179,13 +179,14 @@ export async function hierarchyReport(scope: Scope, input: ReportPageInput = {},
   ));
   if (accountRows.length > REPORT_EXPORT_LIMIT) throw new Error(`Filtered hierarchy exceeds ${REPORT_EXPORT_LIMIT.toLocaleString()} rows.`);
   const ids = accountRows.map((row) => String(row.id));
+  const hostCountry=scopeWhere(scope,"host.agency_account_id","(SELECT country_code FROM application_users gm_user WHERE gm_user.id=host.application_user_id)");
   const hostGroups = ids.length ? (await withDatabaseReadRetry(() => db().execute<(RowDataPacket & Record<string, unknown>)[]>(
     `SELECT host.agency_account_id, COUNT(*) host_count,
             SUM(CASE WHEN host.status IN ('ACTIVE','APPROVED') THEN 1 ELSE 0 END) active_count,
             SUM(CASE WHEN host.status = 'PENDING' THEN 1 ELSE 0 END) pending_count,
             SUM(CASE WHEN host.status IN ('INACTIVE','SUSPENDED','REJECTED') THEN 1 ELSE 0 END) inactive_count
-     FROM host_profiles host WHERE host.agency_account_id IN (${ids.map(() => "?").join(",")})
-     GROUP BY host.agency_account_id`, ids,
+     FROM host_profiles host WHERE host.agency_account_id IN (${ids.map(() => "?").join(",")}) AND ${hostCountry.clause}
+     GROUP BY host.agency_account_id`, [...ids,...hostCountry.values],
   )))[0] : [];
   const direct = new Map(hostGroups.map((row) => [String(row.agency_account_id), {
     hosts: Number(row.host_count), active: Number(row.active_count), pending: Number(row.pending_count), inactive: Number(row.inactive_count), agencies: 0,
@@ -260,7 +261,7 @@ export async function hierarchyReport(scope: Scope, input: ReportPageInput = {},
 type FilteredQuery = { whereSql: string; values: BindValue[] };
 
 function liveFilters(scope: Scope, input: ReportPageInput): FilteredQuery {
-  const scoped = scopeWhere(scope, "COALESCE(host.agency_account_id, user.agency_account_id, room.agency_account_id)");
+  const scoped = scopeWhere(scope, "COALESCE(host.agency_account_id, user.agency_account_id, room.agency_account_id)", "user.country_code");
   const where = [scoped.clause, "accounting.room_type IN ('LIVE','FACE')", "accounting.status != 'VOID'"];
   const values: BindValue[] = [...scoped.values];
   addRange(where, values, "accounting.started_at", input);
@@ -402,9 +403,10 @@ function mapGame(row: RowDataPacket & Record<string, unknown>) {
 }
 
 export async function gameManagementReport(scope: Scope, input: ReportPageInput = {}, all = false) {
+  if(scope.gameReportsEnabled===false)throw Error("Game reports are not authorized.");
   const { page, pageSize, offset } = pageArgs(input);
   const q = queryText(input);
-  const userScope = scopeWhere(scope, "COALESCE(user.agency_account_id,host.agency_account_id)");
+  const userScope = scopeWhere(scope, "COALESCE(user.agency_account_id,host.agency_account_id)", "user.country_code");
   const userWhere = [userScope.clause];
   const userValues: BindValue[] = [...userScope.values];
   if (q) addUserSearch(userWhere, userValues, q, "user");
@@ -470,6 +472,7 @@ function coinTransferFilters(scope: Scope, input: CoinTransferInput) {
   // elevated roles: every row must have been created by this exact account.
   const where = ["transfer.sender_account_id = ?", "ledger.status = 'COMPLETED'", "ledger.asset_type = 'COIN'"];
   const values: BindValue[] = [scope.account.id];
+  if(scope.globalManagerId){const authorized=scopeWhere({...scope,accountIds:scope.globalManagerAccountIds??scope.accountIds},"user.agency_account_id","user.country_code");where.push(authorized.clause);values.push(...authorized.values);}
   const mode = input.mode === "date" ? "date" : "24h";
   if (mode === "24h") where.push("transfer.created_at >= UTC_TIMESTAMP(3) - INTERVAL 24 HOUR AND transfer.created_at <= UTC_TIMESTAMP(3)");
   else {

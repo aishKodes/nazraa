@@ -2,6 +2,7 @@ import type { Role } from "@/types/platform";
 
 export const roleLabels: Record<Role, string> = {
   MASTER: "Master",
+  GLOBAL_MANAGER: "Global Manager",
   COUNTRY_MANAGER: "Country Manager",
   SUPER_ADMIN: "Super Admin",
   ADMIN: "Admin",
@@ -12,7 +13,8 @@ export const roleLabels: Record<Role, string> = {
 };
 
 const creatable: Record<Role, Role[]> = {
-  MASTER: ["COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
+  MASTER: ["GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
+  GLOBAL_MANAGER: ["COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
   COUNTRY_MANAGER: ["SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER"],
   SUPER_ADMIN: ["ADMIN", "BD", "AGENCY"],
   ADMIN: ["AGENCY", "COIN_SELLER"],
@@ -23,7 +25,8 @@ const creatable: Record<Role, Role[]> = {
 };
 
 const manageable: Record<Role, Role[]> = {
-  MASTER: ["COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
+  MASTER: ["GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
+  GLOBAL_MANAGER: ["COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
   COUNTRY_MANAGER: ["SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
   SUPER_ADMIN: ["ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"],
   ADMIN: ["AGENCY", "COIN_SELLER", "MONITORING_CS"],
@@ -42,18 +45,21 @@ export function canManageRole(actor: Role, target: Role) {
 }
 
 export function rolesAssignableBy(actor: Role): Role[] {
-  return actor === "MASTER" || actor === "COUNTRY_MANAGER" ? creatable[actor] : [];
+  return actor === "MASTER" || actor === "GLOBAL_MANAGER" || actor === "COUNTRY_MANAGER" ? creatable[actor] : [];
 }
 
 export function validParentRoles(role: Role): Role[] {
   switch (role) {
-    case "COUNTRY_MANAGER":
+    case "GLOBAL_MANAGER":
       return ["MASTER"];
+    case "COUNTRY_MANAGER":
+      return ["MASTER", "GLOBAL_MANAGER"];
     case "SUPER_ADMIN":
       return ["COUNTRY_MANAGER"];
     case "ADMIN":
-    case "BD":
       return ["SUPER_ADMIN"];
+    case "BD":
+      return ["ADMIN", "SUPER_ADMIN"];
     case "AGENCY":
       return ["ADMIN", "BD"];
     case "COIN_SELLER":

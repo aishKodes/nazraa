@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
 import { withTransaction } from "@/lib/db/transaction";
-import { monitoringScopeWhere, scopeWhere } from "@/lib/db/repositories/accounts";
+import { monitoringScopeWhere, scopeWhere,managementAuditBoundary } from "@/lib/db/repositories/accounts";
 import type { PageRequest, PageResult, Scope } from "@/types/platform";
 import { can } from "@/lib/auth/permissions";
 import { finalizeWithdrawalDistribution } from "@/lib/db/repositories/withdrawal-economy";
@@ -37,10 +37,11 @@ export async function transferCoins(input: { scope: Scope; recipientId: string; 
   if (input.reason.trim().length < 5) throw new Error("A clear transfer reason is required.");
 
   return withTransaction(async (connection) => {
+    const recipientScope=input.scope.globalManagerId?scopeWhere({...input.scope,accountIds:input.scope.globalManagerAccountIds??input.scope.accountIds},'agency_account_id','country_code'):{clause:'1=1',values:[] as string[]};
     const [recipients] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
       `SELECT id, full_name FROM application_users
-       WHERE id = ? AND account_status = 'ACTIVE' LIMIT 1`,
-      [input.recipientId],
+       WHERE id = ? AND account_status = 'ACTIVE' AND ${recipientScope.clause} LIMIT 1`,
+      [input.recipientId,...recipientScope.values],
     );
     const recipient = recipients[0];
     if (!recipient) throw new Error("An active user matching this recipient was not found.");
@@ -209,7 +210,7 @@ export async function transitionWithdrawal(input: { scope: Scope; withdrawalId: 
   if (!input.reason.trim()) throw new Error("A review reason is required.");
   if (input.nextStatus === "COMPLETED" && (input.providerReference?.trim().length ?? 0) < 3) throw new Error("A payout provider reference is required before completion.");
   return withTransaction(async (connection) => {
-    const filter = scopeWhere(input.scope, "agency_account_id");
+    const filter = scopeWhere(input.scope, "agency_account_id", "country_code");
     const [rows] = await connection.query<(RowDataPacket & { id: string; status: string; amount: number; application_user_id: string; agency_account_id: string | null; withdrawal_code: string; payout_method_id: string | null; provider_reference: string|null })[]>(
       `SELECT id, status, amount, application_user_id, agency_account_id, withdrawal_code, payout_method_id,provider_reference,request_channel FROM withdrawal_requests WHERE id = ? AND ${filter.clause} FOR UPDATE`,
       [input.withdrawalId, ...filter.values],
@@ -283,7 +284,7 @@ export async function createTemporaryLiveRestriction(input: { scope: Scope; appl
   if (input.scope.account.role === "MONITORING_CS") throw new Error("CS Monitoring can only apply the dedicated 30-minute or 2-hour Face Live suspension.");
   if (input.reason.trim().length < 5) throw new Error("Provide a specific moderation reason.");
   if (![30, 60, 120, 1440].includes(input.durationMinutes)) throw new Error("Choose a 30 minute, 1 hour, 2 hour, or 24 hour restriction.");
-  const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
+  const permitted = monitoringScopeWhere(input.scope, "agency_account_id", "country_code");
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & { id: string; full_name: string })[]>(
       `SELECT id, full_name FROM application_users WHERE id = ? AND account_status = 'ACTIVE' AND ${permitted.clause} LIMIT 1 FOR UPDATE`,
@@ -349,7 +350,7 @@ export async function createFaceLiveSuspension(input: {
   if (reason.length < 5 || reason.length > 500) {
     throw new Error("Provide a clear moderation reason.");
   }
-  const permitted = monitoringScopeWhere(input.scope, "agency_account_id");
+  const permitted = monitoringScopeWhere(input.scope, "agency_account_id", "country_code");
   return withTransaction(async (connection) => {
     const [users] = await connection.query<(RowDataPacket & {
       id: string;
@@ -610,7 +611,7 @@ export async function listWithdrawalsPage(scope: Scope, input: PageRequest = {})
   status: string; requestedAt: string; payout: string | null;
 }>> {
   const { page, pageSize, offset } = pageInput(input);
-  const filter = scopeWhere(scope, "w.agency_account_id");
+  const filter = scopeWhere(scope, "w.agency_account_id", "u.country_code");
   const [rows] = await db().query<(RowDataPacket & { id: string; withdrawal_code: string; full_name: string; external_user_id: string; amount: number; currency: string; status: string; requested_at: string; payout_method_masked: string | null })[]>(
     `SELECT w.id, w.withdrawal_code, u.full_name, u.external_user_id, w.amount, w.currency, w.status, w.requested_at, w.payout_method_masked
      FROM withdrawal_requests w INNER JOIN application_users u ON u.id = w.application_user_id
@@ -772,7 +773,7 @@ export async function listMediaCostTelemetry(days = 14) {
 
 export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
   const { page, pageSize, offset } = pageInput(input);
-  const filter = scopeWhere(scope, "r.agency_account_id");
+  const filter = scopeWhere(scope, "r.agency_account_id", "u.country_code");
   const [rows] = await db().query<(RowDataPacket & { id: string; room_code: string; room_type: string; status: string; audience_count: number; started_at: string; full_name: string; external_user_id: string; application_user_id: string; theme_index: number; theme_enabled: number; pk_requests_enabled: number; password_protected: number; chat_locked: number; pk_count: number; presence_incidents: number; mixer_status: string | null; rtc_publishers: number; passive_streaming: number; passive_rtc_fallback: number; mixer_seconds: number; reconnect_count: number; connection_phase: string | null; last_terminal_error_category: string | null; active_speakers: number; passive_viewers: number; animation_queue_length: number; message_delivery_latency_ms: number | null })[]>(
     `SELECT r.id, r.room_code, r.room_type, r.status, r.audience_count, r.started_at,
             r.theme_index, r.theme_enabled, r.pk_requests_enabled, (r.password_hash IS NOT NULL) password_protected, r.chat_locked,
@@ -822,7 +823,7 @@ export async function listRoomsPage(scope: Scope, input: PageRequest = {}) {
 }
 
 export async function listPresenceIncidents(scope: Scope) {
-  const filter = scopeWhere(scope, "user.agency_account_id");
+  const filter = scopeWhere(scope, "user.agency_account_id", "user.country_code");
   const [rows] = await db().query<(RowDataPacket & {
     id: string; room_code: string; room_type: string; incident_type: string;
     consecutive_failures: number; created_at: string; application_user_id: string;
@@ -861,7 +862,7 @@ export async function listPresenceIncidents(scope: Scope) {
 export async function restoreLiveAccess(input: { scope: Scope; restrictionId: string; reason: string }) {
   if (!can(input.scope.account.role, "rooms.restrict")) throw new Error("Your role cannot restore Live access.");
   if (input.reason.trim().length < 5) throw new Error("Provide a clear review reason.");
-  const filter = monitoringScopeWhere(input.scope, "user.agency_account_id");
+  const filter = monitoringScopeWhere(input.scope, "user.agency_account_id", "user.country_code");
   return withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & {
       id: string; application_user_id: string; full_name: string; restriction_type: string;
@@ -911,6 +912,7 @@ export async function listAudit(scope: Scope) {
 export async function listAuditPage(scope: Scope, input: PageRequest = {}) {
   const { page, pageSize, offset } = pageInput(input);
   const filter = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.actor_account_id");
+  const boundary=managementAuditBoundary(scope);filter.clause=`(${filter.clause}) AND ${boundary.clause}`;filter.values.push(...boundary.values);
   const [rows] = await db().query<(RowDataPacket & { id: string; action: string; module: string; target_type: string; reason: string | null; created_at: string; full_name: string | null; role: string | null })[]>(
     `SELECT a.id, a.action, a.module, a.target_type, a.reason, a.created_at, p.full_name, p.role
      FROM audit_logs a LEFT JOIN platform_accounts p ON p.id = a.actor_account_id
@@ -920,7 +922,7 @@ export async function listAuditPage(scope: Scope, input: PageRequest = {}) {
 }
 
 export async function listRiskFlags(scope: Scope, page = 1) {
-  const filter = scopeWhere(scope, "u.agency_account_id");
+  const filter = scopeWhere(scope, "u.agency_account_id", "u.country_code");
   const [rows] = await db().query<(RowDataPacket & { id: string; severity: string; status: string; rule_key: string; summary: string; created_at: string; full_name: string | null; external_user_id: string | null })[]>(
     `SELECT r.id, r.severity, r.status, r.rule_key, r.summary, r.created_at, u.full_name, u.external_user_id
      FROM risk_flags r LEFT JOIN application_users u ON u.id = r.application_user_id
@@ -930,7 +932,7 @@ export async function listRiskFlags(scope: Scope, page = 1) {
 }
 
 export async function updateRiskFlag(input: { scope: Scope; flagId: string; status: "REVIEWING" | "RESOLVED"; reason: string }) {
-  const filter = scopeWhere(input.scope, "u.agency_account_id");
+  const filter = scopeWhere(input.scope, "u.agency_account_id", "u.country_code");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(
       `SELECT r.id, r.status FROM risk_flags r LEFT JOIN application_users u ON u.id = r.application_user_id WHERE r.id = ? AND ${filter.clause} FOR UPDATE`, [input.flagId, ...filter.values],
@@ -943,7 +945,7 @@ export async function updateRiskFlag(input: { scope: Scope; flagId: string; stat
 }
 
 export async function updateRoomStatus(input: { scope: Scope; roomId: string; status: "ACTIVE" | "LOCKED" | "ENDED"; reason: string }) {
-  const filter = scopeWhere(input.scope, "agency_account_id");
+  const filter = scopeWhere(input.scope, "agency_account_id", "(SELECT country_code FROM application_users gm_host WHERE gm_host.id=live_rooms.host_application_user_id)");
   await withTransaction(async (connection) => {
     const [rows] = await connection.query<(RowDataPacket & { id: string; status: string })[]>(`SELECT id, status FROM live_rooms WHERE id = ? AND ${filter.clause} FOR UPDATE`, [input.roomId, ...filter.values]);
     if (!rows[0] || !["ACTIVE", "LOCKED"].includes(rows[0].status)) throw new Error("Only an active or locked room in your scope can be changed.");

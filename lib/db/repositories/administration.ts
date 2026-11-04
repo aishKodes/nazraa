@@ -114,13 +114,13 @@ export async function listPlatformAccountsPage(
 
 export async function listParentOptions(scope: Scope, childRole?: Role) {
   const scoped = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "id");
-  const allowedRoles = childRole ? validParentRoles(childRole) : ["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"] satisfies Role[];
+  const allowedRoles = childRole ? validParentRoles(childRole) : ["MASTER", "GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD"] satisfies Role[];
   if (!allowedRoles.length) return [];
   const placeholders = allowedRoles.map(() => "?").join(",");
   const [rows] = await db().query<(RowDataPacket & { id: string; role: Role; full_name: string; public_id: number; country_code: string | null; parent_account_id: string | null })[]>(
     `SELECT id, role, full_name, public_id, country_code, parent_account_id FROM platform_accounts
      WHERE ${scoped.clause} AND role IN (${placeholders}) AND status = 'ACTIVE'
-     ORDER BY FIELD(role, 'MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD'), full_name LIMIT 500`,
+     ORDER BY FIELD(role, 'MASTER','GLOBAL_MANAGER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD'), full_name LIMIT 500`,
     [...scoped.values, ...allowedRoles],
   );
   return rows.map((row) => ({ id: row.id, role: row.role, displayRole: roleLabel(row.role), name: row.full_name, code: String(row.public_id), country: row.country_code, parentId: row.parent_account_id }));
@@ -205,10 +205,11 @@ export async function createPlatformAccount(input: {
   documents: PreparedDocument[];
 }) {
   if (!rolesCreatableBy(input.scope.account.role).includes(input.role)) throw new Error("Your role cannot create that account type.");
+  if(input.role==='GLOBAL_MANAGER'&&!input.applicationUserId?.trim())throw Error('Choose an existing active Nazraa account for the Global Manager.');
   if (input.password.length < 8) throw new Error("Password must contain at least 8 characters.");
   if (!isPanelCountry(input.countryCode)) throw new Error("Select a supported country from the country list.");
   const parent = await resolveParent(input.scope, input.role, input.requestedParentId);
-  if (parent.country_code && parent.role !== "MASTER" && parent.country_code !== input.countryCode) {
+  if (parent.country_code && !["MASTER","GLOBAL_MANAGER"].includes(parent.role) && parent.country_code !== input.countryCode) {
     throw new Error("The account country must match its parent branch.");
   }
   const accountId = randomUUID();
@@ -217,6 +218,12 @@ export async function createPlatformAccount(input: {
   let publicId = 0;
   await withTransaction(async (connection) => {
     let applicationUserId = input.applicationUserId?.trim() || null;
+    if(input.scope.globalManagerId&&applicationUserId){
+      const permitted=scopeWhere({...input.scope,accountIds:input.scope.globalManagerAccountIds??input.scope.accountIds},'u.agency_account_id','u.country_code');
+      const codes=input.scope.countryCodes??[];
+      const [allowed]=await connection.query<RowDataPacket[]>(`SELECT u.id FROM application_users u WHERE (u.id=? OR u.external_user_id=? OR CAST(u.public_id AS CHAR)=?) AND u.account_status='ACTIVE' AND (${permitted.clause} OR (u.agency_account_id IS NULL AND u.country_code IN (${codes.map(()=>'?').join(',')||'NULL'}))) FOR UPDATE`,[applicationUserId,applicationUserId,applicationUserId,...permitted.values,...codes]);
+      if(allowed.length!==1)throw Error('Choose an active Nazraa account in your authorized country/team.');applicationUserId=String(allowed[0].id);
+    }
     if (input.role === "AGENCY" && applicationUserId) {
       const [owners] = await connection.query<(RowDataPacket & { id: string; account_status: string; external_user_id: string; public_id: number })[]>(
         `SELECT id, account_status, external_user_id, public_id FROM application_users
@@ -236,6 +243,13 @@ export async function createPlatformAccount(input: {
     }
     const [currentParents]=await connection.query<RowDataPacket[]>("SELECT role,country_code FROM platform_accounts WHERE id=? AND status='ACTIVE' AND removed_at IS NULL FOR UPDATE",[parent.id]);
     if(!currentParents[0]||!isParentRoleValid(input.role,currentParents[0].role))throw new Error('The selected parent is no longer active. Refresh before creating this account.');
+    if(input.scope.account.role==='GLOBAL_MANAGER'&&!(input.scope.countryCodes??[]).includes(input.countryCode))throw Error('The country is outside your assigned scope.');
+    if(input.role==='GLOBAL_MANAGER'&&applicationUserId){
+      const [matches]=await connection.query<RowDataPacket[]>("SELECT id FROM application_users WHERE (id=? OR external_user_id=? OR CAST(public_id AS CHAR)=?) AND account_status='ACTIVE' FOR UPDATE",[applicationUserId,applicationUserId,applicationUserId]);
+      if(matches.length!==1)throw Error('Choose one existing active Nazraa account.');applicationUserId=String(matches[0].id);
+      const [linked]=await connection.query<RowDataPacket[]>("SELECT id FROM platform_accounts WHERE application_user_id=? AND role='GLOBAL_MANAGER' AND removed_at IS NULL",[applicationUserId]);
+      if(linked.length)throw Error('This Nazraa account already has a Global Manager account.');
+    }
     publicId = await generateManagementPublicId(connection);
     await connection.execute(
       `INSERT INTO platform_accounts
@@ -280,7 +294,7 @@ export async function reassignPlatformAccount(input: { scope: Scope; accountId: 
     );
     const parent = parents[0];
     if (!parent || !isParentRoleValid(target.role, parent.role)) throw new Error(`A ${roleLabel(target.role)} must be under ${validParentRoles(target.role).map(roleLabel).join(" or ")}.`);
-    if (parent.country_code && target.country_code && parent.role !== "MASTER" && parent.country_code !== target.country_code) throw new Error("Move the account only to a parent in the same country.");
+    if (parent.country_code && target.country_code && !["MASTER","GLOBAL_MANAGER"].includes(parent.role) && parent.country_code !== target.country_code) throw new Error("Move the account only to a parent in the same country.");
     const [cycles] = await connection.query<RowDataPacket[]>(
       `WITH RECURSIVE descendants AS (
          SELECT id FROM platform_accounts WHERE parent_account_id = ?
@@ -351,7 +365,7 @@ export async function updatePlatformAccount(input: { scope: Scope; accountId: st
     if(!target||target.id===input.scope.account.id||target.role==='MASTER'||!canManageRole(input.scope.account.role,target.role))throw new Error('That account cannot be managed in your branch.');
     if(input.expectedPublicId!==undefined&&String(target.public_id)!==input.expectedPublicId)throw new Error('The management ID has changed. Refresh before editing.');
     if (target.country_code && target.country_code.toUpperCase() !== input.countryCode) throw new Error("Country cannot be changed through contact editing. Keep the assigned country and hierarchy consistent.");
-    if (!target.country_code && (!isPanelCountry(input.countryCode) || (target.parent_country && target.parent_role !== "MASTER" && target.parent_country.toUpperCase() !== input.countryCode))) throw new Error("Select the same country as this account's parent branch.");
+    if (!target.country_code && (!isPanelCountry(input.countryCode) || (target.parent_country && !["MASTER","GLOBAL_MANAGER"].includes(target.parent_role) && target.parent_country.toUpperCase() !== input.countryCode))) throw new Error("Select the same country as this account's parent branch.");
     const publicId=input.publicId?Number(input.publicId):Number(target.public_id);
     if(publicId!==Number(target.public_id)) {
       const [duplicates]=await connection.query<RowDataPacket[]>('SELECT id FROM platform_accounts WHERE public_id=? AND id<>?',[publicId,target.id]);
@@ -420,7 +434,7 @@ export async function changePlatformAccountRole(input: {
       parent = await createSupportAccount("COUNTRY_MANAGER", input.newCountryManager.fullName, cmHash, input.scope.account.id, input.newCountryManager.countryCode) as typeof parent;
     }
     if (!parent || !isParentRoleValid(input.role, parent.role)) throw new Error(`Choose a valid ${validParentRoles(input.role).map(roleLabel).join(" or ")} parent.`);
-    if (parent.role !== "MASTER" && parent.country_code && target.country_code && parent.country_code.toUpperCase() !== target.country_code.toUpperCase()) throw new Error("The account and parent must be in the same country.");
+    if (!["MASTER","GLOBAL_MANAGER"].includes(parent.role) && parent.country_code && target.country_code && parent.country_code.toUpperCase() !== target.country_code.toUpperCase()) throw new Error("The account and parent must be in the same country.");
     const [cycles] = await connection.query<RowDataPacket[]>(
       `WITH RECURSIVE descendants AS (
          SELECT id FROM platform_accounts WHERE parent_account_id = ?

@@ -1,7 +1,7 @@
 import "server-only";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db/pool";
-import { scopeWhere } from "@/lib/db/repositories/accounts";
+import { scopeWhere,globalManagerLedgerBoundary,managementAuditBoundary } from "@/lib/db/repositories/accounts";
 import type { DashboardMetrics, LedgerEntry, PageRequest, PageResult, Scope } from "@/types/platform";
 
 type ActivityRow = RowDataPacket & { id: string; action: string; module: string; actor_name: string | null; created_at: string };
@@ -13,16 +13,20 @@ type LedgerRow = RowDataPacket & {
 function ledgerVisibility(scope: Scope) {
   if (scope.isGlobal) return { clause: "1=1", values: [] as string[] };
   const filters = ["l.actor_account_id", "src_account.id", "dest_account.id", "src_user.agency_account_id", "dest_user.agency_account_id"].map((column) => scopeWhere(scope, column));
-  return { clause: `(${filters.map((filter) => filter.clause).join(" OR ")})`, values: filters.flatMap((filter) => filter.values) };
+  const boundary=globalManagerLedgerBoundary(scope);
+  return { clause: `((${filters.map((filter) => filter.clause).join(" OR ")}) AND ${boundary.clause})`, values: [...filters.flatMap((filter) => filter.values),...boundary.values] };
 }
 
 export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetrics> {
-  const users = scopeWhere(scope, "agency_account_id");
-  const hosts = scopeWhere(scope, "agency_account_id");
-  const rooms = scopeWhere(scope, "agency_account_id");
-  const withdrawals = scopeWhere(scope, "agency_account_id");
+  const users = scopeWhere(scope, "agency_account_id", "country_code");
+  const hosts = scopeWhere(scope, "agency_account_id", "(SELECT country_code FROM application_users gm_user WHERE gm_user.id=host_profiles.application_user_id)");
+  const rooms = scopeWhere(scope, "agency_account_id", "(SELECT country_code FROM application_users gm_user WHERE gm_user.id=live_rooms.host_application_user_id)");
+  const withdrawals = scopeWhere(scope, "agency_account_id", "(SELECT country_code FROM application_users gm_user WHERE gm_user.id=withdrawal_requests.application_user_id)");
   const accountIds = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "id");
   const ledger = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "actor_account_id");
+  const countries=scope.globalManagerId?accountIds:{clause:"1=1",values:[] as string[]};
+  const revenueBoundary=globalManagerLedgerBoundary(scope,'ledger_transactions');
+  ledger.clause=`(${ledger.clause}) AND ${revenueBoundary.clause}`;ledger.values.push(...revenueBoundary.values);
   const inventory = { clause: "owner_id = ?", values: [scope.account.id] };
   const [rows] = await db().query<(RowDataPacket & {
     users: number; hosts: number; agencies: number; countries: number; active_rooms: number; revenue: number;
@@ -32,12 +36,12 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
        (SELECT COUNT(*) FROM application_users WHERE ${users.clause}) users,
        (SELECT COUNT(*) FROM host_profiles WHERE ${hosts.clause} AND status IN ('APPROVED','ACTIVE')) hosts,
        (SELECT COUNT(*) FROM platform_accounts WHERE ${accountIds.clause} AND role = 'AGENCY' AND status = 'ACTIVE') agencies,
-       (SELECT COUNT(DISTINCT UPPER(TRIM(country_code))) FROM platform_accounts WHERE role = 'COUNTRY_MANAGER' AND removed_at IS NULL AND status <> 'DISABLED' AND country_code IS NOT NULL AND TRIM(country_code)<>'') countries,
+       (SELECT COUNT(DISTINCT UPPER(TRIM(country_code))) FROM platform_accounts WHERE role = 'COUNTRY_MANAGER' AND removed_at IS NULL AND status <> 'DISABLED' AND country_code IS NOT NULL AND TRIM(country_code)<>'' AND ${countries.clause}) countries,
        (SELECT COUNT(*) FROM live_rooms WHERE ${rooms.clause} AND status = 'ACTIVE') active_rooms,
        (SELECT COALESCE(SUM(money_amount), 0) FROM ledger_transactions WHERE ${ledger.clause} AND asset_type = 'CASH' AND status = 'COMPLETED') revenue,
        (SELECT COUNT(*) FROM withdrawal_requests WHERE ${withdrawals.clause} AND status IN ('PENDING','UNDER_REVIEW')) pending_withdrawals,
        (SELECT COALESCE(SUM(available_balance), 0) FROM wallet_balances WHERE owner_type = 'PLATFORM_ACCOUNT' AND ${inventory.clause} AND asset_type = 'COIN') coin_inventory`,
-    [...users.values, ...hosts.values, ...accountIds.values, ...rooms.values, ...ledger.values, ...withdrawals.values, ...inventory.values],
+    [...users.values, ...hosts.values, ...accountIds.values, ...countries.values, ...rooms.values, ...ledger.values, ...withdrawals.values, ...inventory.values],
   );
   const row = rows[0];
   return {
@@ -50,6 +54,7 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
 
 export async function getRecentActivity(scope: Scope) {
   const filter = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "a.actor_account_id");
+  const boundary=managementAuditBoundary(scope);filter.clause=`(${filter.clause}) AND ${boundary.clause}`;filter.values.push(...boundary.values);
   const [rows] = await db().query<ActivityRow[]>(
     `SELECT a.id, a.action, a.module, p.full_name actor_name, a.created_at
      FROM audit_logs a LEFT JOIN platform_accounts p ON p.id = a.actor_account_id
@@ -112,6 +117,7 @@ export async function getLedgerPage(scope: Scope, input: PageRequest = {}): Prom
 
 export async function getRevenueSeries(scope: Scope) {
   const filter = scope.isGlobal ? { clause: "1=1", values: [] as string[] } : scopeWhere(scope, "actor_account_id");
+  const boundary=globalManagerLedgerBoundary(scope,'ledger_transactions');filter.clause=`(${filter.clause}) AND ${boundary.clause}`;filter.values.push(...boundary.values);
   const [rows] = await db().query<(RowDataPacket & { day: string; revenue: number; payouts: number })[]>(
     `SELECT DATE(created_at) day,
             SUM(CASE WHEN asset_type = 'CASH' AND money_amount > 0 THEN money_amount ELSE 0 END) revenue,

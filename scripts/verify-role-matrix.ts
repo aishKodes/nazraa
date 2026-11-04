@@ -3,7 +3,7 @@ import { can } from "@/lib/auth/permissions";
 import { isParentRoleValid, rolesAssignableBy, rolesCreatableBy, validParentRoles } from "@/lib/auth/role-hierarchy";
 import { roles, type Role } from "@/types/platform";
 
-assert.deepEqual(roles, ["MASTER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"]);
+assert.deepEqual(roles, ["MASTER", "GLOBAL_MANAGER", "COUNTRY_MANAGER", "SUPER_ADMIN", "ADMIN", "BD", "AGENCY", "COIN_SELLER", "MONITORING_CS"]);
 
 for (const role of roles) {
   assert.equal(can(role, "dashboard.read"), true, `${role} needs its own overview`);
@@ -14,9 +14,9 @@ for (const role of roles) {
   assert.equal(can(role, "wallet.adjust"), role === "MASTER", `${role} manual-user-balance adjustment rule`);
   assert.equal(can(role, "settings.manage"), role === "MASTER", `${role} global-settings rule`);
   assert.equal(can(role, "accounts.reassign"), role === "MASTER", `${role} hierarchy-reassignment rule`);
-  assert.equal(can(role, "accounts.roles"), ["MASTER", "COUNTRY_MANAGER"].includes(role), `${role} role assignment rule`);
+  assert.equal(can(role, "accounts.roles"), ["MASTER", "GLOBAL_MANAGER", "COUNTRY_MANAGER"].includes(role), `${role} role assignment rule`);
   assert.equal(rolesAssignableBy(role).includes("MASTER"), false);
-  assert.equal(rolesAssignableBy(role).includes("COUNTRY_MANAGER"), role === "MASTER");
+  assert.equal(rolesAssignableBy(role).includes("COUNTRY_MANAGER"), role === "MASTER" || role === "GLOBAL_MANAGER");
 }
 
 assert.equal(can("COUNTRY_MANAGER", "devices.manage"), true);
@@ -58,10 +58,11 @@ assert.equal(can("AGENCY", "live_reports.read"), true);
 
 const parentMatrix: Record<Role, Role[]> = {
   MASTER: [],
-  COUNTRY_MANAGER: ["MASTER"],
+  GLOBAL_MANAGER: ["MASTER"],
+  COUNTRY_MANAGER: ["MASTER", "GLOBAL_MANAGER"],
   SUPER_ADMIN: ["COUNTRY_MANAGER"],
   ADMIN: ["SUPER_ADMIN"],
-  BD: ["SUPER_ADMIN"],
+  BD: ["ADMIN", "SUPER_ADMIN"],
   AGENCY: ["ADMIN", "BD"],
   COIN_SELLER: ["COUNTRY_MANAGER", "ADMIN", "BD"],
   MONITORING_CS: ["COUNTRY_MANAGER", "ADMIN", "BD"],
