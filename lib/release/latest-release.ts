@@ -13,10 +13,10 @@ const configuredApkUrl = process.env.NAZRAA_LATEST_APK_URL?.trim();
 // This release points only to the uploaded, verified public APK. Keeping the
 // version, asset path and checksum together prevents an update endpoint from
 // ever advertising a binary that is not available for download.
-const releaseVersion = "2.5.18";
-const releaseBuild = 7430;
+const releaseVersion = "2.5.19";
+const releaseBuild = 7431;
 const releaseApkUrl =
-  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.18/Nazraa-Live-2.5.18-7430-release.apk";
+  "https://github.com/aishKodes/Nazraa-Releases/releases/download/v2.5.19/Nazraa-Live-2.5.19-7431-release.apk";
 
 // A stale environment URL must never make the public download page point to
 // the previous binary after a production release. Operations can still host
@@ -34,15 +34,14 @@ export const latestPublicRelease: PublicRelease = {
   version: releaseVersion,
   build: releaseBuild,
   apkUrl: matchingConfiguredApkUrl ?? releaseApkUrl,
-  apkSizeBytes: 262067482,
-  sha256: "04ed822d185b5c2a1e636cf5ab13fed4a54c6160937c8cf35bb84b552c41c652",
-  releaseDate: "2026-11-04",
+  apkSizeBytes: 262083866,
+  sha256: "e1ce0a2fdbab9447e21825e650be955c409aab9ed7a474cc7cf4ef7904056e51",
+  releaseDate: "2026-11-10",
   releaseNotes: [
-    "Princess: disclosed precommitted weighted deals, fixed returns and an 80% theoretical RTP profile.",
-    "Master controls for future-round limits, published probabilities and auditable configuration history.",
-    "Princess betting and result visibility each gain one second; existing accepted rounds keep their rules.",
-    "Pro: refined dealing, original minted Coins, pot-to-player trails and a compact win notice.",
-    "Princess normal artwork, Pro betting reliability and live-room media are preserved.",
+    "Restored eligible VIP and role entry effects in Party and Face rooms.",
+    "Entry notices queue alongside gifts and use a compact presentation while games are open.",
+    "Teen Patti chip rows follow the chips published for the active round.",
+    "The Gift Panel refreshes its catalog on opening and asks you to confirm if a price changes.",
   ],
   minimumAndroidVersion: "Android 7.0 or later",
 };
