@@ -1,5 +1,7 @@
 "use server";
 
+import {requireCatalogOperator} from '@/lib/auth/catalog-operators';
+
 import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -961,17 +963,20 @@ export async function submitCreateGift(formData: FormData) {
 }
 
 export async function submitGiftUpdate(formData: FormData) {
-  const scope = await requirePermission("gifts.manage");
+  const scope = await requirePermission("dashboard.read");
   const parsed = z
     .object({
       id: z.string().uuid(),
       name: z.string().trim().min(2).max(100),
+      displayName: z.string().trim().max(100).optional(),
+      active: z.enum(["true","false"]).transform(value => value === "true").optional(),
       category: z.string().trim().min(2).max(60),
-      economyType:z.enum(["NORMAL","LUCKY"]).default("NORMAL"),
+      economyType:z.enum(["NORMAL","LUCKY"]).optional(),
       catalogType: z.enum([
         "VIRTUAL_GIFT",
         "ENTRY_FRAME",
         "ENTRY_EFFECT",
+        "ENTRY_FRAME",
         "AVATAR_FRAME",
         "PROFILE_EFFECT",
         "CHAT_FRAME",
@@ -1004,6 +1009,7 @@ export async function submitGiftUpdate(formData: FormData) {
       ),
     );
   try {
+    await requireCatalogOperator(scope, "gifts");
     const imageFile = formData.get("image");
     const animationFile = formData.get("animation");
     const soundFile = formData.get("effectSound");

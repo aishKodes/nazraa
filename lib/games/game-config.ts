@@ -13,7 +13,25 @@ export const configurableGameIds = [
 
 export type ConfigurableGameId = typeof configurableGameIds[number];
 
+export const gameEconomyModes = ["NORMAL", "HIGH_PAYOUT", "CUSTOM"] as const;
+export type GameEconomyMode = typeof gameEconomyModes[number];
+export type GameEconomyPreset = {
+  targetRtp: number;
+  payoutScalePpm: number;
+  maximumPayoutMultiplier: number;
+  maximumBet: number;
+  princessPayoutProfile?: GameRuntimeConfig["princessPayoutProfile"];
+  princessServiceFeeBps?: number;
+  princessPreviewQuotes?: boolean;
+  outcomeWeights?: number[];
+};
+
+export const maximumPromotionalRtp = 1.10;
+
 export type GameRuntimeConfig = {
+  economyMode?: GameEconomyMode;
+  economyPresets?: Partial<Record<GameEconomyMode, GameEconomyPreset>>;
+  maximumPromotionalTargetRtp?: number;
   economyVersion?: number;
   minimumTargetRtp?:number;
   maximumTargetRtp?:number;
@@ -235,6 +253,18 @@ function resolvedTiming(
   return timing;
 }
 
+function parseEconomyPresets(value: unknown) {
+  const raw = object(value);
+  const presets: Partial<Record<GameEconomyMode, GameEconomyPreset>> = {};
+  for (const mode of gameEconomyModes) {
+    const preset = object(raw[mode]);
+    if (typeof preset.targetRtp !== "number" || typeof preset.payoutScalePpm !== "number" ||
+        typeof preset.maximumPayoutMultiplier !== "number" || typeof preset.maximumBet !== "number") continue;
+    presets[mode] = preset as GameEconomyPreset;
+  }
+  return presets;
+}
+
 export function mobileGamesConfig(value: unknown): MobileGamesConfig {
   const root = object(value);
   const storedGames = object(root.games);
@@ -253,7 +283,10 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
     return [id, {
       ...fallback,
       minimumTargetRtp: decimal(stored.minimumTargetRtp,.5,.5,.99),
-      maximumTargetRtp: decimal(stored.maximumTargetRtp,.99,.5,.99),
+      maximumTargetRtp: decimal(stored.maximumTargetRtp,1,.5,1),
+      maximumPromotionalTargetRtp: decimal(stored.maximumPromotionalTargetRtp,maximumPromotionalRtp,1,maximumPromotionalRtp),
+      economyMode: gameEconomyModes.find(mode => mode === stored.economyMode) ?? "NORMAL",
+      economyPresets: parseEconomyPresets(stored.economyPresets),
       economyVersion: integer(stored.economyVersion, 0, 0, Number.MAX_SAFE_INTEGER),
       settlementDeductionRate: decimal(stored.settlementDeductionRate ?? root.winnings_deduction_rate ?? root.winningsDeductionRate, .01, 0, .25),
       enabled: typeof stored.enabled === "boolean" ? stored.enabled : fallback.enabled,
@@ -268,7 +301,7 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
         stored.targetRtp ?? stored.target_rtp,
         fallback.targetRtp,
         0.5,
-        1,
+        maximumPromotionalRtp,
       ),
       payoutScalePpm: integer(
         stored.payoutScalePpm,
@@ -322,10 +355,14 @@ export function mobileGamesConfig(value: unknown): MobileGamesConfig {
         princessPreviewQuotes: stored.princessPreviewQuotes===true,
         princessPayoutProfile: princessWeighted?'PRECOMMITTED_WEIGHTED_RTP':stored.princessPayoutProfile==='FAIR_90_FEE_5'?'FAIR_90_FEE_5':'LEGACY_FIXED_3X',
         princessServiceFeeBps: princessWeighted||stored.princessPayoutProfile==='FAIR_90_FEE_5'?500:integer(stored.princessServiceFeeBps,300,0,2500),
-        targetRtp: princessWeighted?decimal(stored.targetRtp,.8,.5,.99):stored.princessPayoutProfile==='FAIR_90_FEE_5'?.9:stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
+        targetRtp: princessWeighted?decimal(stored.targetRtp,.8,.5,maximumPromotionalRtp):stored.princessPayoutProfile==='FAIR_90_FEE_5'?.9:stored.princessPreviewQuotes===true?decimal(stored.targetRtp,.97,.5,1):1-integer(stored.princessServiceFeeBps,300,0,2500)/10000,
         payoutScalePpm: 1_000_000,
         maximumPayoutMultiplier: princessWeighted?decimal(stored.maximumPayoutMultiplier,3,1,1000):3,
-        minimumBet: 100, denominations: [100,1000,10000,100000],
+        minimumBet: 100, denominations: (() => {
+          const defaults = [100, 1000, 10000, 100000];
+          const values = numberArray(stored.denominations, defaults).filter(n => n > 0 && n % 100 === 0);
+          return values.length ? values : defaults;
+        })(),
         outcomeWeights: princessWeighted?numberArray(stored.outcomeWeights,[1,1,1],3):undefined, autoPlay: false,
       } : {}),
       ...(id === 'lion_vs_tiger' ? {

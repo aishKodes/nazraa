@@ -1,3 +1,4 @@
+import {requireCatalogOperator} from '@/lib/auth/catalog-operators';
 import "server-only";
 import { publicApiOrigin, publicAssetOrigin, currentPublicAssetUrl } from "@/lib/config/public-api-origin";
 import { createHash, randomUUID } from "crypto";
@@ -77,7 +78,7 @@ export async function listGifts() {
   return rows.map((row) => {
     let config: Record<string, unknown> = {};
     try { config = typeof row.asset_config === "string" ? JSON.parse(row.asset_config) as Record<string, unknown> : row.asset_config ?? {}; } catch { config = {}; }
-    return { id: row.id, key: row.gift_key, name: row.name, category: row.category, catalogType: row.catalog_type,economyType:row.economy_type, emoji: row.emoji, coinPrice: Number(row.coin_price), currency: row.currency, validityDays: Number(row.validity_days), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), sortOrder: Number(row.sort_order), accentHex: `#${Number(config.accent ?? 0xff8a5cff).toString(16).slice(-6).padStart(6, "0")}`, visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: config, active: Boolean(row.active), updatedAt: row.updated_at };
+    return { id: row.id, key: row.gift_key, name: row.name, displayName: typeof config.displayName === "string" ? config.displayName : row.name, category: row.category, catalogType: row.catalog_type,economyType:row.economy_type, emoji: row.emoji, coinPrice: Number(row.coin_price), currency: row.currency, validityDays: Number(row.validity_days), vipTierEligibility: row.vip_tier_eligibility == null ? null : Number(row.vip_tier_eligibility), sortOrder: Number(row.sort_order), accentHex: `#${Number(config.accent ?? 0xff8a5cff).toString(16).slice(-6).padStart(6, "0")}`, visualUrl: row.visual_url, animationKey: row.animation_key, effectConfig: config, active: Boolean(row.active), updatedAt: row.updated_at };
   });
 }
 
@@ -126,10 +127,19 @@ export async function createGift(input: { scope: Scope; key: string; name: strin
   } });
 }
 
-export async function updateGift(input: { scope: Scope; id: string; name: string; category: string; economyType?:"NORMAL"|"LUCKY"; catalogType: MallCatalogType; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; removeAnimation?: boolean; removeSound?: boolean; effectConfig: EffectAssetConfigInput; reason: string }) {
-  await auditedMutation({ scope: input.scope, action: "gift.update", module: "gifts", targetType: "gift", targetId: input.id, reason: input.reason, run: async (connection) => {
-    const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null })[]>("SELECT visual_url, animation_key, asset_config FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
+export async function updateGift(input: { scope: Scope; id: string; name: string; displayName?: string; active?: boolean; category: string; economyType?:"NORMAL"|"LUCKY"; catalogType: MallCatalogType; artworkMode: "EMOJI" | "IMAGE"; emoji?: string; coinPrice: number; validityDays: number; vipTierEligibility?: number; sortOrder: number; accentHex?: string; image?: PreparedPublicImage; animation?: PreparedPublicEffect; sound?: PreparedPublicSound; removeAnimation?: boolean; removeSound?: boolean; effectConfig: EffectAssetConfigInput; reason: string }) {
+  await requireCatalogOperator(input.scope, "gifts");
+  if (!Number.isSafeInteger(input.coinPrice) || input.coinPrice < 1 || input.coinPrice > Math.floor(Number.MAX_SAFE_INTEGER / (99 * 20))) throw Error("Choose a valid Coin price.");
+  if (input.reason.trim().length < 5 || input.reason.length > 500) throw Error("Enter a change reason of 5–500 characters.");
+  await withTransaction(async connection => {
+    const [rows] = await connection.query<(RowDataPacket & { visual_url: string | null; animation_key: string | null; asset_config: string | Record<string, unknown> | null })[]>("SELECT name,category,catalog_type,economy_type,coin_price,active,sort_order,visual_url,animation_key,asset_config FROM gift_catalog WHERE id = ? LIMIT 1 FOR UPDATE", [input.id]);
     if (!rows[0]) throw new Error("Gift was not found.");
+    const previous = rows[0];
+    if (input.scope.account.role !== "MASTER" && (previous.catalog_type !== "VIRTUAL_GIFT" || input.catalogType !== "VIRTUAL_GIFT"))
+      throw Error("Only Master may edit Mall entitlements.");
+    if (previous.catalog_type !== input.catalogType) throw Error("Existing item types are fixed to protect entitlements and transaction history.");
+    if (previous.catalog_type === "VIRTUAL_GIFT" && input.economyType && previous.economy_type !== input.economyType)
+      throw Error("An existing gift keeps its Normal or Lucky settlement type.");
     let previousConfig: Record<string, unknown> = {};
     try { previousConfig = typeof rows[0].asset_config === "string" ? JSON.parse(rows[0].asset_config) as Record<string, unknown> : rows[0].asset_config ?? {}; } catch { previousConfig = {}; }
     let visualUrl = input.artworkMode === "IMAGE" ? rows[0].visual_url : null;
@@ -156,6 +166,9 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
     if (!animationKey) assetType = visualUrl ? "STATIC_IMAGE" : "NONE";
     const config = {
       ...previousConfig,
+      displayName: input.displayName?.trim() || input.name,
+      legacyDisplayName: previousConfig.legacyDisplayName ?? previousConfig.displayName ?? previous.name,
+      catalogVersion: randomUUID(),
       accent: accentValue(input.accentHex),
       ...input.effectConfig,
     ...(input.animation?.durationMs ? {durationMs: Math.max(250, Math.min(8000, input.animation.durationMs))} : {}),
@@ -184,14 +197,23 @@ export async function updateGift(input: { scope: Scope; id: string; name: string
       soundByteSize: input.sound?.byteSize ?? (input.removeSound ? null : previousConfig.soundByteSize ?? null),
     };
     await connection.execute(
-      "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, validity_days = ?, vip_tier_eligibility = ?, sort_order = ?, visual_url = ?, animation_key = ?, asset_config = ? WHERE id = ?",
-      [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.id],
+      "UPDATE gift_catalog SET name = ?, category = ?, catalog_type = ?, emoji = ?, coin_price = ?, validity_days = ?, vip_tier_eligibility = ?, sort_order = ?, visual_url = ?, animation_key = ?, asset_config = ?, active = ? WHERE id = ?",
+      [input.name, input.category, input.catalogType, input.artworkMode === "EMOJI" ? input.emoji || "🎁" : null, input.coinPrice, input.validityDays, input.vipTierEligibility ?? null, input.sortOrder, visualUrl, animationKey, JSON.stringify(config), input.active ?? Boolean(previous.active), input.id],
     );
-    await connection.execute('UPDATE gift_catalog SET economy_type=? WHERE id=?',[input.catalogType==='VIRTUAL_GIFT'&&input.economyType==='LUCKY'?'LUCKY':'NORMAL',input.id]);
-  } });
+    await connection.execute(
+      `INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason)
+       VALUES(?,?,?,'gift.update','gifts','gift',?,?,?,?)`,
+      [randomUUID(), input.scope.account.id, input.scope.account.role, input.id, JSON.stringify(previous),
+        JSON.stringify({ name: input.name, displayName: config.displayName, category: input.category,
+          catalogType: input.catalogType, economyType: previous.economy_type, coinPrice: input.coinPrice,
+          active: input.active ?? Boolean(previous.active), sortOrder: input.sortOrder, visualUrl, animationKey, config }),
+        input.reason.trim()],
+    );
+  });
 }
 
 export async function setGiftActive(input: { scope: Scope; id: string; active: boolean }) {
+  if (!can(input.scope.account.role, "gifts.manage")) throw Error("Only Master may use the legacy catalog status action.");
   await auditedMutation({ scope: input.scope, action: "gift.status_change", module: "gifts", targetType: "gift", targetId: input.id, reason: input.active ? "Enabled gift" : "Disabled gift", run: async (connection) => {
     await connection.execute("UPDATE gift_catalog SET active = ? WHERE id = ?", [input.active, input.id]);
   } });

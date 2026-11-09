@@ -7,11 +7,12 @@ import {withTransaction} from '@/lib/db/transaction';
 import {configurableGameIds,mobileGamesConfig,effectiveMobileGamesConfig,type MobileGamesConfig,type ConfigurableGameId,type GameRuntimeConfig} from '@/lib/games/game-config';
 import {economyDraft,economyModel,type EconomyDraft} from '@/lib/games/economy-policy';
 import type {Scope} from '@/types/platform';
+import {requireCatalogOperator} from '@/lib/auth/catalog-operators';
 
 export function requireGameEconomy(scope:Scope){if(scope.account.role!=='MASTER')throw new Error('Only Master may manage global game economics.');}
 /** Called from both legacy Settings and the new preview/publish workflow. */
 export async function recordGameConfigVersion(c:PoolConnection,scope:Scope,game:ConfigurableGameId,settings:MobileGamesConfig,previous:GameRuntimeConfig,reason:string){
-  requireGameEconomy(scope);
+  await requireCatalogOperator(scope,"games");
   if(reason.trim().length<5||reason.length>500)throw new Error('Enter a change reason of 5–500 characters.');
   // Settings are locked by every publication caller. Restoring a settings
   // backup must not reuse an immutable history version.
@@ -35,13 +36,13 @@ export async function recordGameConfigVersion(c:PoolConnection,scope:Scope,game:
   const raw=typeof stored[0]?.setting_value==='string'?JSON.parse(stored[0].setting_value):stored[0]?.setting_value??{};
   const merged={...raw,games:{...raw.games,[game]:next}};
   await c.execute(`INSERT INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.games',?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_by=VALUES(updated_by)`,[JSON.stringify(merged),scope.account.id]);
-  await c.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason) VALUES(?,?,'MASTER','game.economy_publish','games','game_config',?,?,?,?)`,
-    [randomUUID(),scope.account.id,game,JSON.stringify(previous),JSON.stringify(historyConfig),reason.trim()]);
+  await c.execute(`INSERT INTO audit_logs(id,actor_account_id,actor_role,action,module,target_type,target_id,previous_data,new_data,reason) VALUES(?,?,?,'game.economy_publish','games','game_config',?,?,?,?)`,
+    [randomUUID(),scope.account.id,scope.account.role,game,JSON.stringify(previous),JSON.stringify(historyConfig),reason.trim()]);
 }
 export async function currentGameEconomy(scope:Scope){
-  requireGameEconomy(scope);
+  await requireCatalogOperator(scope,"games");
   const [rows]=await db().query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games'");
-  const [history]=await db().query<RowDataPacket[]>(`SELECT v.game_name,v.version,v.previous_config,v.config_json,v.reason,v.effective_at,a.public_id actor_id,a.full_name actor_name
+  const [history]=await db().query<RowDataPacket[]>(`SELECT v.game_name,v.version,v.previous_config,v.config_json,v.reason,v.effective_at,a.public_id actor_id,a.full_name actor_name,a.role actor_role
     FROM game_config_versions v JOIN platform_accounts a ON a.id=v.actor_account_id ORDER BY v.effective_at DESC LIMIT 50`);
   return {settings:effectiveMobileGamesConfig(rows[0]?.setting_value),history};
 }
@@ -51,7 +52,8 @@ export async function previewGameEconomy(scope:Scope,game:ConfigurableGameId,dra
   return {game,current,proposed,model:economyModel(game,proposed),expectedVersion:current.economyVersion??0,effective:'First new round after publication; current rounds retain their snapshot.'};
 }
 export async function publishGameEconomy(scope:Scope,game:ConfigurableGameId,draft:EconomyDraft,expectedVersion:number,reason:string){
-  requireGameEconomy(scope);
+  await requireCatalogOperator(scope,"games");
+  if(scope.account.role!=='MASTER'&&!draft.mode)throw Error('Choose a game economy mode.');
   return withTransaction(async c=>{
     await c.execute("INSERT IGNORE INTO system_settings(setting_key,setting_value,updated_by) VALUES('mobile.games',?,?)",[JSON.stringify(mobileGamesConfig({})),scope.account.id]);
     const [rows]=await c.query<RowDataPacket[]>("SELECT setting_value FROM system_settings WHERE setting_key='mobile.games' FOR UPDATE");
@@ -72,7 +74,7 @@ export function economyRange(period:string,from?:string,to?:string,now=new Date(
   return {start,end};
 }
 export async function gameEconomyDashboard(scope:Scope,period='today',from?:string,to?:string){
-  requireGameEconomy(scope);const range=economyRange(period,from,to);
+  await requireCatalogOperator(scope,"games");const range=economyRange(period,from,to);
   const {settings,history}=await currentGameEconomy(scope);
   const now=new Date(),windows=[['today','Today (IST)'],['7d','7 days'],['30d','30 days']] as const;
   const fields:string[]=[],values:unknown[]=[];

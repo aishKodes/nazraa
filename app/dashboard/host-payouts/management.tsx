@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { currentPayoutCycle, payoutCycle } from "@/lib/reports/payout-cycle";
 import { payoutJsonRequest, payoutUiMessage } from "@/lib/client/payout-request";
 import {AgencyPayoutList,AgencyPaymentWorkspace,type AgencyPayoutGroup,type PaymentCandidates} from './agency-panels';
 type Row = {
@@ -60,6 +61,7 @@ export default function PayoutManagement() {
   const [data, setData] = useState<Data | null>(null),
     [error, setError] = useState(""),
     [query, setQuery] = useState(""),
+    [cycle, setCycle] = useState(currentPayoutCycle),
     [busy, setBusy] = useState(false),
     [selected, setSelected] = useState<Row | null>(null),
     [destination, setDestination] = useState(""),
@@ -68,7 +70,7 @@ export default function PayoutManagement() {
     const epoch=++loadEpoch.current;
     setError("");
     try {
-      const parameters=new URLSearchParams(query);parameters.set('page',String(groupPage));
+      const parameters=new URLSearchParams(query);parameters.set('page',String(groupPage));parameters.set('cycle',cycle);
       if(agencyGroup) parameters.set('agencyGroup',agencyGroup);
       const v = await payoutJsonRequest<Data>(`/api/host-payout-management?${parameters}`, {
           cache: "no-store",
@@ -77,7 +79,7 @@ export default function PayoutManagement() {
     } catch (e) {
       if(epoch===loadEpoch.current) setError(payoutUiMessage(e, "Could not load payouts. Please retry."));
     }
-  }, [query,agencyGroup,groupPage]);
+  }, [query,agencyGroup,groupPage,cycle]);
   const cancelLoad=useCallback(()=>{loadEpoch.current++;},[]);
   useEffect(() => {
     let cancelled=false;
@@ -103,10 +105,19 @@ export default function PayoutManagement() {
       setBusy(false);
     }
   }
+  const cycleInfo = cycle === "all" ? null : payoutCycle(cycle);
+  const selectCycle = (value: string) => {
+    setGroupPage(1);
+    setCycle(value);
+  };
   const cards = [
+    ["Processing", "processingCount"],
+    ["Approved", "approvedCount"],
+    ["Paid", "paidCount"],
+    ["Rejected / failed / reversed", "rejectedCount"],
     ["Total requested", "requestedUsd"],
     ["Host payout paid", "paidUsd"],
-    ["Approved / awaiting payment", "awaitingUsd"],
+    ["Total payable", "awaitingUsd"],
     ["Failed / reversed", "failedOrReversed"],
     ["Diamonds withdrawn", "diamondsWithdrawn"],
     ["Agency commission accrued", "agencyAccruedUsd"],
@@ -119,6 +130,7 @@ export default function PayoutManagement() {
   const exportUrl=(kind:'agencies'|'details')=>{
     const parameters=new URLSearchParams(query);
     if(agencyGroup) parameters.set('agencyGroup',agencyGroup);
+    parameters.set('cycle',cycle);
     parameters.set('export',kind);
     return `/api/host-payout-management?${parameters}`;
   };
@@ -142,6 +154,13 @@ export default function PayoutManagement() {
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      <div className="panel filters" aria-label="IST payout cycle">
+        <button type="button" disabled={!cycleInfo} onClick={() => cycleInfo && selectCycle(cycleInfo.previous)}>Previous cycle</button>
+        <strong>{cycleInfo?.label ?? "All history / custom dates"} · IST</strong>
+        <button type="button" disabled={!cycleInfo} onClick={() => cycleInfo && selectCycle(cycleInfo.next)}>Next cycle</button>
+        <button type="button" onClick={() => selectCycle(currentPayoutCycle())}>Current cycle</button>
+        <button type="button" onClick={() => selectCycle("all")}>All history / custom dates</button>
+      </div>
       <div className="payout-cards">
         {cards.map(([title, key]) => (
           <article className="panel" key={key}>
@@ -194,6 +213,9 @@ export default function PayoutManagement() {
           <select name="status">
             <option value="">All</option>
             <option>APPROVED</option>
+            <option>PROCESSING</option>
+            <option>REJECTED</option>
+            <option>CANCELLED</option>
             <option value="COMPLETED">PAID</option>
             <option>FAILED</option>
             <option>REVERSED</option>
@@ -201,11 +223,11 @@ export default function PayoutManagement() {
         </label>
         <label>
           From · IST
-          <input name="from" type="date" />
+          <input name="from" type="date" disabled={!!cycleInfo} />
         </label>
         <label>
           To · IST
-          <input name="to" type="date" />
+          <input name="to" type="date" disabled={!!cycleInfo} />
         </label>
         <button>Filter</button>
         {data?.isMaster&&<a href={exportUrl('agencies')}>Agency summary CSV</a>}

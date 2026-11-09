@@ -50,10 +50,10 @@ async function rolePresentations(executor:PoolConnection|ReturnType<typeof db>,p
  const [rows]=await executor.query<RowDataPacket[]>(
  `SELECT user.public_id,account.role FROM application_users user
  INNER JOIN platform_accounts account ON account.status='ACTIVE' AND account.removed_at IS NULL
- AND account.role IN ('MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS')
+ AND account.role IN ('MASTER','GLOBAL_MANAGER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS')
  AND (account.application_user_id=user.id OR account.application_user_id=user.external_user_id OR account.application_user_id=CAST(user.public_id AS CHAR))
  WHERE user.account_status='ACTIVE' AND user.public_id IN (${publicIds.map(()=>'?').join(',')})
- ORDER BY FIELD(account.role,'MASTER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS'),account.id`,[...publicIds]);
+ ORDER BY FIELD(account.role,'MASTER','GLOBAL_MANAGER','COUNTRY_MANAGER','SUPER_ADMIN','ADMIN','BD','AGENCY','COIN_SELLER','MONITORING_CS'),account.id`,[...publicIds]);
  for(const row of rows){const id=String(row.public_id);if(!values.has(id))values.set(id,rolePresentation(String(row.role)));}
  return values;
 }

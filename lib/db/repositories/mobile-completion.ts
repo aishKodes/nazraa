@@ -2677,7 +2677,7 @@ export async function refreshRoomPresence(
     );
     const [giftEvents] = await connection.query<RowDataPacket[]>(
       `SELECT event.id, event.quantity, event.coin_value, event.diamond_value, event.created_at, event.gift_economy_type, lucky.won lucky_won,lucky.multiplier_bps lucky_multiplier_bps,lucky.reward_coins lucky_payout_coins,
-              gift.gift_key, gift.name gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
+              gift.gift_key, COALESCE(event.gift_name_snapshot,JSON_UNQUOTE(JSON_EXTRACT(gift.asset_config,'$.legacyDisplayName')),gift.name) gift_name, gift.emoji gift_emoji, gift.visual_url gift_visual_url,
               gift.animation_key gift_animation_key, gift.asset_config gift_asset_config,
               sender.public_id sender_public_id, sender.full_name sender_name, sender.vip_tier sender_vip,
               sender.country_code sender_country, sender.language_code sender_language,

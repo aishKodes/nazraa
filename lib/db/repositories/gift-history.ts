@@ -21,7 +21,7 @@ export async function giftHistory(identity:MobileIdentity,input:{scope:'received
   const at=new Date(cursor.at);if(!Number.isFinite(at.getTime())||!/^[-a-zA-Z0-9]{1,80}$/.test(cursor.id))throw Error('Refresh the gift records to continue.');
   filters.push('(e.created_at<? OR (e.created_at=? AND e.id<?))');values.push(at,at,cursor.id);
  }
- const [rows]=await db().query<RowDataPacket[]>(`SELECT e.*,g.gift_key,g.name gift_name,g.emoji,g.visual_url,g.animation_key,g.asset_config,
+ const [rows]=await db().query<RowDataPacket[]>(`SELECT e.*,g.gift_key,COALESCE(e.gift_name_snapshot,JSON_UNQUOTE(JSON_EXTRACT(g.asset_config,'$.legacyDisplayName')),g.name) gift_name,g.emoji,g.visual_url,g.animation_key,g.asset_config,
   sender.public_id sender_id,sender.full_name sender_name,CASE WHEN sa.updated_at IS NOT NULL THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',sender.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(sa.updated_at)*1000)) ELSE sender.avatar_url END sender_avatar,
   receiver.public_id receiver_id,receiver.full_name receiver_name,CASE WHEN ra.updated_at IS NOT NULL THEN CONCAT('${publicApiOrigin()}/api/v1/mobile/avatar/',receiver.public_id,'?v=',FLOOR(UNIX_TIMESTAMP(ra.updated_at)*1000)) ELSE receiver.avatar_url END receiver_avatar,
   lucky.won,lucky.tier_id,lucky.multiplier_bps,lucky.reward_coins,lucky.company_allocation

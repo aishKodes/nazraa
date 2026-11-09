@@ -47,6 +47,7 @@ export default async function WithdrawalsPage({
         title="Withdrawals"
         description="Review status separately from payment completion. Payout details are encrypted and every reveal is permission checked."
       />
+      {isAdmin && <Card><h2>Host payout cycles</h2><p>View requests grouped by 1–15 and 16–month-end in IST.</p><Link className="primary-button" href="/dashboard/host-payouts">Open cycle report</Link></Card>}
       {success ? <Notice type="success">{success}</Notice> : null}
       {error ? <Notice type="error">{error}</Notice> : null}
       {scope.account.role==='MASTER'?<Card><h2>Agency-wise Withdrawal & Commission Summary</h2><p>Country → Agency → Host / transaction, saved commission totals, IST filters, Excel and CSV.</p><Link className="primary-button" href="/dashboard/withdrawals/summary">Open summary</Link></Card>:null}

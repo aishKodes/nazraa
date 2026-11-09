@@ -1,4 +1,4 @@
-import type {GameRuntimeConfig} from './game-config';
+import {maximumPromotionalRtp, type GameRuntimeConfig} from './game-config';
 const princessChairs=['green','blue','red'] as const;
 type PaytableConfig = Pick<GameRuntimeConfig,
   'targetRtp' | 'outcomeWeights' | 'princessServiceFeeBps' | 'maximumPayoutMultiplier'>;
@@ -23,8 +23,8 @@ export function princessPrecommittedPaytable(c: PaytableConfig) {
   if (weights.length !== 3 || weights.some(w => !Number.isSafeInteger(w) || w < 1 || w > 1_000_000))
     throw Error('Princess requires three positive, precommitted chair weights.');
   const rtpBps = Math.round(c.targetRtp * 10_000);
-  if (!Number.isFinite(c.targetRtp) || rtpBps < 5000 || rtpBps > 9900 || Math.abs(c.targetRtp * 10_000 - rtpBps) > 1e-7)
-    throw Error('Choose a Princess RTP between 50.00% and 99.00%, to two decimal places.');
+  if (!Number.isFinite(c.targetRtp) || rtpBps < 5000 || rtpBps > maximumPromotionalRtp * 10_000 || Math.abs(c.targetRtp * 10_000 - rtpBps) > 1e-7)
+    throw Error('Choose a Princess RTP between 50.00% and 110.00%, to two decimal places.');
   if (c.princessServiceFeeBps !== 500) throw Error('Princess keeps the published 5% service fee.');
   const totalWeight = weights.reduce((s, w) => s + w, 0);
   const areas = princessChairs.map((chair, i) => {

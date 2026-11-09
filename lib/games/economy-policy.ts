@@ -2,21 +2,43 @@ import {economyModel} from './economy-model';
 export {economyModel} from './economy-model';
 import {calculateTargetConfiguration} from './target-rtp';
 import {randomInt} from 'node:crypto';
-import {mobileGamesConfig,type ConfigurableGameId,type GameRuntimeConfig} from './game-config';
+import {mobileGamesConfig,gameEconomyModes,type ConfigurableGameId,type GameRuntimeConfig,type GameEconomyMode} from './game-config';
 import {princessPrecommittedProfile,princessPrecommittedPaytable,dealPrecommittedPrincess,princessNetReturn,princessDefaultSinglePayout,princessSettlementCeiling} from './princess-precommitted';
 import {teenPattiCard,teenPattiChairs} from './teen-patti';
 
+import {captureEconomyPreset,economyModePreview} from './economy-presets';
+
 export {gameNames} from './game-names';
-export type EconomyDraft={controlMode?:"TARGET_RTP";denominations?:number[];enabled:boolean;maintenance:boolean;minimumBet:number;maximumBet:number;maximumPayoutMultiplier:number;payoutScalePpm:number;outcomeWeights?:number[];sideBetPayoutScalePpm?:number;saladWeight?:number;pizzaWeight?:number;poolContributionBps?:number;poolMinimumForSpecial?:number;princessServiceFeeBps?:number;princessPayoutProfile?:GameRuntimeConfig['princessPayoutProfile'];targetRtp?:number;maximumSingleRoundPayout?:number;maximumRoundExposure?:number;bigWinThreshold?:number;bettingSeconds?:number;resultSeconds?:number};
+export type EconomyDraft={controlMode?:"TARGET_RTP";mode?:GameEconomyMode;denominations?:number[];enabled:boolean;maintenance:boolean;minimumBet:number;maximumBet:number;maximumPayoutMultiplier:number;payoutScalePpm:number;outcomeWeights?:number[];sideBetPayoutScalePpm?:number;saladWeight?:number;pizzaWeight?:number;poolContributionBps?:number;poolMinimumForSpecial?:number;princessServiceFeeBps?:number;princessPayoutProfile?:GameRuntimeConfig['princessPayoutProfile'];targetRtp?:number;maximumSingleRoundPayout?:number;maximumRoundExposure?:number;bigWinThreshold?:number;bettingSeconds?:number;resultSeconds?:number};
 export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,draft:EconomyDraft){
-  if(draft.controlMode==='TARGET_RTP')draft={...draft,...calculateTargetConfiguration(game,{...current,maximumBet:draft.maximumBet,maximumPayoutMultiplier:draft.maximumPayoutMultiplier},draft.targetRtp??current.targetRtp),controlMode:'TARGET_RTP'};
+  const requestedMode = draft.mode;
+  if (requestedMode !== undefined && (!gameEconomyModes.includes(requestedMode) || draft.controlMode !== "TARGET_RTP")) {
+    throw Error("Choose a valid game economy mode.");
+  }
+  if (requestedMode) {
+    const calculated = economyModePreview(game, current, requestedMode, draft.targetRtp ?? current.targetRtp,
+      draft.maximumBet, draft.maximumPayoutMultiplier);
+    // Ignore injected advanced settings in the ordinary operator action.
+    draft = {
+      controlMode: "TARGET_RTP", mode: requestedMode, denominations: draft.denominations,
+      enabled: draft.enabled, maintenance: draft.maintenance, minimumBet: draft.minimumBet,
+      ...captureEconomyPreset(calculated),
+      outcomeWeights: game === "teen_patti" ? calculated.outcomeWeights : undefined,
+      maximumSingleRoundPayout: draft.maximumSingleRoundPayout,
+      maximumRoundExposure: draft.maximumRoundExposure,
+      bigWinThreshold: draft.bigWinThreshold,
+    };
+  } else if (draft.controlMode === "TARGET_RTP") {
+    draft = { ...draft, ...calculateTargetConfiguration(game, { ...current, maximumBet: draft.maximumBet,
+      maximumPayoutMultiplier: draft.maximumPayoutMultiplier }, draft.targetRtp ?? current.targetRtp) };
+  }
   const weighted=game==='teen_patti'&&(draft.princessPayoutProfile??current.princessPayoutProfile)===princessPrecommittedProfile;
   if(typeof draft.enabled!=='boolean'||typeof draft.maintenance!=='boolean')throw new Error('Choose valid availability.');
   for(const [key,min,max] of [['minimumBet',1,50_000_000],['maximumBet',1,game==='lion_vs_tiger'?Number.MAX_SAFE_INTEGER:50_000_000],['payoutScalePpm',1,5_000_000]] as const){
     const n=draft[key];if(!Number.isSafeInteger(n)||n<min||n>max)throw new Error('Choose valid game limits and payout scale.');
   }
   if(!Number.isFinite(draft.maximumPayoutMultiplier)||draft.maximumPayoutMultiplier<1||draft.maximumPayoutMultiplier>1000||draft.maximumBet<draft.minimumBet)throw new Error('Choose valid game limits.');
-  if(game==='teen_patti'&&(draft.minimumBet!==100||(!weighted&&draft.maximumPayoutMultiplier!==3)||draft.payoutScalePpm!==1_000_000))throw new Error('Princess must retain its existing chips and choose a published paytable profile.');
+  if(game==='teen_patti'&&(draft.minimumBet!==100||(!weighted&&draft.maximumPayoutMultiplier!==3)||draft.payoutScalePpm!==1_000_000))throw new Error('Princess keeps its 100-Coin minimum and requires a published paytable profile.');
   if(game==='lion_vs_tiger'&&(draft.minimumBet!==1||draft.maximumBet!==Number.MAX_SAFE_INTEGER||draft.maximumPayoutMultiplier!==30||draft.payoutScalePpm!==1_000_000))throw new Error('Lion Vs Tiger has a protected fixed paytable and unrestricted stake sizing.');
   if(draft.princessServiceFeeBps!==undefined&&(game!=='teen_patti'||!Number.isSafeInteger(draft.princessServiceFeeBps)||draft.princessServiceFeeBps<0||draft.princessServiceFeeBps>2500))throw new Error('Choose a valid Princess service fee (0–2500 basis points).');
   const adjustableWeights=game==='luck77'||game==='bounty_football'||weighted;
@@ -35,10 +57,8 @@ export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,d
   }
   if(draft.targetRtp!==undefined&&game!=='teen_patti'&&draft.controlMode!=='TARGET_RTP')throw Error('Choose the Target RTP control to calculate this game configuration.');
   if(draft.denominations!==undefined){
-    const unit=game==='luck77'||game==='teen_patti'?100:game==='lion_vs_tiger'?1:game==='jungle_hunt'?150:500;
-    if(draft.denominations.length<1||draft.denominations.length>12||new Set(draft.denominations).size!==draft.denominations.length||draft.denominations.some(n=>!Number.isSafeInteger(n)||n<draft.minimumBet||n>draft.maximumBet||n%unit!==0))throw Error('Choose positive, unique betting Coins within the minimum/maximum and canonical chip unit.');
-    if(game==='teen_patti'&&JSON.stringify(draft.denominations)!=='[100,1000,10000,100000]')throw Error('Princess retains the existing fixed betting Coins.');
-    if(game==='lion_vs_tiger'&&JSON.stringify(draft.denominations)!==JSON.stringify(current.denominations))throw Error('Lion Vs Tiger retains its published chips.');
+    const unit=game==='luck77'||game==='teen_patti'?100:game==='lion_vs_tiger'?1:game==='jungle_hunt'?15:500;
+    if(draft.denominations.length<1||draft.denominations.length>12||new Set(draft.denominations).size!==draft.denominations.length||draft.denominations.some(n=>!Number.isSafeInteger(n)||n<draft.minimumBet||n>Math.min(50_000_000,draft.maximumBet)||n%unit!==0))throw Error('Choose positive, unique betting Coins within the minimum/maximum and canonical chip unit.');
   }
   const next={...current,...draft,outcomeWeights:draft.outcomeWeights??current.outcomeWeights};
   if(next.denominations.some(n=>n>next.maximumBet))throw new Error('Maximum bet must include the current chip denominations.');
@@ -46,7 +66,7 @@ export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,d
     next.maximumBet*next.maximumPayoutMultiplier>1_250_000_000)
     throw new Error('Choose limits whose maximum round return fits the existing 1,250,000,000-Coin settlement limit.');
   if(game==='teen_patti'){
-    next.princessPreviewQuotes=false;next.princessServiceFeeBps=draft.princessServiceFeeBps??current.princessServiceFeeBps??300;next.princessPayoutProfile=draft.princessPayoutProfile??current.princessPayoutProfile??'LEGACY_FIXED_3X';
+    next.princessPreviewQuotes=requestedMode ? (draft as Partial<GameRuntimeConfig>).princessPreviewQuotes === true : false;next.princessServiceFeeBps=draft.princessServiceFeeBps??current.princessServiceFeeBps??300;next.princessPayoutProfile=draft.princessPayoutProfile??current.princessPayoutProfile??'LEGACY_FIXED_3X';
     if(weighted){
       next.targetRtp=draft.targetRtp??(current.princessPayoutProfile===princessPrecommittedProfile?current.targetRtp:.8);
       next.outcomeWeights=draft.outcomeWeights??(current.princessPayoutProfile===princessPrecommittedProfile?current.outcomeWeights:[1,1,1]);
@@ -55,8 +75,16 @@ export function economyDraft(game:ConfigurableGameId,current:GameRuntimeConfig,d
       if(next.maximumSingleRoundPayout>next.maximumRoundExposure)throw Error('Choose a table exposure at least as large as the single-player payout limit.');
       princessPrecommittedPaytable(next);
     }else if(next.princessPayoutProfile==='FAIR_90_FEE_5'){if(next.princessServiceFeeBps!==500)throw Error('Princess 90% profile retains the published 5% fee.');next.targetRtp=.9;}
-    else next.targetRtp=1-next.princessServiceFeeBps/10000;
-    next.denominations=[100,1000,10000,100000];
+    else next.targetRtp=next.princessPreviewQuotes ? draft.targetRtp??current.targetRtp : 1-next.princessServiceFeeBps/10000;
+  }
+  if (requestedMode) {
+    const previousMode = current.economyMode ?? "NORMAL";
+    next.economyMode = requestedMode;
+    next.economyPresets = {
+      ...current.economyPresets,
+      [previousMode]: captureEconomyPreset(current),
+      [requestedMode]: captureEconomyPreset(next),
+    };
   }
   return mobileGamesConfig({games:{[game]:next}}).games[game];
 }

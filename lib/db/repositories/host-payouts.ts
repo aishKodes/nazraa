@@ -278,6 +278,14 @@ export function hostPayoutFilter(viewer: PayoutViewer, filters: PayoutFilters = 
   } else if (viewer.scope?.globalManagerId&&can(viewer.account.role,"withdrawals.read")) {
     if(!viewer.scope||viewer.scope.account.id!==viewer.account.id||viewer.scope.isGlobal)fail('Global Manager payout scope is required.');
     const permitted=scopeWhere(viewer.scope!,"s.agency_account_id","s.country_code");clauses.push(permitted.clause);values.push(...permitted.values);
+  } else if (viewer.account.role === "ADMIN" && viewer.scope?.account.id === viewer.account.id) {
+    const permitted = scopeWhere(viewer.scope, "s.agency_account_id", "s.country_code");
+    clauses.push(permitted.clause);
+    values.push(...permitted.values);
+    if (viewer.scope.countryCode) {
+      clauses.push("s.country_code=?");
+      values.push(viewer.scope.countryCode);
+    }
   } else if (viewer.account.role !== "MASTER")
     fail("This payout module is limited to Hosts, their Agency and Master.");
   if("account" in viewer&&viewer.account.role==="AGENCY"&&viewer.scope?.globalManagerId){const permitted=scopeWhere(viewer.scope,"s.agency_account_id","s.country_code");clauses.push(permitted.clause);values.push(...permitted.values);}
@@ -349,6 +357,11 @@ export async function listHostPayouts(
     if (!("account" in viewer) || viewer.account.role !== "MASTER") {
       delete r.companyUsd;
       delete r.rule;
+      if ("account" in viewer && viewer.account.role === "ADMIN") {
+        delete r.payoutAccount;
+        delete r.paymentReference;
+        delete r.agencyPaymentReference;
+      }
     }
     return r;
   });
@@ -361,6 +374,10 @@ export async function hostPayoutSummary(
   const f = hostPayoutFilter(viewer, filters);
   const [rows] = await db().query<RowDataPacket[]>(
     `SELECT COUNT(*) requests,COALESCE(SUM(s.host_usd),0) requestedUsd,
+    COALESCE(SUM(w.status='PROCESSING'),0) processingCount,
+    COALESCE(SUM(w.status='APPROVED'),0) approvedCount,
+    COALESCE(SUM(w.status='COMPLETED'),0) paidCount,
+    COALESCE(SUM(w.status IN ('FAILED','REVERSED','CANCELLED','REJECTED')),0) rejectedCount,
     COALESCE(SUM(IF(w.status='COMPLETED',s.host_usd,0)),0) paidUsd,
     COALESCE(SUM(IF(w.status IN ('APPROVED','PROCESSING'),s.host_usd,0)),0) awaitingUsd,
     SUM(w.status IN ('FAILED','REVERSED','CANCELLED')) failedOrReversed,

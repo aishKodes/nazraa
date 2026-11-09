@@ -77,20 +77,21 @@ const navigationGroups = [
   { label: "Platform", items: [common.reports, common.agencyReport, common.hierarchyReport, common.liveRewards, common.gameManagement, common.gifts, common.banners, common.notifications, common.levels, common.settings] },
 ] satisfies { label: string; items: NavItem[] }[];
 
-export function AppShell({ account, children }: { account: SessionAccount; children: ReactNode }) {
+export function AppShell({ account, children, catalogAccess }: { account: SessionAccount; children: ReactNode; catalogAccess?: { games: boolean; gifts: boolean } }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
   const visibleItems = navigationByRole[account.role]
     .concat(['MASTER','COUNTRY_MANAGER'].includes(account.role)?[common.countries]:[])
-    .concat(['MASTER','AGENCY'].includes(account.role) ? [common.hostPayouts] : [])
+    .concat(['MASTER','AGENCY','ADMIN'].includes(account.role) ? [common.hostPayouts] : [])
+    .concat(account.role === "ADMIN" && catalogAccess?.gifts ? [common.gifts] : [])
     .filter(item => !navigationPermissions[item.href] || can(account.role, navigationPermissions[item.href]!))
-    .map(item => account.role === "MASTER" && item.href === "/dashboard/game-management" ? {...item,href:"/dashboard/game-management/economy" as Route} : item)
+    .map(item => (account.role === "MASTER" || catalogAccess?.games) && item.href === "/dashboard/game-management" ? {...item,href:"/dashboard/game-management/economy" as Route} : item)
     .map(item => account.role === "AGENCY" && item.href === "/dashboard/live-rewards"
       ? { ...item, label: "Live Report" } : item);
   const visibleHrefs = new Set(visibleItems.map((item) => item.href));
   const visibleGroups = account.role==="GLOBAL_MANAGER" ? [{label:"Global Manager",items:visibleItems}] : navigationGroups
-    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)||(account.role==="MASTER"&&item.href==="/dashboard/game-management")).map(item => visibleItems.find(visible => visible.href === item.href||(account.role==="MASTER"&&item.href==="/dashboard/game-management"&&visible.href==="/dashboard/game-management/economy"))!) }))
+    .map((group) => ({ ...group, items: group.items.filter((item) => visibleHrefs.has(item.href)||((account.role==="MASTER"||catalogAccess?.games)&&item.href==="/dashboard/game-management")).map(item => visibleItems.find(visible => visible.href === item.href||((account.role==="MASTER"||catalogAccess?.games)&&item.href==="/dashboard/game-management"&&visible.href==="/dashboard/game-management/economy"))!) }))
     .filter((group) => group.items.length);
   const quickSearchTarget = account.role === "COIN_SELLER"
     ? "/dashboard/wallet"

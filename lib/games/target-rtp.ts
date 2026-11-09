@@ -1,17 +1,18 @@
 /** Shared, client-safe calculator. Publication re-runs the exact same calculator
  * against the locked current server configuration; client values are not authority. */
-import type {ConfigurableGameId,GameRuntimeConfig} from './game-config';
+import {maximumPromotionalRtp, type ConfigurableGameId, type GameRuntimeConfig, type GameEconomyMode} from './game-config';
 import {economyModel} from './economy-model';
 import {princessPrecommittedProfile} from './princess-contract';
 
 function safeMaximumBet(game:ConfigurableGameId,c:GameRuntimeConfig,ceiling:number){
  if(game==='lion_vs_tiger')return c.maximumBet;
- const unit=game==='teen_patti'||game==='luck77'?100:game==='jungle_hunt'?150:500;
+ const unit=game==='teen_patti'||game==='luck77'?100:game==='jungle_hunt'?15:500;
  return Math.min(c.maximumBet,Math.floor(1_250_000_000/ceiling/unit)*unit);
 }
 
-export function targetRtpPolicy(game:ConfigurableGameId,c:GameRuntimeConfig){
- const minimum=c.minimumTargetRtp??.5,maximum=c.maximumTargetRtp??.99;
+export function targetRtpPolicy(game:ConfigurableGameId,c:GameRuntimeConfig,mode:GameEconomyMode=c.economyMode??'NORMAL'){
+ const minimum=mode==='HIGH_PAYOUT'?Math.max(1,c.minimumTargetRtp??.5):c.minimumTargetRtp??.5;
+ const maximum=mode==='HIGH_PAYOUT'?c.maximumPromotionalTargetRtp??maximumPromotionalRtp:c.maximumTargetRtp??1;
  if(game==='lion_vs_tiger')return {minimum:30/31,maximum:30/31,editable:false,scope:'All three fixed-return outcomes',note:'Protected Tiger ×2 / Draw ×30 / Lion ×2 model. Its only valid target is 30/31 (96.774194%).'};
  if(game==='jungle_hunt')return {minimum,maximum,editable:false,scope:'Multi-payline reels',note:'TARGET NOT ACHIEVABLE WITH CURRENT PAYOUT MODEL: no verified scalar calculator for capped, overlapping reel payouts. The existing dedicated RTP verifier remains required.'};
  if(game==='greedy_king'&&((c.saladWeight??0)>0||(c.pizzaWeight??0)>0))return {minimum,maximum,editable:false,scope:'Stateful special pools',note:'TARGET NOT ACHIEVABLE WITH CURRENT PAYOUT MODEL: stateful Salad/Pizza pools have no verified scalar RTP range. Existing pool settings remain unchanged.'};
@@ -20,17 +21,19 @@ export function targetRtpPolicy(game:ConfigurableGameId,c:GameRuntimeConfig){
 export function calculateTargetConfiguration(game:ConfigurableGameId,current:GameRuntimeConfig,target:number){
  const policy=targetRtpPolicy(game,current);
  if(!Number.isFinite(current.maximumPayoutMultiplier)||current.maximumPayoutMultiplier<1||current.maximumPayoutMultiplier>1000)throw Error('Choose a valid maximum payout multiplier.');
- if(!Number.isFinite(target)||target<policy.minimum-1e-10||target>policy.maximum+1e-10)throw Error(`TARGET NOT ACHIEVABLE WITH CURRENT PAYOUT MODEL. Permitted range ${(policy.minimum*100).toFixed(4)}%–${(policy.maximum*100).toFixed(4)}%.`);
  if(!policy.editable){
+  if(current.economyMode==='HIGH_PAYOUT')throw Error(policy.note);
   if(Math.abs(target-current.targetRtp)>1e-9)throw Error(policy.note);
   return {targetRtp:current.targetRtp,payoutScalePpm:current.payoutScalePpm,maximumPayoutMultiplier:current.maximumPayoutMultiplier,maximumBet:safeMaximumBet(game,current,current.maximumPayoutMultiplier)};
  }
+ if(!Number.isFinite(target)||target<policy.minimum-1e-10||target>policy.maximum+1e-10)throw Error(`TARGET NOT ACHIEVABLE WITH CURRENT PAYOUT MODEL. Permitted range ${(policy.minimum*100).toFixed(4)}%–${(policy.maximum*100).toFixed(4)}%.`);
  if(game==='teen_patti'){
   const weights=current.princessPayoutProfile===princessPrecommittedProfile?current.outcomeWeights??[1,1,1]:[1,1,1];
   const sum=weights.reduce((a,b)=>a+b,0);
   if(weights.length!==3||weights.some(w=>w<=0))throw Error('Princess requires three valid chair probabilities.');
   // Preserve gross cap unless the explicitly previewed target requires a larger published return.
   const ceiling=Math.max(current.maximumPayoutMultiplier,Math.ceil(Math.max(...weights.map(w=>target*sum/w/.95))*1e6)/1e6);
+  if(ceiling>1000)throw Error('TARGET NOT ACHIEVABLE WITH CURRENT PAYOUT MODEL. The current chair weights exceed the allowed return ceiling.');
   return {targetRtp:target,payoutScalePpm:1_000_000,maximumPayoutMultiplier:ceiling,maximumBet:safeMaximumBet(game,current,ceiling),princessPayoutProfile:princessPrecommittedProfile,princessServiceFeeBps:500,outcomeWeights:weights};
  }
  // Solve the canonical single-area model, including each area's payout ceiling

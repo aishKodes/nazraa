@@ -1700,6 +1700,7 @@ export async function POST(
             giftId: z.string().trim().min(1).max(80),
             recipientPublicId: z.string().regex(/^\d+$/),
             recipientMode: z.enum(["SINGLE", "ALL"]).optional(),
+            expectedUnitCoinPrice:z.number().int().positive().safe().optional(),
             expectedRecipientPublicIds:z.array(z.string().regex(/^\d+$/)).min(1).max(20).optional(),
             quantity: z.number().int().min(1).max(99),
           })

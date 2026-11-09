@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { currentPayoutCycle, payoutCycle } from "@/lib/reports/payout-cycle";
 import { z } from "zod";
 import {scopeFor} from "@/lib/db/repositories/accounts";
 import {can} from "@/lib/auth/permissions";
@@ -36,6 +37,7 @@ const filterSchema = z.object({
   status: z
     .enum([
       "APPROVED",
+      "REJECTED",
       "PROCESSING",
       "COMPLETED",
       "FAILED",
@@ -56,7 +58,7 @@ export async function GET(request: Request) {
   const account = await getSession();
   if (!account) return reply({ message: "Sign in to Control." }, 401);
   const scope=await scopeFor(account);
-  if (!can(account.role,"withdrawals.read")||(!["MASTER", "GLOBAL_MANAGER", "AGENCY"].includes(account.role)&&!scope.globalManagerId))
+  if (!can(account.role,"withdrawals.read")||(!["MASTER", "GLOBAL_MANAGER", "AGENCY", "ADMIN"].includes(account.role)&&!scope.globalManagerId))
     return reply({ message: "Your role cannot view this payout module." }, 403);
   try {
     const url = new URL(request.url),
@@ -71,6 +73,12 @@ export async function GET(request: Request) {
           ),
         ),
       );
+    const selectedCycle = url.searchParams.get("cycle");
+    const cycle = selectedCycle && selectedCycle !== "all" ? payoutCycle(selectedCycle) : null;
+    if (cycle) {
+      filters.from = cycle.from;
+      filters.to = cycle.to;
+    }
     if (url.searchParams.has("destination"))
       return reply({
         destination: await payoutDestination(
@@ -92,6 +100,8 @@ export async function GET(request: Request) {
     const page=Math.max(1,Math.min(100000,Number.parseInt(url.searchParams.get('page')??'1',10)||1));
     return reply({
       rows,
+      cycle,
+      currentCycle: currentPayoutCycle(),
       ...(account.role==='MASTER'&&!filters.agencyGroup?await agencyPayoutGroups(account,filters,page):{}),
       candidates:account.role==='MASTER'&&filters.agencyGroup?await agencyPayoutCandidates(account,filters):undefined,
       summary: await hostPayoutSummary({ account }, filters),

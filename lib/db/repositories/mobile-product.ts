@@ -179,11 +179,16 @@ type GiftCatalogRow = RowDataPacket & {
   asset_config: unknown;
 };
 
+function giftDisplayName(row: { name: string; asset_config: unknown }) {
+  const displayName = asObject(row.asset_config).displayName;
+  return typeof displayName === "string" && displayName.trim() ? displayName : row.name;
+}
+
 function mobileGiftPayload(rows: GiftCatalogRow[]) {
   return {
     gifts: rows.filter((row) => row.catalog_type === "VIRTUAL_GIFT").map((row, index) => ({
       id: String(row.gift_key),
-      name: String(row.name),
+      name: giftDisplayName(row),
       symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)),
       cost: Number(row.coin_price),
       category: String(row.category),
@@ -196,7 +201,7 @@ function mobileGiftPayload(rows: GiftCatalogRow[]) {
     })),
     mallCatalog: rows.map((row) => ({
       id: String(row.gift_key),
-      name: String(row.name),
+      name: giftDisplayName(row),
       type: String(row.catalog_type) === "ENTRY_FRAME" ? "ENTRY_EFFECT" : String(row.catalog_type),
       symbol: row.emoji ? String(row.emoji) : giftSymbol(String(row.gift_key), String(row.name)),
       cost: Number(row.coin_price),
@@ -1035,7 +1040,7 @@ export async function createRoom(identity: MobileIdentity, input: { autoResumeVe
   return createdRoom;
 }
 
-type GiftInput = { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number; recipientMode?: "SINGLE" | "ALL"; expectedRecipientPublicIds?:string[] };
+type GiftInput = { clientGiftId?: string; roomCode: string; giftId: string; recipientPublicId: string; quantity: number; recipientMode?: "SINGLE" | "ALL"; expectedRecipientPublicIds?:string[]; expectedUnitCoinPrice?: number };
 
 // SINGLE and ALL must agree about recoverable occupied Guest seats. Provider
 // evidence preserves a valid muted/reconnecting speaker, not a stale audience.
@@ -1051,7 +1056,7 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
   const intentId = input.clientGiftId ?? randomUUID();
   const key = `GIFT:${identity.userId}:${intentId}`;
   const intent = JSON.stringify({ roomCode: input.roomCode, giftId: input.giftId,
-    recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity, ...(input.expectedRecipientPublicIds?{expectedRecipients:[...input.expectedRecipientPublicIds].sort().join(',')}:{}) });
+    recipient: input.recipientMode === "ALL" ? "ALL" : input.recipientPublicId, quantity: input.quantity, ...(input.expectedUnitCoinPrice!=null?{expectedUnitCoinPrice:input.expectedUnitCoinPrice}:{}), ...(input.expectedRecipientPublicIds?{expectedRecipients:[...input.expectedRecipientPublicIds].sort().join(',')}:{}) });
   return withIdempotentTransaction(async (connection) => {
     // Acquire an exclusive lock on an existing intent immediately. INSERT
     // IGNORE takes shared duplicate-key locks, which deadlock when concurrent
@@ -1090,6 +1095,8 @@ export async function sendGift(identity: MobileIdentity, input: GiftInput) {
     if(input.expectedRecipientPublicIds && [...new Set(input.expectedRecipientPublicIds)].sort().join(',')!==[...recipients].sort().join(','))throw new Error('Gift recipients changed. Choose recipients again.');
     if(!Number.isSafeInteger(input.quantity)||input.quantity<1||input.quantity>99)throw new Error('Choose a valid gift quantity.');
     const [priceRows]=await connection.query<RowDataPacket[]>("SELECT coin_price,economy_type FROM gift_catalog WHERE gift_key=? AND catalog_type='VIRTUAL_GIFT' AND active=TRUE",[input.giftId]);
+    if (priceRows[0] && input.expectedUnitCoinPrice != null && Number(priceRows[0].coin_price) !== input.expectedUnitCoinPrice)
+      throw Error("Gift price changed. Reopen Gifts to confirm the new price.");
     const fullCost=Number(priceRows[0]?.coin_price)*input.quantity*recipients.length;
     if(!Number.isSafeInteger(fullCost)||fullCost<1)throw new Error('The gift is unavailable.');
     await ensureWallet(connection,identity.userId,'COIN');
@@ -1268,9 +1275,9 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
     await connection.execute("UPDATE live_room_members SET last_seen_at = CURRENT_TIMESTAMP(3) WHERE room_id = ? AND application_user_id = ?", [room.id, identity.userId]);
     await connection.execute(
       `INSERT INTO live_room_gift_events
-       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id,gift_batch_id,platform_fee,platform_fee_bps,fee_policy_version,gift_context,gift_economy_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?)`,
-      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id,fee.batchId,platformFee,platformFeeBps,policyVersion,giftContext,isLucky?'LUCKY':'NORMAL'],
+       (id, room_id, sender_application_user_id, receiver_application_user_id, gift_catalog_id, quantity, coin_value, diamond_value, business_date, live_session_id, face_host_application_user_id,gift_batch_id,platform_fee,platform_fee_bps,fee_policy_version,gift_context,gift_economy_type,gift_name_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?)`,
+      [eventId, room.id, identity.userId, recipient.id, gift.id, input.quantity, total, diamondValue, businessDateFor(liveRules.timezone), room.live_session_id, room.room_type === 'PARTY' ? null : room.host_application_user_id,fee.batchId,platformFee,platformFeeBps,policyVersion,giftContext,isLucky?'LUCKY':'NORMAL',giftDisplayName(gift)],
     );
     if(lucky)await connection.execute(`INSERT INTO lucky_gift_results(gift_event_id,gross_coins,receiver_diamonds,company_allocation,won,tier_id,multiplier_bps,reward_coins,sender_balance_before,sender_balance_after,policy_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,[eventId,total,diamondValue,platformFee,lucky.won,lucky.tierId,lucky.multiplierBps,lucky.payoutCoins,balanceBefore,balanceAfter,JSON.stringify(fee.lucky)]);
     const audioPk=room.room_type==='PARTY'?await recordAudioPkGift(connection,{roomId:room.id,giftEventId:eventId,senderUserId:identity.userId,diamonds:diamondValue}):null;
@@ -1292,7 +1299,7 @@ async function sendGiftToRecipient(connection: PoolConnection, identity: MobileI
       rocket,
       event: {
         id: eventId, batchId:fee.batchId, giftContext, giftEconomyType:isLucky?'LUCKY':'NORMAL', ...(isLucky?{lucky,platformFee:undefined,platformFeeBps:undefined}:{lucky:undefined,platformFee,platformFeeBps}), policyVersion, quantity: input.quantity, value: total, diamondValue, createdAt: new Date().toISOString(),
-        gift: { id: input.giftId, cost:Number(gift.coin_price), economyType:isLucky?'LUCKY':'NORMAL', name: gift.name, symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
+        gift: { id: input.giftId, cost:Number(gift.coin_price), economyType:isLucky?'LUCKY':'NORMAL', name: giftDisplayName(gift), symbol: gift.emoji ?? giftSymbol(input.giftId, gift.name), imageUrl: gift.visual_url, animationKey: gift.animation_key, effectConfig: asObject(gift.asset_config) },
         sender: { id: String(sender.public_id), name: sender.full_name, avatarUrl: mobileAvatarUrl(sender), country: sender.country_code ?? "", language: sender.language_code ?? "", level: levelProgress(Number(sender.consumption_points) + total, "consumption").level, anchorLevel: levelProgress(Number(sender.anchor_income_points), "anchorIncome").level, vip: Number(sender.vip_tier) },
         receiver: { id: String(recipient.public_id), name: recipient.full_name, avatarUrl: mobileAvatarUrl(recipient), country: recipient.country_code ?? "", language: recipient.language_code ?? "", level: levelProgress(Number(recipient.consumption_points), "consumption").level, anchorLevel: levelProgress(Number(recipient.anchor_income_points) + diamondValue, "anchorIncome").level, vip: Number(recipient.vip_tier) },
       },
