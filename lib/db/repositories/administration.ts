@@ -3,6 +3,7 @@ import "server-only";
 import { randomUUID } from "crypto";
 import bcrypt from "bcryptjs";
 import type { RowDataPacket } from "mysql2";
+import type { PoolConnection } from "mysql2/promise";
 import { canManageRole, isParentRoleValid, roleLabel, rolesAssignableBy, rolesCreatableBy, validParentRoles } from "@/lib/auth/role-hierarchy";
 import { db } from "@/lib/db/pool";
 import { generateManagementPublicId } from "@/lib/db/public-id";
@@ -14,6 +15,27 @@ import { isPanelCountry } from "@/lib/countries";
 import { can } from "@/lib/auth/permissions";
 
 export { rolesCreatableBy } from "@/lib/auth/role-hierarchy";
+
+async function requireAssignedManagerCountry(
+  connection: PoolConnection,
+  childRole: Role,
+  countryCode: string | null,
+  parent: { id: string; role: Role },
+) {
+  if (childRole !== "COUNTRY_MANAGER" || parent.role !== "GLOBAL_MANAGER") return;
+  const country = countryCode?.trim().toUpperCase();
+  const [assigned] = await connection.query<RowDataPacket[]>(
+    `SELECT country_code FROM global_manager_countries WHERE manager_id=? AND country_code=?
+     UNION SELECT gc.country_code FROM global_manager_country_groups mg
+       JOIN country_groups g ON g.id=mg.group_id AND g.active=TRUE
+       JOIN country_group_countries gc ON gc.group_id=g.id
+       WHERE mg.manager_id=? AND gc.country_code=? LIMIT 1`,
+    [parent.id, country ?? "", parent.id, country ?? ""],
+  );
+  if (!assigned.length) {
+    throw new Error(`Master must assign ${country || "the Country Manager's country"} in Global Managers & Country Groups before attaching this team.`);
+  }
+}
 
 type AccountRow = RowDataPacket & {
   id: string;
@@ -243,6 +265,7 @@ export async function createPlatformAccount(input: {
     }
     const [currentParents]=await connection.query<RowDataPacket[]>("SELECT role,country_code FROM platform_accounts WHERE id=? AND status='ACTIVE' AND removed_at IS NULL FOR UPDATE",[parent.id]);
     if(!currentParents[0]||!isParentRoleValid(input.role,currentParents[0].role))throw new Error('The selected parent is no longer active. Refresh before creating this account.');
+    await requireAssignedManagerCountry(connection, input.role, input.countryCode, { id: parent.id, role: currentParents[0].role });
     if(input.scope.account.role==='GLOBAL_MANAGER'&&!(input.scope.countryCodes??[]).includes(input.countryCode))throw Error('The country is outside your assigned scope.');
     if(input.role==='GLOBAL_MANAGER'&&applicationUserId){
       const [matches]=await connection.query<RowDataPacket[]>("SELECT id FROM application_users WHERE (id=? OR external_user_id=? OR CAST(public_id AS CHAR)=?) AND account_status='ACTIVE' FOR UPDATE",[applicationUserId,applicationUserId,applicationUserId]);
@@ -294,6 +317,7 @@ export async function reassignPlatformAccount(input: { scope: Scope; accountId: 
     );
     const parent = parents[0];
     if (!parent || !isParentRoleValid(target.role, parent.role)) throw new Error(`A ${roleLabel(target.role)} must be under ${validParentRoles(target.role).map(roleLabel).join(" or ")}.`);
+    await requireAssignedManagerCountry(connection, target.role, target.country_code, parent);
     if (parent.country_code && target.country_code && !["MASTER","GLOBAL_MANAGER"].includes(parent.role) && parent.country_code !== target.country_code) throw new Error("Move the account only to a parent in the same country.");
     const [cycles] = await connection.query<RowDataPacket[]>(
       `WITH RECURSIVE descendants AS (
@@ -434,6 +458,7 @@ export async function changePlatformAccountRole(input: {
       parent = await createSupportAccount("COUNTRY_MANAGER", input.newCountryManager.fullName, cmHash, input.scope.account.id, input.newCountryManager.countryCode) as typeof parent;
     }
     if (!parent || !isParentRoleValid(input.role, parent.role)) throw new Error(`Choose a valid ${validParentRoles(input.role).map(roleLabel).join(" or ")} parent.`);
+    await requireAssignedManagerCountry(connection, input.role, target.country_code ?? parent.country_code, parent);
     if (!["MASTER","GLOBAL_MANAGER"].includes(parent.role) && parent.country_code && target.country_code && parent.country_code.toUpperCase() !== target.country_code.toUpperCase()) throw new Error("The account and parent must be in the same country.");
     const [cycles] = await connection.query<RowDataPacket[]>(
       `WITH RECURSIVE descendants AS (

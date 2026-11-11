@@ -23,6 +23,17 @@ async function main(){
   for(const [id,name,country] of [[ownerA,'QA Manager A owner','SA'],[ownerB,'QA Manager B owner','NG']])await root.execute('INSERT INTO application_users(id,external_user_id,full_name,country_code) VALUES(?,?,?,?)',[id,id,name,country]);
   const ga=await create('GLOBAL_MANAGER',master,'SA','QA Global A',ownerA),gb=await create('GLOBAL_MANAGER',master,'NG','QA Global B',ownerB);
   const ca=await create('COUNTRY_MANAGER',master,'SA','QA Country A'),cb=await create('COUNTRY_MANAGER',master,'SA','QA Same Country B'),cn=await create('COUNTRY_MANAGER',master,'NG','QA Country Nigeria');
+  for(const [account,amount] of [[ga.account.id,1000],[ca.account.id,2000],[cb.account.id,7000]] as const){
+   await root.execute("INSERT INTO wallet_balances(id,owner_type,owner_id,asset_type,available_balance) VALUES(?,'PLATFORM_ACCOUNT',?,'COIN',?)",[randomUUID(),account,amount]);
+  }
+  const unassigned=await dash.getDashboardMetrics(await accounts.scopeFor(ga.account));
+  assert.equal(unassigned.coinInventory,1000,'Country assignment never hides a manager’s personal allocated Coins');
+  assert.equal(unassigned.teamCoinInventory,0,'Unassigned managers cannot read team inventories');
+  await assert.rejects(admin.reassignPlatformAccount({scope:master,accountId:ca.account.id,parentAccountId:ga.account.id,reason:'QA missing country assignment'}),/Master must assign SA/);
+  await assert.rejects(admin.changePlatformAccountRole({scope:master,accountId:ca.account.id,role:'COUNTRY_MANAGER',expectedRole:'COUNTRY_MANAGER',parentAccountId:ga.account.id,reason:'QA same-role reassignment must check country scope'}),/Master must assign SA/);
+  await assert.rejects(create('COUNTRY_MANAGER',ga,'SA','QA Unassigned Country'),/Master must assign SA/);
+  const [[unmoved]]=await root.query<RowDataPacket[]>('SELECT parent_account_id FROM platform_accounts WHERE id=?',[ca.account.id]);
+  assert.equal(unmoved.parent_account_id,master.account.id,'Rejected attachment leaves the entire branch in place');
   async function branch(cm:Scope,country:string,name:string){const sa=await create('SUPER_ADMIN',cm,country,name+' Super');const ad=await create('ADMIN',sa,country,name+' Admin');return create('AGENCY',ad,country,name+' Agency');}
   const aa=await branch(ca,'SA','A'),ab=await branch(cb,'SA','B'),an=await branch(cn,'NG','Nigeria');
   const middle=(await gm.globalManagement(master)).groups.find(g=>g.name==='Middle East')!;
@@ -31,6 +42,15 @@ async function main(){
   await gm.saveGlobalManager(master,{id:ga.account.id,name:'QA Global A',status:'ACTIVE',countries:[],groups:[middle.id],countryManagers:[ca.account.id],gamesEnabled:true,expectedVersion:0,reason:'QA assign Middle East team A'});
   await gm.saveGlobalManager(master,{id:gb.account.id,name:'QA Global B',status:'ACTIVE',countries:[],groups:[bgroup],countryManagers:[cb.account.id,cn.account.id],gamesEnabled:true,expectedVersion:0,reason:'QA assign independent team B'});
   let A=await accounts.scopeFor(ga.account),B=await accounts.scopeFor(gb.account);
+  assert.equal((await dash.getDashboardMetrics(A)).coinInventory,1000);
+  assert.equal((await dash.getDashboardMetrics(A)).teamCoinInventory,2000,'Assigned team inventory excludes the manager’s personal balance and foreign teams');
+  assert.equal((await dash.getDashboardMetrics(B)).teamCoinInventory,7000);
+  await admin.createPlatformAccount({scope:A,role:'COUNTRY_MANAGER',fullName:'QA Assigned Group Country',countryCode:'SA',password:'Local-QA-Only-2026!',requestedParentId:A.account.id,documents:[]});
+  await admin.reassignPlatformAccount({scope:master,accountId:ca.account.id,parentAccountId:master.account.id,reason:'QA exercise country-scoped branch reattachment'});
+  await admin.changePlatformAccountRole({scope:master,accountId:ca.account.id,role:'COUNTRY_MANAGER',expectedRole:'COUNTRY_MANAGER',parentAccountId:ga.account.id,reason:'QA valid group-assigned country preserves its existing team'});
+  const [[preserved]]=await root.query<RowDataPacket[]>("SELECT available_balance FROM wallet_balances WHERE owner_type='PLATFORM_ACCOUNT' AND owner_id=? AND asset_type='COIN'",[ca.account.id]);
+  assert.equal(Number(preserved.available_balance),2000,'Role/parent updates never move or reset Coins');
+  groups.push('Missing-country attachment rejected on create/reassign/role-change; personal and scoped team inventory stay separate; existing balances preserved');
   assert(A.countryCodes?.includes('SA'));assert(A.accountIds.includes(aa.account.id));assert(!A.accountIds.includes(ab.account.id));assert(!A.isGlobal);
   assert(B.accountIds.includes(ab.account.id));assert(!B.accountIds.includes(aa.account.id));
   await assert.rejects(gm.saveGlobalManager(A,{id:ga.account.id,name:'Escalation',status:'ACTIVE',countries:['NG'],groups:[],countryManagers:[cn.account.id],gamesEnabled:true,expectedVersion:1,reason:'QA unauthorized scope expansion'}),/Only Master/);

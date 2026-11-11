@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, Building2, Coins, Landmark, Radio, UsersRound, WalletCards } from "lucide-react";
-import { Card, MetricCard, SectionHeading, StatusBadge } from "@/components/ui";
+import { Card, MetricCard, Notice, SectionHeading, StatusBadge } from "@/components/ui";
 import { can } from "@/lib/auth/permissions";
 import { requirePermission } from "@/lib/auth/guard";
 import { getDashboardMetrics, getRecentActivity, getRecentLedger, getRevenueSeries } from "@/lib/db/repositories/dashboard";
@@ -26,6 +26,7 @@ export default async function DashboardPage() {
   const max = Math.max(...revenue.map((item) => item.revenue), 1);
   return <>
     <SectionHeading title={`${scope.account.role === "AGENCY" ? "Agency" : scope.account.role === "MONITORING_CS" ? "Monitoring" : "Operations"} overview`} description={scope.isGlobal ? "The entire Nazraa Control Platform." : `Only ${scope.account.fullName}'s permitted branch.`} action={<span className="range-chip">Live scope</span>} />
+    {scope.globalManagerId && !scope.countryCodes?.length ? <Notice>Country access is awaiting assignment. Master can assign countries or groups in Global Managers &amp; Country Groups to make the attached team's records visible.</Notice> : null}
     <div className="metric-grid">
       {scope.account.role === "MASTER" ? <MetricCard label="Total Country" value={metrics.countries} detail="Distinct configured Country Manager countries" icon={<Building2 size={20} />} /> : null}
       {isAgency && agencySummary ? <>
@@ -39,7 +40,8 @@ export default async function DashboardPage() {
         {can(scope.account.role, "hosts.read") ? <MetricCard label="Active hosts" value={metrics.hosts} detail="Approved or live" icon={<Radio size={20} />} /> : null}
         {can(scope.account.role, "agencies.read") ? <MetricCard label="Active agencies" value={metrics.agencies} detail="In your branch" icon={<Building2 size={20} />} /> : null}
       </>}
-      {can(scope.account.role, "wallet.read") ? <MetricCard label="My coin inventory" value={metrics.coinInventory} detail="Available to distribute" icon={<Coins size={20} />} /> : null}
+      {can(scope.account.role, "wallet.read") ? <MetricCard label="My coin inventory" value={metrics.coinInventory} detail="Allocated to this Control account" icon={<Coins size={20} />} /> : null}
+      {scope.account.role === "GLOBAL_MANAGER" ? <MetricCard label="Team coin inventory" value={metrics.teamCoinInventory} detail="Held by accounts in your assigned team" icon={<Coins size={20} />} /> : null}
       {showLedger ? <MetricCard label="Cash revenue" value={formatCurrency(metrics.revenue)} detail="Completed ledger entries" icon={<WalletCards size={20} />} /> : null}
       {can(scope.account.role, "withdrawals.read") ? <MetricCard label="Pending withdrawals" value={metrics.pendingWithdrawals} detail="In your scope" icon={<Landmark size={20} />} /> : null}
     </div>

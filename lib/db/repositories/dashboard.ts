@@ -28,9 +28,12 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
   const revenueBoundary=globalManagerLedgerBoundary(scope,'ledger_transactions');
   ledger.clause=`(${ledger.clause}) AND ${revenueBoundary.clause}`;ledger.values.push(...revenueBoundary.values);
   const inventory = { clause: "owner_id = ?", values: [scope.account.id] };
+  const teamInventory = scope.account.role === "GLOBAL_MANAGER"
+    ? scopeWhere(scope, "owner_id")
+    : { clause: "1=0", values: [] as string[] };
   const [rows] = await db().query<(RowDataPacket & {
     users: number; hosts: number; agencies: number; countries: number; active_rooms: number; revenue: number;
-    pending_withdrawals: number; coin_inventory: number;
+    pending_withdrawals: number; coin_inventory: number; team_coin_inventory: number;
   })[]>(
     `SELECT
        (SELECT COUNT(*) FROM application_users WHERE ${users.clause}) users,
@@ -40,8 +43,9 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
        (SELECT COUNT(*) FROM live_rooms WHERE ${rooms.clause} AND status = 'ACTIVE') active_rooms,
        (SELECT COALESCE(SUM(money_amount), 0) FROM ledger_transactions WHERE ${ledger.clause} AND asset_type = 'CASH' AND status = 'COMPLETED') revenue,
        (SELECT COUNT(*) FROM withdrawal_requests WHERE ${withdrawals.clause} AND status IN ('PENDING','UNDER_REVIEW')) pending_withdrawals,
-       (SELECT COALESCE(SUM(available_balance), 0) FROM wallet_balances WHERE owner_type = 'PLATFORM_ACCOUNT' AND ${inventory.clause} AND asset_type = 'COIN') coin_inventory`,
-    [...users.values, ...hosts.values, ...accountIds.values, ...countries.values, ...rooms.values, ...ledger.values, ...withdrawals.values, ...inventory.values],
+       (SELECT COALESCE(SUM(available_balance), 0) FROM wallet_balances WHERE owner_type = 'PLATFORM_ACCOUNT' AND ${inventory.clause} AND asset_type = 'COIN') coin_inventory,
+       (SELECT COALESCE(SUM(available_balance), 0) FROM wallet_balances WHERE owner_type = 'PLATFORM_ACCOUNT' AND ${teamInventory.clause} AND owner_id<>? AND asset_type = 'COIN') team_coin_inventory`,
+    [...users.values, ...hosts.values, ...accountIds.values, ...countries.values, ...rooms.values, ...ledger.values, ...withdrawals.values, ...inventory.values, ...teamInventory.values, scope.account.id],
   );
   const row = rows[0];
   return {
@@ -49,6 +53,7 @@ export async function getDashboardMetrics(scope: Scope): Promise<DashboardMetric
     users: Number(row?.users ?? 0), hosts: Number(row?.hosts ?? 0), agencies: Number(row?.agencies ?? 0),
     activeRooms: Number(row?.active_rooms ?? 0), revenue: Number(row?.revenue ?? 0),
     pendingWithdrawals: Number(row?.pending_withdrawals ?? 0), coinInventory: Number(row?.coin_inventory ?? 0),
+    teamCoinInventory: Number(row?.team_coin_inventory ?? 0),
   };
 }
 

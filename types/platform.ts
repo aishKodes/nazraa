@@ -63,6 +63,7 @@ export type DashboardMetrics = {
   revenue: number;
   pendingWithdrawals: number;
   coinInventory: number;
+  teamCoinInventory: number;
 };
 
 export type LedgerEntry = {
